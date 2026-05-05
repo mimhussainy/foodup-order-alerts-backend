@@ -173,14 +173,18 @@ app.post("/verify-pin", (req, res) => {
 
 app.get("/order/:id", async (req, res) => {
   const orderId = req.params.id;
-  const data = await redisCommand("GET", "last_order");
-  if (data.result) {
-    const order = JSON.parse(data.result);
-    if (String(order.order_id) === String(orderId)) {
-      return res.json({ success: true, order });
+  try {
+    const data = await redisCommand("GET", "last_order");
+    if (data.result) {
+      const order = JSON.parse(data.result);
+      if (String(order.order_id) === String(orderId)) {
+        return res.json({ success: true, order });
+      }
     }
+    res.json({ success: false, message: "Order not found" });
+  } catch(e) {
+    res.json({ success: false, message: "Error fetching order" });
   }
-  res.json({ success: false, message: "Order not found" });
 });
 
 app.get("/", async (req, res) => {
