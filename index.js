@@ -54,13 +54,18 @@ app.post("/new-order", async (req, res) => {
     body: `${order.customer_name} - ${order.currency} ${order.total}`,
     data: {
       order_id: String(order.order_id),
-      customer_name: order.customer_name,
-      total: String(order.total),
-      currency: order.currency,
-      status: order.status,
-      items: JSON.stringify(order.items),
-      payment_method: order.payment_method,
-      note: order.note || "",
+      customer_name: String(order.customer_name || ''),
+      total: String(order.total || ''),
+      currency: String(order.currency || ''),
+      status: String(order.status || ''),
+      items: JSON.stringify((order.items || []).map(item => ({
+        name: item.name,
+        quantity: item.quantity,
+        total: item.total,
+        addons: (item.addons || []).slice(0, 5),
+      }))).substring(0, 1000),
+      payment_method: String(order.payment_method || ''),
+      note: String(order.note || '').substring(0, 200),
     },
   }));
 
