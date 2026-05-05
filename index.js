@@ -1,113 +1,222 @@
-const express = require("express");
-const app = express();
-app.use(express.json());
+import { useEffect, useState } from 'react';
+import {
+  View, Text, TouchableOpacity,
+  StyleSheet, SafeAreaView, SectionList
+} from 'react-native';
+import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+interface OrderAddon {
+  label: string;
+  value: string;
+}
 
-async function redisCommand(...args) {
-  const response = await fetch(`${UPSTASH_URL}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${UPSTASH_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(args),
+interface OrderItem {
+  name: string;
+  quantity: number;
+  total: number;
+  addons: OrderAddon[];
+}
+
+interface Order {
+  order_id: number;
+  customer_name: string;
+  total: string;
+  currency: string;
+  status: string;
+  event_type: string;
+  items: OrderItem[];
+  payment_method: string;
+  note: string;
+  date: string;
+  timestamp: number;
+}
+
+function getStatusColor(status: string) {
+  switch (status) {
+    case 'processing': return '#2ecc71';
+    case 'completed': return '#3498db';
+    case 'cancelled': return '#e74c3c';
+    case 'pending': return '#f39c12';
+    case 'on-hold': return '#9b59b6';
+    default: return '#95a5a6';
+  }
+}
+
+function getStatusEmoji(status: string) {
+  switch (status) {
+    case 'processing': return '⚡';
+    case 'completed': return '✅';
+    case 'cancelled': return '❌';
+    case 'pending': return '⏳';
+    case 'on-hold': return '⏸️';
+    default: return '📦';
+  }
+}
+
+function getDateLabel(timestamp: number) {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) return 'Today';
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+function groupOrdersByDate(orders: Order[]) {
+  const groups: { [key: string]: Order[] } = {};
+  orders.forEach(order => {
+    const label = getDateLabel(order.timestamp);
+    if (!groups[label]) groups[label] = [];
+    groups[label].push(order);
   });
-  return response.json();
+  return Object.keys(groups).map(title => ({ title, data: groups[title] }));
 }
 
-async function getTokens() {
-  const result = await redisCommand("SMEMBERS", "device_tokens");
-  return result.result || [];
-}
+const STORAGE_KEY = 'foodup_orders';
 
-async function saveToken(token) {
-  await redisCommand("SADD", "device_tokens", token);
-}
+export default function OrdersScreen() {
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
-app.post("/register-token", async (req, res) => {
-  const { token } = req.body;
-  console.log("Registering token:", token);
-  await saveToken(token);
-  const tokens = await getTokens();
-  console.log("Total tokens:", tokens.length);
-  res.json({ success: true });
-});
+  useEffect(() => {
+    AsyncStorage.getItem(STORAGE_KEY).then(stored => {
+      if (stored) setOrders(JSON.parse(stored));
+    });
+  }, []);
 
-app.post("/new-order", async (req, res) => {
-  const order = req.body;
-  console.log("New order received:", order.order_id);
-  console.log("Items:", JSON.stringify(order.items));
+  useEffect(() => {
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(orders));
+  }, [orders]);
 
-  // Save last order for debugging
-  await redisCommand("SET", "last_order", JSON.stringify(order));
+  useEffect(() => {
+    const subscription = Notifications.addNotificationReceivedListener(notification => {
+      const data = notification.request.content.data as any;
+      const newOrder: Order = {
+        order_id: parseInt(data.order_id),
+        customer_name: data.customer_name,
+        total: data.total,
+        currency: data.currency,
+        status: data.status,
+        event_type: data.event_type || 'new_order',
+        items: JSON.parse(data.items || '[]'),
+        payment_method: data.payment_method,
+        note: data.note,
+        date: new Date().toLocaleString(),
+        timestamp: Date.now(),
+      };
+      setOrders(prev => {
+        const exists = prev.findIndex(o => o.order_id === newOrder.order_id);
+        if (exists >= 0) {
+          const updated = [...prev];
+          updated[exists] = newOrder;
+          return updated;
+        }
+        return [newOrder, ...prev];
+      });
+    });
+    return () => subscription.remove();
+  }, []);
 
-  const deviceTokens = await getTokens();
-  console.log("Device tokens:", deviceTokens.length);
+  const sections = groupOrdersByDate(orders);
 
-  if (deviceTokens.length === 0) {
-    return res.json({ success: false, message: "No device tokens registered" });
+  if (selectedOrder) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => setSelectedOrder(null)}>
+          <Text style={styles.backText}>← Back</Text>
+        </TouchableOpacity>
+        <View style={styles.detailCard}>
+          <Text style={styles.detailTitle}>Order #{selectedOrder.order_id}</Text>
+          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(selectedOrder.status) }]}>
+            <Text style={styles.statusBadgeText}>{getStatusEmoji(selectedOrder.status)} {selectedOrder.status.toUpperCase()}</Text>
+          </View>
+          <Text style={styles.detailText}>👤 {selectedOrder.customer_name}</Text>
+          <Text style={styles.detailText}>💰 {selectedOrder.currency} {selectedOrder.total}</Text>
+          <Text style={styles.detailText}>💳 {selectedOrder.payment_method}</Text>
+          <Text style={styles.detailText}>🕐 {selectedOrder.date}</Text>
+          {selectedOrder.note ? <Text style={styles.detailText}>📝 {selectedOrder.note}</Text> : null}
+          <Text style={styles.sectionTitle}>Items:</Text>
+          {selectedOrder.items.map((item, i) => (
+            <View key={i} style={styles.itemBlock}>
+              <Text style={styles.itemText}>
+                <Text style={styles.itemBold}>{item.quantity}x {item.name}</Text>
+                {' '}— {selectedOrder.currency} {item.total}
+              </Text>
+              {item.addons && item.addons.map((addon, j) => (
+                <Text key={j} style={styles.addonText}>↳ {addon.label}: {addon.value}</Text>
+              ))}
+            </View>
+          ))}
+        </View>
+      </SafeAreaView>
+    );
   }
 
-  let itemsString = '[]';
-  try {
-    const safeItems = (order.items || []).map(item => ({
-      name: String(item.name || ''),
-      quantity: Number(item.quantity || 0),
-      total: Number(item.total || 0),
-      addons: (item.addons || []).map(a => ({
-        label: String(a.label || ''),
-        value: String(a.value || ''),
-      })),
-    }));
-    itemsString = JSON.stringify(safeItems);
-  } catch(e) {
-    console.log("Items parse error:", e.message);
-  }
+  return (
+    <SafeAreaView style={styles.container}>
+      <Text style={styles.header}>🛒 FoodUp Orders</Text>
+      {orders.length === 0 ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyText}>No orders yet.</Text>
+          <Text style={styles.emptySubText}>New orders will appear here instantly!</Text>
+        </View>
+      ) : (
+        <SectionList
+          sections={sections}
+          keyExtractor={(item) => String(item.order_id)}
+          renderSectionHeader={({ section: { title } }) => (
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionHeaderText}>{title}</Text>
+            </View>
+          )}
+          renderItem={({ item }) => (
+            <TouchableOpacity style={styles.orderCard} onPress={() => setSelectedOrder(item)}>
+              <View style={styles.orderHeader}>
+                <Text style={styles.orderId}>Order #{item.order_id}</Text>
+                <View style={[styles.statusPill, { backgroundColor: getStatusColor(item.status) }]}>
+                  <Text style={styles.statusPillText}>{getStatusEmoji(item.status)} {item.status}</Text>
+                </View>
+              </View>
+              <Text style={styles.orderCustomer}>{item.customer_name}</Text>
+              <Text style={styles.orderTotal}>{item.currency} {item.total}</Text>
+              <Text style={styles.orderDate}>{item.date}</Text>
+            </TouchableOpacity>
+          )}
+        />
+      )}
+    </SafeAreaView>
+  );
+}
 
-  const messages = deviceTokens.map(token => ({
-    to: token,
-    sound: "default",
-    title: `🛒 New Order #${order.order_id}`,
-    body: `${order.customer_name} - ${order.currency} ${order.total}`,
-    data: {
-      order_id: String(order.order_id || ''),
-      customer_name: String(order.customer_name || ''),
-      total: String(order.total || ''),
-      currency: String(order.currency || ''),
-      status: String(order.status || ''),
-      items: itemsString,
-      payment_method: String(order.payment_method || ''),
-      note: String(order.note || ''),
-    },
-  }));
-
-  const response = await fetch("https://exp.host/--/api/v2/push/send", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-    },
-    body: JSON.stringify(messages),
-  });
-
-  const result = await response.json();
-  console.log("Push result:", JSON.stringify(result));
-  res.json({ success: true, result });
-});
-
-app.get("/last-order", async (req, res) => {
-  const data = await redisCommand("GET", "last_order");
-  res.json(data.result ? JSON.parse(data.result) : {});
-});
-
-app.get("/", async (req, res) => {
-  const tokens = await getTokens();
-  res.json({ status: "FoodUp Order Alerts backend is running!", tokens: tokens.length });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#f5f5f5' },
+  header: { fontSize: 24, fontWeight: 'bold', padding: 20, backgroundColor: '#fff' },
+  empty: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyText: { fontSize: 18, color: '#333', fontWeight: 'bold' },
+  emptySubText: { fontSize: 14, color: '#999', marginTop: 8 },
+  sectionHeader: { backgroundColor: '#f5f5f5', paddingHorizontal: 16, paddingVertical: 8 },
+  sectionHeaderText: { fontSize: 13, fontWeight: 'bold', color: '#999', textTransform: 'uppercase' },
+  orderCard: { backgroundColor: '#fff', marginHorizontal: 10, marginVertical: 5, padding: 15, borderRadius: 10, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2 },
+  orderHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  orderId: { fontSize: 16, fontWeight: 'bold', color: '#333' },
+  statusPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 },
+  statusPillText: { fontSize: 11, color: '#fff', fontWeight: 'bold' },
+  orderCustomer: { fontSize: 14, color: '#666', marginTop: 6 },
+  orderTotal: { fontSize: 16, fontWeight: 'bold', color: '#2ecc71', marginTop: 4 },
+  orderDate: { fontSize: 11, color: '#bbb', marginTop: 4 },
+  backBtn: { padding: 16 },
+  backText: { fontSize: 16, color: '#007AFF' },
+  detailCard: { backgroundColor: '#fff', margin: 16, padding: 20, borderRadius: 12, elevation: 2 },
+  detailTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 12 },
+  statusBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, alignSelf: 'flex-start', marginBottom: 12 },
+  statusBadgeText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
+  detailText: { fontSize: 16, color: '#333', marginBottom: 8 },
+  sectionTitle: { fontSize: 18, fontWeight: 'bold', marginTop: 16, marginBottom: 8 },
+  itemBlock: { marginBottom: 10 },
+  itemText: { fontSize: 14, color: '#555' },
+  itemBold: { fontWeight: 'bold', color: '#333' },
+  addonText: { fontSize: 13, color: '#888', marginLeft: 12, marginTop: 2 },
 });
