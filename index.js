@@ -66,7 +66,7 @@ app.post("/new-order", async (req, res) => {
 
   const messages = deviceTokens.map(token => ({
     to: token,
-    sound: "default",
+sound: order.sound === false ? null : "default",
     title: `🛒 New Order #${order.order_id}`,
     body: `${order.customer_name} - ${order.currency} ${order.total}`,
     data: {
