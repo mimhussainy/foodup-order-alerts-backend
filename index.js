@@ -2,21 +2,44 @@ const express = require("express");
 const app = express();
 app.use(express.json());
 
-let deviceTokens = [];
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-app.post("/register-token", (req, res) => {
+async function redisCommand(...args) {
+  const response = await fetch(`${UPSTASH_URL}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${UPSTASH_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(args),
+  });
+  return response.json();
+}
+
+async function getTokens() {
+  const result = await redisCommand("SMEMBERS", "device_tokens");
+  return result.result || [];
+}
+
+async function saveToken(token) {
+  await redisCommand("SADD", "device_tokens", token);
+}
+
+app.post("/register-token", async (req, res) => {
   const { token } = req.body;
   console.log("Registering token:", token);
-  if (token && !deviceTokens.includes(token)) {
-    deviceTokens.push(token);
-  }
-  console.log("Total tokens:", deviceTokens.length);
+  await saveToken(token);
+  const tokens = await getTokens();
+  console.log("Total tokens:", tokens.length);
   res.json({ success: true });
 });
 
 app.post("/new-order", async (req, res) => {
   const order = req.body;
   console.log("New order received:", order.order_id);
+  
+  const deviceTokens = await getTokens();
   console.log("Device tokens:", deviceTokens.length);
 
   if (deviceTokens.length === 0) {
@@ -54,8 +77,9 @@ app.post("/new-order", async (req, res) => {
   res.json({ success: true, result });
 });
 
-app.get("/", (req, res) => {
-  res.json({ status: "FoodUp Order Alerts backend is running!", tokens: deviceTokens.length });
+app.get("/", async (req, res) => {
+  const tokens = await getTokens();
+  res.json({ status: "FoodUp Order Alerts backend is running!", tokens: tokens.length });
 });
 
 const PORT = process.env.PORT || 3000;
