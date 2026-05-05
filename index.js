@@ -66,12 +66,14 @@ app.post("/new-order", async (req, res) => {
 
   const messages = deviceTokens.map(token => ({
     to: token,
-sound: order.sound === false ? null : "default",
+    sound: order.sound === false ? null : "default",
     title: `🛒 New Order #${order.order_id}`,
     body: `${order.customer_name} - ${order.currency} ${order.total}`,
     data: {
       order_id: String(order.order_id || ''),
       customer_name: String(order.customer_name || ''),
+      customer_email: String(order.customer_email || ''),
+      customer_phone: String(order.customer_phone || ''),
       total: String(order.total || ''),
       currency: String(order.currency || ''),
       status: String(order.status || ''),
@@ -80,7 +82,7 @@ sound: order.sound === false ? null : "default",
       note: String(order.note || ''),
       shipping_method: String(order.shipping && order.shipping.method ? order.shipping.method : ''),
       shipping_address: String(order.shipping && order.shipping.address ? order.shipping.address : ''),
-      event_type: 'new_order',
+      event_type: String(order.event_type || 'new_order'),
     },
   }));
 
@@ -131,6 +133,8 @@ app.post("/status-update", async (req, res) => {
     data: {
       order_id: String(order.order_id || ''),
       customer_name: String(order.customer_name || ''),
+      customer_email: String(order.customer_email || ''),
+      customer_phone: String(order.customer_phone || ''),
       total: String(order.total || ''),
       currency: String(order.currency || ''),
       status: String(order.status || ''),
