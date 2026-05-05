@@ -171,6 +171,18 @@ app.post("/verify-pin", (req, res) => {
   }
 });
 
+app.get("/order/:id", async (req, res) => {
+  const orderId = req.params.id;
+  const data = await redisCommand("GET", "last_order");
+  if (data.result) {
+    const order = JSON.parse(data.result);
+    if (String(order.order_id) === String(orderId)) {
+      return res.json({ success: true, order });
+    }
+  }
+  res.json({ success: false, message: "Order not found" });
+});
+
 app.get("/", async (req, res) => {
   const tokens = await getTokens();
   res.json({ status: "FoodUp Order Alerts backend is running!", tokens: tokens.length });
