@@ -156,11 +156,6 @@ app.post("/status-update", async (req, res) => {
   res.json({ success: true });
 });
 
-app.get("/last-order", async (req, res) => {
-  const data = await redisCommand("GET", "last_order");
-  res.json(data.result ? JSON.parse(data.result) : {});
-});
-
 app.post("/verify-pin", (req, res) => {
   const { pin } = req.body;
   const correctPin = process.env.OWNER_PIN || '1234';
@@ -168,6 +163,25 @@ app.post("/verify-pin", (req, res) => {
     res.json({ success: true });
   } else {
     res.json({ success: false });
+  }
+});
+
+app.post("/mark-delivered", async (req, res) => {
+  const { order_id, delivery_name } = req.body;
+  await redisCommand("SET", `delivered:${order_id}`, JSON.stringify({
+    order_id,
+    delivery_name,
+    delivered_at: new Date().toISOString(),
+  }));
+  res.json({ success: true });
+});
+
+app.get("/check-delivered/:id", async (req, res) => {
+  const data = await redisCommand("GET", `delivered:${req.params.id}`);
+  if (data.result) {
+    res.json({ success: true, delivered: true, info: JSON.parse(data.result) });
+  } else {
+    res.json({ success: true, delivered: false });
   }
 });
 
@@ -185,6 +199,11 @@ app.get("/order/:id", async (req, res) => {
   } catch(e) {
     res.json({ success: false, message: "Error fetching order" });
   }
+});
+
+app.get("/last-order", async (req, res) => {
+  const data = await redisCommand("GET", "last_order");
+  res.json(data.result ? JSON.parse(data.result) : {});
 });
 
 app.get("/", async (req, res) => {
