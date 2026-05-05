@@ -80,6 +80,7 @@ app.post("/new-order", async (req, res) => {
       note: String(order.note || ''),
       shipping_method: String(order.shipping && order.shipping.method ? order.shipping.method : ''),
       shipping_address: String(order.shipping && order.shipping.address ? order.shipping.address : ''),
+      event_type: 'new_order',
     },
   }));
 
@@ -95,6 +96,60 @@ app.post("/new-order", async (req, res) => {
   const result = await response.json();
   console.log("Push result:", JSON.stringify(result));
   res.json({ success: true, result });
+});
+
+app.post("/status-update", async (req, res) => {
+  const order = req.body;
+  console.log("Status update:", order.order_id, order.status);
+
+  const deviceTokens = await getTokens();
+  if (deviceTokens.length === 0) {
+    return res.json({ success: false });
+  }
+
+  let itemsString = '[]';
+  try {
+    const safeItems = (order.items || []).map(item => ({
+      name: String(item.name || ''),
+      quantity: Number(item.quantity || 0),
+      total: Number(item.total || 0),
+      addons: (item.addons || []).map(a => ({
+        label: String(a.label || ''),
+        value: String(a.value || ''),
+      })),
+    }));
+    itemsString = JSON.stringify(safeItems);
+  } catch(e) {
+    console.log("Items parse error:", e.message);
+  }
+
+  const messages = deviceTokens.map(token => ({
+    to: token,
+    sound: null,
+    title: `Order #${order.order_id} updated`,
+    body: `Status: ${order.status}`,
+    data: {
+      order_id: String(order.order_id || ''),
+      customer_name: String(order.customer_name || ''),
+      total: String(order.total || ''),
+      currency: String(order.currency || ''),
+      status: String(order.status || ''),
+      items: itemsString,
+      payment_method: String(order.payment_method || ''),
+      note: String(order.note || ''),
+      shipping_method: String(order.shipping && order.shipping.method ? order.shipping.method : ''),
+      shipping_address: String(order.shipping && order.shipping.address ? order.shipping.address : ''),
+      event_type: 'status_update',
+    },
+  }));
+
+  await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify(messages),
+  });
+
+  res.json({ success: true });
 });
 
 app.get("/last-order", async (req, res) => {
