@@ -40,6 +40,9 @@ app.post("/new-order", async (req, res) => {
   console.log("New order received:", order.order_id);
   console.log("Items:", JSON.stringify(order.items));
 
+  // Save last order for debugging
+  await redisCommand("SET", "last_order", JSON.stringify(order));
+
   const deviceTokens = await getTokens();
   console.log("Device tokens:", deviceTokens.length);
 
@@ -47,7 +50,6 @@ app.post("/new-order", async (req, res) => {
     return res.json({ success: false, message: "No device tokens registered" });
   }
 
-  // Build a safe items string
   let itemsString = '[]';
   try {
     const safeItems = (order.items || []).map(item => ({
@@ -93,6 +95,11 @@ app.post("/new-order", async (req, res) => {
   const result = await response.json();
   console.log("Push result:", JSON.stringify(result));
   res.json({ success: true, result });
+});
+
+app.get("/last-order", async (req, res) => {
+  const data = await redisCommand("GET", "last_order");
+  res.json(data.result ? JSON.parse(data.result) : {});
 });
 
 app.get("/", async (req, res) => {
