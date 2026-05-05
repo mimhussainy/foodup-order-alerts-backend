@@ -161,6 +161,16 @@ app.get("/last-order", async (req, res) => {
   res.json(data.result ? JSON.parse(data.result) : {});
 });
 
+app.post("/verify-pin", (req, res) => {
+  const { pin } = req.body;
+  const correctPin = process.env.OWNER_PIN || '1234';
+  if (pin === correctPin) {
+    res.json({ success: true });
+  } else {
+    res.json({ success: false });
+  }
+});
+
 app.get("/", async (req, res) => {
   const tokens = await getTokens();
   res.json({ status: "FoodUp Order Alerts backend is running!", tokens: tokens.length });
