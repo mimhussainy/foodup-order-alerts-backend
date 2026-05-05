@@ -88,10 +88,7 @@ app.post("/new-order", async (req, res) => {
 
   const response = await fetch("https://exp.host/--/api/v2/push/send", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-    },
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
     body: JSON.stringify(messages),
   });
 
@@ -165,6 +162,77 @@ app.post("/verify-pin", (req, res) => {
     res.json({ success: false });
   }
 });
+
+// -------------------------------------------------------
+// DELIVERY ACCOUNTS
+// -------------------------------------------------------
+
+app.post("/add-delivery-account", async (req, res) => {
+  const { username, password, owner_pin } = req.body;
+  const correctPin = process.env.OWNER_PIN || '1234';
+  if (owner_pin !== correctPin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  if (!username || !password) {
+    return res.json({ success: false, message: "Username and password required" });
+  }
+  // Check if username already exists
+  const existing = await redisCommand("GET", `delivery_account:${username.toLowerCase()}`);
+  if (existing.result) {
+    return res.json({ success: false, message: "Username already exists" });
+  }
+  await redisCommand("SET", `delivery_account:${username.toLowerCase()}`, JSON.stringify({
+    username,
+    password,
+    created_at: new Date().toISOString(),
+  }));
+  await redisCommand("SADD", "delivery_accounts", username.toLowerCase());
+  res.json({ success: true });
+});
+
+app.post("/verify-delivery-account", async (req, res) => {
+  const { username, password } = req.body;
+  const data = await redisCommand("GET", `delivery_account:${username.toLowerCase()}`);
+  if (!data.result) {
+    return res.json({ success: false, message: "Account not found" });
+  }
+  const account = JSON.parse(data.result);
+  if (account.password === password) {
+    res.json({ success: true, username: account.username });
+  } else {
+    res.json({ success: false, message: "Incorrect password" });
+  }
+});
+
+app.get("/delivery-accounts", async (req, res) => {
+  const { owner_pin } = req.query;
+  const correctPin = process.env.OWNER_PIN || '1234';
+  if (owner_pin !== correctPin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  const result = await redisCommand("SMEMBERS", "delivery_accounts");
+  const usernames = result.result || [];
+  const accounts = await Promise.all(usernames.map(async (u) => {
+    const data = await redisCommand("GET", `delivery_account:${u}`);
+    return data.result ? JSON.parse(data.result) : null;
+  }));
+  res.json({ success: true, accounts: accounts.filter(Boolean) });
+});
+
+app.delete("/delete-delivery-account", async (req, res) => {
+  const { username, owner_pin } = req.body;
+  const correctPin = process.env.OWNER_PIN || '1234';
+  if (owner_pin !== correctPin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  await redisCommand("DEL", `delivery_account:${username.toLowerCase()}`);
+  await redisCommand("SREM", "delivery_accounts", username.toLowerCase());
+  res.json({ success: true });
+});
+
+// -------------------------------------------------------
+// DELIVERY TRACKING
+// -------------------------------------------------------
 
 app.post("/mark-delivered", async (req, res) => {
   const { order_id, delivery_name } = req.body;
