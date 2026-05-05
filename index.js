@@ -38,6 +38,7 @@ app.post("/register-token", async (req, res) => {
 app.post("/new-order", async (req, res) => {
   const order = req.body;
   console.log("New order received:", order.order_id);
+  console.log("Order data:", JSON.stringify(order).substring(0, 500));
   
   const deviceTokens = await getTokens();
   console.log("Device tokens:", deviceTokens.length);
