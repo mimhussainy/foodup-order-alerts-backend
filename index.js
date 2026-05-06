@@ -310,6 +310,22 @@ app.post("/release-claim", async (req, res) => {
   res.json({ success: true });
 });
 
+app.post("/reset-delivery-password", async (req, res) => {
+  const { username, new_password, owner_pin } = req.body;
+  const correctPin = process.env.OWNER_PIN || '1234';
+  if (owner_pin !== correctPin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  const data = await redisCommand("GET", `delivery_account:${username.toLowerCase()}`);
+  if (!data.result) {
+    return res.json({ success: false, message: "Account not found" });
+  }
+  const account = JSON.parse(data.result);
+  account.password = new_password;
+  await redisCommand("SET", `delivery_account:${username.toLowerCase()}`, JSON.stringify(account));
+  res.json({ success: true });
+});
+
 app.get("/", async (req, res) => {
   const tokens = await getTokens();
   res.json({ status: "FoodUp Order Alerts backend is running!", tokens: tokens.length });
