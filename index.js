@@ -326,6 +326,28 @@ app.post("/reset-delivery-password", async (req, res) => {
   res.json({ success: true });
 });
 
+app.post("/restaurant-profile", async (req, res) => {
+  const { owner_pin, name, phone, address, hours, website } = req.body;
+  const correctPin = process.env.OWNER_PIN || '1234';
+  if (owner_pin !== correctPin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  await redisCommand("SET", "restaurant_profile", JSON.stringify({
+    name, phone, address, hours, website,
+    updated_at: new Date().toISOString(),
+  }));
+  res.json({ success: true });
+});
+
+app.get("/restaurant-profile", async (req, res) => {
+  const data = await redisCommand("GET", "restaurant_profile");
+  if (data.result) {
+    res.json({ success: true, profile: JSON.parse(data.result) });
+  } else {
+    res.json({ success: false });
+  }
+});
+
 app.get("/", async (req, res) => {
   const tokens = await getTokens();
   res.json({ status: "FoodUp Order Alerts backend is running!", tokens: tokens.length });
