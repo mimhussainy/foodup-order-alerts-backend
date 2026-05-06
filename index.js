@@ -274,6 +274,42 @@ app.get("/last-order", async (req, res) => {
   res.json(data.result ? JSON.parse(data.result) : {});
 });
 
+// Claim an order
+app.post("/claim-order", async (req, res) => {
+  const { order_id, delivery_name } = req.body;
+  
+  // Check if already claimed
+  const existing = await redisCommand("GET", `claimed:${order_id}`);
+  if (existing.result) {
+    const claim = JSON.parse(existing.result);
+    return res.json({ success: false, message: `Already being delivered by ${claim.delivery_name}` });
+  }
+
+  await redisCommand("SET", `claimed:${order_id}`, JSON.stringify({
+    order_id,
+    delivery_name,
+    claimed_at: new Date().toISOString(),
+  }));
+  res.json({ success: true });
+});
+
+// Check if order is claimed
+app.get("/check-claimed/:id", async (req, res) => {
+  const data = await redisCommand("GET", `claimed:${req.params.id}`);
+  if (data.result) {
+    res.json({ success: true, claimed: true, info: JSON.parse(data.result) });
+  } else {
+    res.json({ success: true, claimed: false });
+  }
+});
+
+// Release claim when delivered
+app.post("/release-claim", async (req, res) => {
+  const { order_id } = req.body;
+  await redisCommand("DEL", `claimed:${order_id}`);
+  res.json({ success: true });
+});
+
 app.get("/", async (req, res) => {
   const tokens = await getTokens();
   res.json({ status: "FoodUp Order Alerts backend is running!", tokens: tokens.length });
