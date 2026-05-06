@@ -26,6 +26,13 @@ async function saveToken(token) {
   await redisCommand("SADD", "device_tokens", token);
 }
 
+app.post("/unregister-token", async (req, res) => {
+  const { token } = req.body;
+  await redisCommand("SREM", "device_tokens", token);
+  console.log("Unregistered token:", token);
+  res.json({ success: true });
+});
+
 app.post("/register-token", async (req, res) => {
   const { token } = req.body;
   console.log("Registering token:", token);
