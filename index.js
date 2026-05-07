@@ -446,7 +446,7 @@ app.get("/claims/:code", async (req, res) => {
         const data = await redisCommand("GET", key);
         if (data.result) {
           const claim = JSON.parse(data.result);
-          claims[String(claim.order_id)] = claim.delivery_name;
+          claims[String(claim.order_id)] = { name: claim.delivery_name, status: 'delivering' };
         }
       }));
     }
@@ -458,7 +458,7 @@ app.get("/claims/:code", async (req, res) => {
       const deliveredData = await redisCommand("GET", k(code, `delivered:${order.order_id}`));
       if (deliveredData.result) {
         const delivered = JSON.parse(deliveredData.result);
-        claims[String(delivered.order_id)] = delivered.delivery_name;
+        claims[String(delivered.order_id)] = { name: delivered.delivery_name, status: 'delivered' };
       }
     }));
 
