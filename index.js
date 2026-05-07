@@ -368,6 +368,7 @@ app.post("/claim-order", async (req, res) => {
       return res.json({ success: false, message: `Already being delivered by ${claim.delivery_name}` });
     }
   }
+  console.log("Claiming order:", order_id, "delivery_status:", delivery_status);
   await redisCommand("SET", k(code, `claimed:${order_id}`), JSON.stringify({
     order_id, delivery_name, claimed_at: new Date().toISOString(), delivery_status: delivery_status || 'in_bag',
   }));
