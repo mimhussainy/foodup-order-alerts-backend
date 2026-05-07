@@ -17,9 +17,6 @@ async function redisCommand(...args) {
   return response.json();
 }
 
-// -------------------------------------------------------
-// HELPER: prefix all keys with restaurant code
-// -------------------------------------------------------
 const k = (code, key) => `${code}:${key}`;
 
 async function getTokens(code) {
@@ -45,14 +42,10 @@ app.post("/register-restaurant", async (req, res) => {
     return res.json({ success: false, message: "Restaurant code and PIN required" });
   }
   const code = restaurant_code.toLowerCase().trim();
-
-  // Check if already exists
   const existing = await redisCommand("GET", k(code, "pin"));
   if (existing.result) {
     return res.json({ success: true, exists: true, message: "Restaurant already registered" });
   }
-
-  // Register new restaurant
   await redisCommand("SET", k(code, "pin"), pin);
   await redisCommand("SADD", "restaurants", code);
   console.log("New restaurant registered:", code);
@@ -102,6 +95,8 @@ app.post("/new-order", async (req, res) => {
 
   console.log("New order received for:", code, order.order_id);
   await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
+  await redisCommand("LPUSH", k(code, "orders"), JSON.stringify(order));
+  await redisCommand("LTRIM", k(code, "orders"), 0, 99);
 
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) {
@@ -395,6 +390,21 @@ app.get("/order/:code/:id", async (req, res) => {
     res.json({ success: false, message: "Order not found" });
   } catch(e) {
     res.json({ success: false, message: "Error fetching order" });
+  }
+});
+
+// -------------------------------------------------------
+// ORDERS LIST
+// -------------------------------------------------------
+
+app.get("/orders/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  try {
+    const result = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+    const orders = (result.result || []).map(o => JSON.parse(o));
+    res.json({ success: true, orders });
+  } catch(e) {
+    res.json({ success: false, orders: [] });
   }
 });
 
