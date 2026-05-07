@@ -451,23 +451,24 @@ app.get("/claims/:code", async (req, res) => {
       }));
     }
 
-    // Get delivered orders
-    const deliveredKeys = await redisCommand("KEYS", k(code, "delivered:*"));
-    if (deliveredKeys.result && deliveredKeys.result.length > 0) {
-      await Promise.all(deliveredKeys.result.map(async (key) => {
-        const data = await redisCommand("GET", key);
-        if (data.result) {
-          const delivered = JSON.parse(data.result);
-          claims[String(delivered.order_id)] = delivered.delivery_name;
-        }
-      }));
-    }
+    // Get orders list and check delivered status for each
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+    const orders = (listData.result || []).map((o) => JSON.parse(o));
+    await Promise.all(orders.map(async (order) => {
+      const deliveredData = await redisCommand("GET", k(code, `delivered:${order.order_id}`));
+      if (deliveredData.result) {
+        const delivered = JSON.parse(deliveredData.result);
+        claims[String(delivered.order_id)] = delivered.delivery_name;
+      }
+    }));
 
     res.json({ success: true, claims });
   } catch(e) {
     res.json({ success: true, claims: {} });
   }
 });
+
+
 // -------------------------------------------------------
 // RESTAURANT PROFILE
 // -------------------------------------------------------
