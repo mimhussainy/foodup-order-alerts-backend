@@ -159,6 +159,19 @@ app.post("/status-update", async (req, res) => {
   if (!code) return res.json({ success: false });
 
   console.log("Status update for:", code, order.order_id, order.status);
+
+  // Update order status in orders list
+  try {
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+    const orders = (listData.result || []).map((o) => JSON.parse(o));
+    const index = orders.findIndex((o) => String(o.order_id) === String(order.order_id));
+    if (index !== -1) {
+      orders[index].status = order.status;
+      await redisCommand("DEL", k(code, "orders"));
+      await Promise.all(orders.reverse().map((o) => redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o))));
+    }
+  } catch(e) {}
+
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) return res.json({ success: false });
 
@@ -380,7 +393,6 @@ app.get("/order/:code/:id", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const orderId = req.params.id;
   try {
-    // Check last_order first
     const data = await redisCommand("GET", k(code, "last_order"));
     if (data.result) {
       const order = JSON.parse(data.result);
@@ -388,7 +400,6 @@ app.get("/order/:code/:id", async (req, res) => {
         return res.json({ success: true, order });
       }
     }
-    // Check orders list
     const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
     const orders = (listData.result || []).map((o) => JSON.parse(o));
     const found = orders.find((o) => String(o.order_id) === String(orderId));
