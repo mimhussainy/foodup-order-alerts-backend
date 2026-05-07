@@ -363,7 +363,10 @@ app.post("/claim-order", async (req, res) => {
   const existing = await redisCommand("GET", k(code, `claimed:${order_id}`));
   if (existing.result) {
     const claim = JSON.parse(existing.result);
-    return res.json({ success: false, message: `Already being delivered by ${claim.delivery_name}` });
+    // Only reject if claimed by a DIFFERENT courier
+    if (claim.delivery_name !== delivery_name) {
+      return res.json({ success: false, message: `Already being delivered by ${claim.delivery_name}` });
+    }
   }
   await redisCommand("SET", k(code, `claimed:${order_id}`), JSON.stringify({
     order_id, delivery_name, claimed_at: new Date().toISOString(),
