@@ -437,10 +437,12 @@ app.get("/orders/:code", async (req, res) => {
 app.get("/claims/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   try {
-    const keys = await redisCommand("KEYS", k(code, "claimed:*"));
     const claims = {};
-    if (keys.result && keys.result.length > 0) {
-      await Promise.all(keys.result.map(async (key) => {
+
+    // Get active claims
+    const claimKeys = await redisCommand("KEYS", k(code, "claimed:*"));
+    if (claimKeys.result && claimKeys.result.length > 0) {
+      await Promise.all(claimKeys.result.map(async (key) => {
         const data = await redisCommand("GET", key);
         if (data.result) {
           const claim = JSON.parse(data.result);
@@ -448,12 +450,24 @@ app.get("/claims/:code", async (req, res) => {
         }
       }));
     }
+
+    // Get delivered orders
+    const deliveredKeys = await redisCommand("KEYS", k(code, "delivered:*"));
+    if (deliveredKeys.result && deliveredKeys.result.length > 0) {
+      await Promise.all(deliveredKeys.result.map(async (key) => {
+        const data = await redisCommand("GET", key);
+        if (data.result) {
+          const delivered = JSON.parse(data.result);
+          claims[String(delivered.order_id)] = delivered.delivery_name;
+        }
+      }));
+    }
+
     res.json({ success: true, claims });
   } catch(e) {
     res.json({ success: true, claims: {} });
   }
 });
-
 // -------------------------------------------------------
 // RESTAURANT PROFILE
 // -------------------------------------------------------
