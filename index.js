@@ -17,40 +17,93 @@ async function redisCommand(...args) {
   return response.json();
 }
 
-async function getTokens() {
-  const result = await redisCommand("SMEMBERS", "device_tokens");
+// -------------------------------------------------------
+// HELPER: prefix all keys with restaurant code
+// -------------------------------------------------------
+const k = (code, key) => `${code}:${key}`;
+
+async function getTokens(code) {
+  const result = await redisCommand("SMEMBERS", k(code, "device_tokens"));
   return result.result || [];
 }
 
-async function saveToken(token) {
-  await redisCommand("SADD", "device_tokens", token);
+async function saveToken(code, token) {
+  await redisCommand("SADD", k(code, "device_tokens"), token);
 }
 
-app.post("/unregister-token", async (req, res) => {
-  const { token } = req.body;
-  await redisCommand("SREM", "device_tokens", token);
-  console.log("Unregistered token:", token);
+async function removeToken(code, token) {
+  await redisCommand("SREM", k(code, "device_tokens"), token);
+}
+
+// -------------------------------------------------------
+// RESTAURANT REGISTRATION
+// -------------------------------------------------------
+
+app.post("/register-restaurant", async (req, res) => {
+  const { restaurant_code, pin } = req.body;
+  if (!restaurant_code || !pin) {
+    return res.json({ success: false, message: "Restaurant code and PIN required" });
+  }
+  const code = restaurant_code.toLowerCase().trim();
+
+  // Check if already exists
+  const existing = await redisCommand("GET", k(code, "pin"));
+  if (existing.result) {
+    return res.json({ success: true, exists: true, message: "Restaurant already registered" });
+  }
+
+  // Register new restaurant
+  await redisCommand("SET", k(code, "pin"), pin);
+  await redisCommand("SADD", "restaurants", code);
+  console.log("New restaurant registered:", code);
+  res.json({ success: true, exists: false, message: "Restaurant registered successfully" });
+});
+
+app.post("/verify-restaurant", async (req, res) => {
+  const { restaurant_code } = req.body;
+  if (!restaurant_code) {
+    return res.json({ success: false, message: "Restaurant code required" });
+  }
+  const code = restaurant_code.toLowerCase().trim();
+  const existing = await redisCommand("GET", k(code, "pin"));
+  if (existing.result) {
+    res.json({ success: true, message: "Restaurant found" });
+  } else {
+    res.json({ success: false, message: "Restaurant not found" });
+  }
+});
+
+// -------------------------------------------------------
+// PUSH NOTIFICATIONS
+// -------------------------------------------------------
+
+app.post("/register-token", async (req, res) => {
+  const { token, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  console.log("Registering token for:", code);
+  await saveToken(code, token);
   res.json({ success: true });
 });
 
-app.post("/register-token", async (req, res) => {
-  const { token } = req.body;
-  console.log("Registering token:", token);
-  await saveToken(token);
-  const tokens = await getTokens();
-  console.log("Total tokens:", tokens.length);
+app.post("/unregister-token", async (req, res) => {
+  const { token, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  await removeToken(code, token);
+  console.log("Unregistered token for:", code);
   res.json({ success: true });
 });
 
 app.post("/new-order", async (req, res) => {
   const order = req.body;
-  console.log("New order received:", order.order_id);
+  const code = order.restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
-  await redisCommand("SET", "last_order", JSON.stringify(order));
+  console.log("New order received for:", code, order.order_id);
+  await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
 
-  const deviceTokens = await getTokens();
-  console.log("Device tokens:", deviceTokens.length);
-
+  const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) {
     return res.json({ success: false, message: "No device tokens registered" });
   }
@@ -77,6 +130,7 @@ app.post("/new-order", async (req, res) => {
     title: `🛒 New Order #${order.order_id}`,
     body: `${order.customer_name} - ${order.currency} ${order.total}`,
     data: {
+      restaurant_code: code,
       order_id: String(order.order_id || ''),
       customer_name: String(order.customer_name || ''),
       customer_email: String(order.customer_email || ''),
@@ -106,12 +160,12 @@ app.post("/new-order", async (req, res) => {
 
 app.post("/status-update", async (req, res) => {
   const order = req.body;
-  console.log("Status update:", order.order_id, order.status);
+  const code = order.restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
 
-  const deviceTokens = await getTokens();
-  if (deviceTokens.length === 0) {
-    return res.json({ success: false });
-  }
+  console.log("Status update for:", code, order.order_id, order.status);
+  const deviceTokens = await getTokens(code);
+  if (deviceTokens.length === 0) return res.json({ success: false });
 
   let itemsString = '[]';
   try {
@@ -125,9 +179,7 @@ app.post("/status-update", async (req, res) => {
       })),
     }));
     itemsString = JSON.stringify(safeItems);
-  } catch(e) {
-    console.log("Items parse error:", e.message);
-  }
+  } catch(e) {}
 
   const messages = deviceTokens.map(token => ({
     to: token,
@@ -135,6 +187,7 @@ app.post("/status-update", async (req, res) => {
     title: `Order #${order.order_id} updated`,
     body: `Status: ${order.status}`,
     data: {
+      restaurant_code: code,
       order_id: String(order.order_id || ''),
       customer_name: String(order.customer_name || ''),
       customer_email: String(order.customer_email || ''),
@@ -160,10 +213,16 @@ app.post("/status-update", async (req, res) => {
   res.json({ success: true });
 });
 
-app.post("/verify-pin", (req, res) => {
-  const { pin } = req.body;
-  const correctPin = process.env.OWNER_PIN || '1234';
-  if (pin === correctPin) {
+// -------------------------------------------------------
+// PIN
+// -------------------------------------------------------
+
+app.post("/verify-pin", async (req, res) => {
+  const { pin, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  const stored = await redisCommand("GET", k(code, "pin"));
+  if (stored.result && stored.result === pin) {
     res.json({ success: true });
   } else {
     res.json({ success: false });
@@ -175,34 +234,36 @@ app.post("/verify-pin", (req, res) => {
 // -------------------------------------------------------
 
 app.post("/add-delivery-account", async (req, res) => {
-  const { username, password, owner_pin } = req.body;
-  const correctPin = process.env.OWNER_PIN || '1234';
-  if (owner_pin !== correctPin) {
+  const { username, password, restaurant_code, owner_pin } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
     return res.json({ success: false, message: "Unauthorized" });
   }
   if (!username || !password) {
     return res.json({ success: false, message: "Username and password required" });
   }
-  // Check if username already exists
-  const existing = await redisCommand("GET", `delivery_account:${username.toLowerCase()}`);
+  const existing = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
   if (existing.result) {
     return res.json({ success: false, message: "Username already exists" });
   }
-  await redisCommand("SET", `delivery_account:${username.toLowerCase()}`, JSON.stringify({
-    username,
-    password,
-    created_at: new Date().toISOString(),
+  await redisCommand("SET", k(code, `delivery_account:${username.toLowerCase()}`), JSON.stringify({
+    username, password, created_at: new Date().toISOString(),
   }));
-  await redisCommand("SADD", "delivery_accounts", username.toLowerCase());
+  await redisCommand("SADD", k(code, "delivery_accounts"), username.toLowerCase());
   res.json({ success: true });
 });
 
 app.post("/verify-delivery-account", async (req, res) => {
-  const { username, password } = req.body;
-  const data = await redisCommand("GET", `delivery_account:${username.toLowerCase()}`);
-  if (!data.result) {
-    return res.json({ success: false, message: "Account not found" });
-  }
+  const { username, password, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  const data = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
+  if (!data.result) return res.json({ success: false, message: "Account not found" });
+
   const account = JSON.parse(data.result);
   if (account.password === password) {
     res.json({ success: true, username: account.username });
@@ -212,28 +273,52 @@ app.post("/verify-delivery-account", async (req, res) => {
 });
 
 app.get("/delivery-accounts", async (req, res) => {
-  const { owner_pin } = req.query;
-  const correctPin = process.env.OWNER_PIN || '1234';
-  if (owner_pin !== correctPin) {
+  const { owner_pin, restaurant_code } = req.query;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
     return res.json({ success: false, message: "Unauthorized" });
   }
-  const result = await redisCommand("SMEMBERS", "delivery_accounts");
+  const result = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
   const usernames = result.result || [];
   const accounts = await Promise.all(usernames.map(async (u) => {
-    const data = await redisCommand("GET", `delivery_account:${u}`);
+    const data = await redisCommand("GET", k(code, `delivery_account:${u}`));
     return data.result ? JSON.parse(data.result) : null;
   }));
   res.json({ success: true, accounts: accounts.filter(Boolean) });
 });
 
 app.delete("/delete-delivery-account", async (req, res) => {
-  const { username, owner_pin } = req.body;
-  const correctPin = process.env.OWNER_PIN || '1234';
-  if (owner_pin !== correctPin) {
+  const { username, owner_pin, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
     return res.json({ success: false, message: "Unauthorized" });
   }
-  await redisCommand("DEL", `delivery_account:${username.toLowerCase()}`);
-  await redisCommand("SREM", "delivery_accounts", username.toLowerCase());
+  await redisCommand("DEL", k(code, `delivery_account:${username.toLowerCase()}`));
+  await redisCommand("SREM", k(code, "delivery_accounts"), username.toLowerCase());
+  res.json({ success: true });
+});
+
+app.post("/reset-delivery-password", async (req, res) => {
+  const { username, new_password, owner_pin, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  const data = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
+  if (!data.result) return res.json({ success: false, message: "Account not found" });
+
+  const account = JSON.parse(data.result);
+  account.password = new_password;
+  await redisCommand("SET", k(code, `delivery_account:${username.toLowerCase()}`), JSON.stringify(account));
   res.json({ success: true });
 });
 
@@ -242,17 +327,19 @@ app.delete("/delete-delivery-account", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/mark-delivered", async (req, res) => {
-  const { order_id, delivery_name } = req.body;
-  await redisCommand("SET", `delivered:${order_id}`, JSON.stringify({
-    order_id,
-    delivery_name,
-    delivered_at: new Date().toISOString(),
+  const { order_id, delivery_name, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+
+  await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
+    order_id, delivery_name, delivered_at: new Date().toISOString(),
   }));
   res.json({ success: true });
 });
 
-app.get("/check-delivered/:id", async (req, res) => {
-  const data = await redisCommand("GET", `delivered:${req.params.id}`);
+app.get("/check-delivered/:code/:id", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("GET", k(code, `delivered:${req.params.id}`));
   if (data.result) {
     res.json({ success: true, delivered: true, info: JSON.parse(data.result) });
   } else {
@@ -260,10 +347,45 @@ app.get("/check-delivered/:id", async (req, res) => {
   }
 });
 
-app.get("/order/:id", async (req, res) => {
+app.post("/claim-order", async (req, res) => {
+  const { order_id, delivery_name, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+
+  const existing = await redisCommand("GET", k(code, `claimed:${order_id}`));
+  if (existing.result) {
+    const claim = JSON.parse(existing.result);
+    return res.json({ success: false, message: `Already being delivered by ${claim.delivery_name}` });
+  }
+  await redisCommand("SET", k(code, `claimed:${order_id}`), JSON.stringify({
+    order_id, delivery_name, claimed_at: new Date().toISOString(),
+  }));
+  res.json({ success: true });
+});
+
+app.get("/check-claimed/:code/:id", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("GET", k(code, `claimed:${req.params.id}`));
+  if (data.result) {
+    res.json({ success: true, claimed: true, info: JSON.parse(data.result) });
+  } else {
+    res.json({ success: true, claimed: false });
+  }
+});
+
+app.post("/release-claim", async (req, res) => {
+  const { order_id, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  await redisCommand("DEL", k(code, `claimed:${order_id}`));
+  res.json({ success: true });
+});
+
+app.get("/order/:code/:id", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
   const orderId = req.params.id;
   try {
-    const data = await redisCommand("GET", "last_order");
+    const data = await redisCommand("GET", k(code, "last_order"));
     if (data.result) {
       const order = JSON.parse(data.result);
       if (String(order.order_id) === String(orderId)) {
@@ -276,78 +398,28 @@ app.get("/order/:id", async (req, res) => {
   }
 });
 
-app.get("/last-order", async (req, res) => {
-  const data = await redisCommand("GET", "last_order");
-  res.json(data.result ? JSON.parse(data.result) : {});
-});
-
-// Claim an order
-app.post("/claim-order", async (req, res) => {
-  const { order_id, delivery_name } = req.body;
-  
-  // Check if already claimed
-  const existing = await redisCommand("GET", `claimed:${order_id}`);
-  if (existing.result) {
-    const claim = JSON.parse(existing.result);
-    return res.json({ success: false, message: `Already being delivered by ${claim.delivery_name}` });
-  }
-
-  await redisCommand("SET", `claimed:${order_id}`, JSON.stringify({
-    order_id,
-    delivery_name,
-    claimed_at: new Date().toISOString(),
-  }));
-  res.json({ success: true });
-});
-
-// Check if order is claimed
-app.get("/check-claimed/:id", async (req, res) => {
-  const data = await redisCommand("GET", `claimed:${req.params.id}`);
-  if (data.result) {
-    res.json({ success: true, claimed: true, info: JSON.parse(data.result) });
-  } else {
-    res.json({ success: true, claimed: false });
-  }
-});
-
-// Release claim when delivered
-app.post("/release-claim", async (req, res) => {
-  const { order_id } = req.body;
-  await redisCommand("DEL", `claimed:${order_id}`);
-  res.json({ success: true });
-});
-
-app.post("/reset-delivery-password", async (req, res) => {
-  const { username, new_password, owner_pin } = req.body;
-  const correctPin = process.env.OWNER_PIN || '1234';
-  if (owner_pin !== correctPin) {
-    return res.json({ success: false, message: "Unauthorized" });
-  }
-  const data = await redisCommand("GET", `delivery_account:${username.toLowerCase()}`);
-  if (!data.result) {
-    return res.json({ success: false, message: "Account not found" });
-  }
-  const account = JSON.parse(data.result);
-  account.password = new_password;
-  await redisCommand("SET", `delivery_account:${username.toLowerCase()}`, JSON.stringify(account));
-  res.json({ success: true });
-});
+// -------------------------------------------------------
+// RESTAURANT PROFILE
+// -------------------------------------------------------
 
 app.post("/restaurant-profile", async (req, res) => {
-  const { owner_pin, name, phone, address, hours, website } = req.body;
-  const correctPin = process.env.OWNER_PIN || '1234';
-  if (owner_pin !== correctPin) {
+  const { owner_pin, restaurant_code, name, phone, address, website } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
     return res.json({ success: false, message: "Unauthorized" });
   }
-  await redisCommand("SET", "restaurant_profile", JSON.stringify({
-    name, phone, address, hours, website,
-    updated_at: new Date().toISOString(),
+  await redisCommand("SET", k(code, "restaurant_profile"), JSON.stringify({
+    name, phone, address, website, updated_at: new Date().toISOString(),
   }));
   res.json({ success: true });
 });
 
-app.get("/restaurant-profile", async (req, res) => {
-  const data = await redisCommand("GET", "restaurant_profile");
+app.get("/restaurant-profile/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("GET", k(code, "restaurant_profile"));
   if (data.result) {
     res.json({ success: true, profile: JSON.parse(data.result) });
   } else {
@@ -355,9 +427,16 @@ app.get("/restaurant-profile", async (req, res) => {
   }
 });
 
+// -------------------------------------------------------
+// HEALTH CHECK
+// -------------------------------------------------------
+
 app.get("/", async (req, res) => {
-  const tokens = await getTokens();
-  res.json({ status: "FoodUp Order Alerts backend is running!", tokens: tokens.length });
+  const restaurants = await redisCommand("SMEMBERS", "restaurants");
+  res.json({
+    status: "FoodUp Order Alerts backend is running!",
+    restaurants: restaurants.result || [],
+  });
 });
 
 const PORT = process.env.PORT || 3000;
