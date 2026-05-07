@@ -356,7 +356,7 @@ app.get("/check-delivered/:code/:id", async (req, res) => {
 });
 
 app.post("/claim-order", async (req, res) => {
-  const { order_id, delivery_name, restaurant_code } = req.body;
+  const { order_id, delivery_name, restaurant_code, delivery_status } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
 
@@ -369,7 +369,7 @@ app.post("/claim-order", async (req, res) => {
     }
   }
   await redisCommand("SET", k(code, `claimed:${order_id}`), JSON.stringify({
-    order_id, delivery_name, claimed_at: new Date().toISOString(),
+    order_id, delivery_name, claimed_at: new Date().toISOString(), delivery_status: delivery_status || 'in_bag',
   }));
   res.json({ success: true });
 });
@@ -446,7 +446,7 @@ app.get("/claims/:code", async (req, res) => {
         const data = await redisCommand("GET", key);
         if (data.result) {
           const claim = JSON.parse(data.result);
-          claims[String(claim.order_id)] = { name: claim.delivery_name, status: 'delivering' };
+          claims[String(claim.order_id)] = { name: claim.delivery_name, status: claim.delivery_status || 'in_bag' };
         }
       }));
     }
