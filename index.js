@@ -424,9 +424,9 @@ app.get("/claims/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   try {
     const keys = await redisCommand("KEYS", k(code, "claimed:*"));
-    const claims: any = {};
+    const claims = {};
     if (keys.result && keys.result.length > 0) {
-      await Promise.all(keys.result.map(async (key: string) => {
+      await Promise.all(keys.result.map(async (key) => {
         const data = await redisCommand("GET", key);
         if (data.result) {
           const claim = JSON.parse(data.result);
