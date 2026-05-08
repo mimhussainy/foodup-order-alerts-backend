@@ -535,6 +535,45 @@ app.get("/accepted-time/:code/:id", async (req, res) => {
     res.json({ success: false });
   }
 });
+
+// -------------------------------------------------------
+// COURIER STATS
+// -------------------------------------------------------
+
+app.get("/courier-stats/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  try {
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+    const orders = (listData.result || []).map((o) => JSON.parse(o));
+    
+    const stats: { [key: string]: { today: number; week: number; total: number } } = {};
+    
+    const now = new Date();
+    const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
+    const startOfWeek = new Date(now); startOfWeek.setDate(now.getDate() - 7); startOfWeek.setHours(0, 0, 0, 0);
+    
+    await Promise.all(orders.map(async (order) => {
+      const deliveredData = await redisCommand("GET", k(code, `delivered:${order.order_id}`));
+      if (deliveredData.result) {
+        const delivered = JSON.parse(deliveredData.result);
+        const name = delivered.delivery_name;
+        if (!name) return;
+        
+        if (!stats[name]) stats[name] = { today: 0, week: 0, total: 0 };
+        
+        const deliveredAt = new Date(delivered.delivered_at);
+        stats[name].total++;
+        if (deliveredAt >= startOfWeek) stats[name].week++;
+        if (deliveredAt >= startOfDay) stats[name].today++;
+      }
+    }));
+    
+    res.json({ success: true, stats });
+  } catch(e) {
+    res.json({ success: false, stats: {} });
+  }
+});
+
 // -------------------------------------------------------
 // HEALTH CHECK
 // -------------------------------------------------------
