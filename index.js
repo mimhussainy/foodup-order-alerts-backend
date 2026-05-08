@@ -524,12 +524,16 @@ app.get("/accepted-time/:code/:id", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const data = await redisCommand("GET", k(code, `accepted_time:${req.params.id}`));
   if (data.result) {
-    res.json({ success: true, accepted_time: data.result });
+    try {
+      const parsed = JSON.parse(data.result);
+      res.json({ success: true, accepted_time: parsed.accepted_time, accepted_at: parsed.accepted_at });
+    } catch(e) {
+      res.json({ success: true, accepted_time: data.result });
+    }
   } else {
     res.json({ success: false });
   }
 });
-
 // -------------------------------------------------------
 // HEALTH CHECK
 // -------------------------------------------------------
