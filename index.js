@@ -159,6 +159,7 @@ app.post("/status-update", async (req, res) => {
   if (!code) return res.json({ success: false });
 
   console.log("Status update for:", code, order.order_id, order.status);
+console.log("Full order data:", JSON.stringify(order));
 
   // Update order status in orders list
   try {
