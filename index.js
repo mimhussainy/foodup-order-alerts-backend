@@ -546,8 +546,7 @@ app.get("/courier-stats/:code", async (req, res) => {
     const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
     const orders = (listData.result || []).map((o) => JSON.parse(o));
     
-    const stats: { [key: string]: { today: number; week: number; total: number } } = {};
-    
+const stats = {};    
     const now = new Date();
     const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
     const startOfWeek = new Date(now); startOfWeek.setDate(now.getDate() - 7); startOfWeek.setHours(0, 0, 0, 0);
