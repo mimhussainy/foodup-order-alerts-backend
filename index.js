@@ -501,6 +501,31 @@ app.get("/restaurant-profile/:code", async (req, res) => {
 });
 
 // -------------------------------------------------------
+// ACCEPTED TIME
+// -------------------------------------------------------
+
+app.post("/accepted-time", async (req, res) => {
+  const { restaurant_code, order_id, accepted_time, status } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+
+  console.log("Accepted time for:", code, order_id, accepted_time, status);
+  await redisCommand("SET", k(code, `accepted_time:${order_id}`), accepted_time);
+  await redisCommand("EXPIRE", k(code, `accepted_time:${order_id}`), 86400); // 24 hours
+  res.json({ success: true });
+});
+
+app.get("/accepted-time/:code/:id", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("GET", k(code, `accepted_time:${req.params.id}`));
+  if (data.result) {
+    res.json({ success: true, accepted_time: data.result });
+  } else {
+    res.json({ success: false });
+  }
+});
+
+// -------------------------------------------------------
 // HEALTH CHECK
 // -------------------------------------------------------
 
