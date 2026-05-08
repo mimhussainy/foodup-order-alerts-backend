@@ -505,13 +505,18 @@ app.get("/restaurant-profile/:code", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/accepted-time", async (req, res) => {
-  const { restaurant_code, order_id, accepted_time, status } = req.body;
+  const { restaurant_code, order_id, accepted_time, status, accepted_at } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
 
   console.log("Accepted time for:", code, order_id, accepted_time, status);
-  await redisCommand("SET", k(code, `accepted_time:${order_id}`), accepted_time);
-  await redisCommand("EXPIRE", k(code, `accepted_time:${order_id}`), 86400); // 24 hours
+  const data = {
+    accepted_time,
+    status,
+    accepted_at: accepted_at || new Date().toISOString(),
+  };
+  await redisCommand("SET", k(code, `accepted_time:${order_id}`), JSON.stringify(data));
+  await redisCommand("EXPIRE", k(code, `accepted_time:${order_id}`), 86400);
   res.json({ success: true });
 });
 
