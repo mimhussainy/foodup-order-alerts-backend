@@ -92,12 +92,13 @@ app.post("/new-order", async (req, res) => {
   const order = req.body;
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
-
   console.log("New order received for:", code, order.order_id);
+  if (!order.date_created) {
+    order.date_created = new Date().toISOString();
+  }
   await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
   await redisCommand("LPUSH", k(code, "orders"), JSON.stringify(order));
   await redisCommand("LTRIM", k(code, "orders"), 0, 99);
-
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) {
     return res.json({ success: false, message: "No device tokens registered" });
