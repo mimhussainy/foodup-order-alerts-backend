@@ -573,6 +573,32 @@ const stats = {};
   }
 });
 
+
+
+
+
+// -------------------------------------------------------
+// CLEAR ORDERS
+// -------------------------------------------------------
+
+app.delete("/clear-orders/:code", async (req, res) => {
+  const { owner_pin } = req.body;
+  const code = req.params.code.toLowerCase().trim();
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  await redisCommand("DEL", k(code, "orders"));
+  await redisCommand("DEL", k(code, "last_order"));
+  res.json({ success: true });
+});
+
+
+
+
+
+
+
 // -------------------------------------------------------
 // HEALTH CHECK
 // -------------------------------------------------------
