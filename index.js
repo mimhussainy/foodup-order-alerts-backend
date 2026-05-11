@@ -606,13 +606,9 @@ app.get("/store-status/:code", async (req, res) => {
 });
 
 app.post("/store-status", async (req, res) => {
-  const { restaurant_code, is_open, owner_pin } = req.body;
+  const { restaurant_code, is_open } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
-    return res.json({ success: false, message: "Unauthorized" });
-  }
   await redisCommand("SET", k(code, "store_status"), is_open ? 'open' : 'closed');
   res.json({ success: true, is_open });
 });
