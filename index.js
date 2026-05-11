@@ -594,7 +594,28 @@ app.delete("/clear-orders/:code", async (req, res) => {
 });
 
 
+// -------------------------------------------------------
+// STORE STATUS
+// -------------------------------------------------------
 
+app.get("/store-status/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("GET", k(code, "store_status"));
+  const isOpen = data.result ? data.result === 'open' : true;
+  res.json({ success: true, is_open: isOpen });
+});
+
+app.post("/store-status", async (req, res) => {
+  const { restaurant_code, is_open, owner_pin } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  await redisCommand("SET", k(code, "store_status"), is_open ? 'open' : 'closed');
+  res.json({ success: true, is_open });
+});
 
 
 
