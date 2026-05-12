@@ -614,6 +614,13 @@ app.post("/store-status", async (req, res) => {
 });
 
 
+app.get("/debug-tokens/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const tokens = await getTokens(code);
+  res.json({ success: true, count: tokens.length, tokens });
+});
+
+
 
 
 // -------------------------------------------------------
