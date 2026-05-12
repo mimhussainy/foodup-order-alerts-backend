@@ -595,6 +595,34 @@ app.delete("/clear-orders/:code", async (req, res) => {
 
 
 // -------------------------------------------------------
+// ACCEPTANCE TIMES SETTINGS
+// -------------------------------------------------------
+
+app.get("/acceptance-times/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("GET", k(code, "acceptance_times"));
+  if (data.result) {
+    res.json({ success: true, times: JSON.parse(data.result) });
+  } else {
+    res.json({ success: true, times: [15, 20, 25, 30, 45, 60] });
+  }
+});
+
+app.post("/acceptance-times", async (req, res) => {
+  const { restaurant_code, owner_pin, times } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  await redisCommand("SET", k(code, "acceptance_times"), JSON.stringify(times));
+  res.json({ success: true });
+});
+
+
+
+// -------------------------------------------------------
 // STORE STATUS
 // -------------------------------------------------------
 
