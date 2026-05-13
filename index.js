@@ -150,8 +150,16 @@ app.post("/new-order", async (req, res) => {
   });
 
   const result = await response.json();
-  console.log("Push result:", JSON.stringify(result));
-  res.json({ success: true, result });
+console.log("Push result:", JSON.stringify(result));
+
+// Remove tokens from old eatime project
+const oldTokens = ['ExponentPushToken[Oyk8uvHt-8fn54wYhHGHWK]', 'ExponentPushToken[4yn6i8O119fnX-bmQ6Cwbc]'];
+for (const token of oldTokens) {
+  await removeToken(code, token);
+  console.log("Removed old token:", token);
+}
+
+res.json({ success: true, result });
 });
 
 app.post("/status-update", async (req, res) => {
