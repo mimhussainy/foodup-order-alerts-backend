@@ -659,6 +659,134 @@ app.get("/debug-tokens/:code", async (req, res) => {
 
 
 
+// -------------------------------------------------------
+// WOOCOMMERCE WEBHOOK
+// -------------------------------------------------------
+
+app.post("/wc-webhook", async (req, res) => {
+  try {
+    const data = req.body;
+    console.log("WC Webhook received:", data.id, "Date:", data.orderable_order_date, "Time:", data.orderable_order_time);
+
+    // Only process new orders
+    if (!data.id) return res.json({ success: false });
+
+    // Find restaurant code from meta_data
+    const metaData = data.meta_data || [];
+    const orderableDateMeta = metaData.find(m => m.key === 'orderable_order_date');
+    const orderableTimeMeta = metaData.find(m => m.key === 'orderable_order_time');
+    const orderableDate = data.orderable_order_date || (orderableDateMeta ? orderableDateMeta.value : '');
+    const orderableTime = data.orderable_order_time || (orderableTimeMeta ? orderableTimeMeta.value : '');
+
+    // Get restaurant code from existing orders by order_id
+    const orderId = data.id;
+    const billing = data.billing || {};
+    const shipping = data.shipping || {};
+    const lineItems = data.line_items || [];
+
+    // Map line items to our format
+    const items = lineItems.map(item => ({
+      name: item.name || '',
+      quantity: item.quantity || 1,
+      total: parseFloat(item.total || 0),
+      addons: (item.meta_data || [])
+        .filter(m => !m.key.startsWith('_'))
+        .map(m => ({ label: m.display_key || m.key, value: m.display_value || m.value })),
+    }));
+
+    // Build shipping address
+    const shippingAddress = [
+      shipping.address_1,
+      shipping.address_2,
+      shipping.city,
+      shipping.postcode,
+    ].filter(Boolean).join(', ');
+
+    // Get shipping method
+    const shippingLines = data.shipping_lines || [];
+    const shippingMethod = shippingLines.length > 0 ? shippingLines[0].method_title : '';
+
+    // Get payment method
+    const paymentMethod = data.payment_method_title || '';
+
+    // Find restaurant code - hardcoded for now, need to match by site
+    // We'll use the billing email domain or a fixed code
+    const code = 'eatime'; // TODO: make dynamic if multiple restaurants
+
+    const order = {
+      restaurant_code: code,
+      order_id: orderId,
+      customer_name: `${billing.first_name || ''} ${billing.last_name || ''}`.trim(),
+      customer_email: billing.email || '',
+      customer_phone: billing.phone || '',
+      total: data.total || '',
+      currency: data.currency || 'CHF',
+      status: data.status || '',
+      event_type: 'new_order',
+      items,
+      payment_method: paymentMethod,
+      note: data.customer_note || '',
+      date_created: data.date_created || new Date().toISOString(),
+      orderable_order_date: orderableDate,
+      orderable_order_time: orderableTime,
+      shipping: {
+        method: shippingMethod,
+        address: shippingAddress,
+      },
+      sound: true,
+    };
+
+    console.log("WC Webhook order:", orderId, "Scheduled:", orderableDate, orderableTime);
+
+    await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
+    await redisCommand("LPUSH", k(code, "orders"), JSON.stringify(order));
+    await redisCommand("LTRIM", k(code, "orders"), 0, 99);
+
+    const deviceTokens = await getTokens(code);
+    if (deviceTokens.length === 0) return res.json({ success: true, message: "No tokens" });
+
+    const itemsString = JSON.stringify(items);
+    const messages = deviceTokens.map(token => ({
+      to: token,
+      sound: "default",
+      title: `🛒 New Order #${orderId}`,
+      body: `${order.customer_name} - ${order.currency} ${order.total}`,
+      data: {
+        restaurant_code: code,
+        order_id: String(orderId),
+        customer_name: order.customer_name,
+        customer_email: order.customer_email,
+        customer_phone: order.customer_phone,
+        total: String(order.total),
+        currency: order.currency,
+        status: order.status,
+        items: itemsString,
+        payment_method: paymentMethod,
+        note: order.note,
+        shipping_method: shippingMethod,
+        shipping_address: shippingAddress,
+        event_type: 'new_order',
+        orderable_order_date: orderableDate,
+        orderable_order_time: orderableTime,
+        date_created: order.date_created,
+      },
+    }));
+
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(messages),
+    });
+
+    res.json({ success: true });
+  } catch(e) {
+    console.log("WC Webhook error:", e.message);
+    res.json({ success: false });
+  }
+});
+
+
+
 
 // -------------------------------------------------------
 // HEALTH CHECK
