@@ -523,6 +523,8 @@ app.post("/accepted-time", async (req, res) => {
   if (!code) return res.json({ success: false });
 
   console.log("Accepted time for:", code, order_id, accepted_time, status);
+  console.log("Accepted time caller IP:", req.headers['x-forwarded-for'] || req.socket.remoteAddress);
+  console.log("Accepted time user-agent:", req.headers['user-agent']);
   const data = {
     accepted_time,
     status,
