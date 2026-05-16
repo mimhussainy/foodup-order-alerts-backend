@@ -666,10 +666,13 @@ app.get("/debug-tokens/:code", async (req, res) => {
 app.post("/wc-webhook", async (req, res) => {
   try {
     const data = req.body;
-    console.log("WC Webhook received:", data.id, "Date:", data.orderable_order_date, "Time:", data.orderable_order_time);
+    console.log("WC Webhook received:", JSON.stringify(data).substring(0, 200));
 
-    // Only process new orders
-    if (!data.id) return res.json({ success: false });
+    // Handle WooCommerce ping validation
+    if (!data || !data.id) {
+      res.status(200).json({ success: true });
+      return;
+    }
 
     // Find restaurant code from meta_data
     const metaData = data.meta_data || [];
