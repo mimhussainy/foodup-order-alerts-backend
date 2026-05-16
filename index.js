@@ -93,6 +93,7 @@ app.post("/new-order", async (req, res) => {
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
   console.log("New order received for:", code, order.order_id);
+  console.log("Order date:", order.orderable_order_date, "Order time:", order.orderable_order_time);
   if (!order.date_created) {
     order.date_created = new Date().toISOString();
   }
