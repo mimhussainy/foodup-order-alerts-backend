@@ -806,6 +806,47 @@ app.post("/log", async (req, res) => {
   res.json({ success: true });
 });
 
+
+// -------------------------------------------------------
+// AUTO SETTINGS
+// -------------------------------------------------------
+
+app.get("/auto-settings/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("GET", k(code, "auto_settings"));
+  if (data.result) {
+    res.json({ success: true, settings: JSON.parse(data.result) });
+  } else {
+    res.json({ success: true, settings: {
+      auto_action: 'disabled',
+      wait_minutes: 5,
+      accept_time: '30 Minutes',
+      reject_reason: 'Zu beschäftigt',
+    }});
+  }
+});
+
+app.post("/auto-settings", async (req, res) => {
+  const { restaurant_code, owner_pin, auto_action, wait_minutes, accept_time, reject_reason } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+
+  await redisCommand("SET", k(code, "auto_settings"), JSON.stringify({
+    auto_action: auto_action || 'disabled',
+    wait_minutes: parseInt(wait_minutes) || 5,
+    accept_time: accept_time || '30 Minutes',
+    reject_reason: reject_reason || 'Zu beschäftigt',
+  }));
+
+  res.json({ success: true });
+});
+
+
 // -------------------------------------------------------
 // HEALTH CHECK
 // -------------------------------------------------------
