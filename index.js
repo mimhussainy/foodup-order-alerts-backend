@@ -251,6 +251,31 @@ app.post("/verify-pin", async (req, res) => {
   }
 });
 
+app.post("/verify-ios-pin", async (req, res) => {
+  const { ios_pin, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  const stored = await redisCommand("GET", k(code, "ios_pin"));
+  if (!stored.result) return res.json({ success: false, message: "iOS PIN not set" });
+  if (stored.result === ios_pin) {
+    res.json({ success: true });
+  } else {
+    res.json({ success: false, message: "Incorrect iOS PIN" });
+  }
+});
+
+app.post("/set-ios-pin", async (req, res) => {
+  const { restaurant_code, owner_pin, ios_pin } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  await redisCommand("SET", k(code, "ios_pin"), ios_pin);
+  res.json({ success: true });
+});
+
 // -------------------------------------------------------
 // DELIVERY ACCOUNTS
 // -------------------------------------------------------
