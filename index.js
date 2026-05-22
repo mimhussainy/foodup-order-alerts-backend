@@ -374,14 +374,29 @@ app.post("/reset-delivery-password", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/mark-delivered", async (req, res) => {
-  const { order_id, delivery_name, restaurant_code } = req.body;
+  const { order_id, delivery_name, restaurant_code, order_data } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
 
   await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
-    order_id, delivery_name, delivered_at: new Date().toISOString(),
+    order_id, delivery_name, delivered_at: new Date().toISOString(), ...(order_data || {}),
   }));
+
+  // Also save to courier delivered list
+  const courierKey = k(code, `courier_delivered:${delivery_name}`);
+  const stored = await redisCommand("GET", courierKey);
+  const history = stored.result ? JSON.parse(stored.result) : [];
+  history.unshift({ order_id, delivered_at: new Date().toISOString(), ...(order_data || {}) });
+  await redisCommand("SET", courierKey, JSON.stringify(history.slice(0, 50)));
+
   res.json({ success: true });
+});
+app.get("/courier-delivered/:code/:name", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const name = req.params.name;
+  const stored = await redisCommand("GET", k(code, `courier_delivered:${name}`));
+  const history = stored.result ? JSON.parse(stored.result) : [];
+  res.json({ success: true, delivered: history });
 });
 
 app.get("/check-delivered/:code/:id", async (req, res) => {
