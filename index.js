@@ -984,3 +984,189 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// -------------------------------------------------------
+// AUTO ACCEPT / REJECT — SERVER SIDE
+// -------------------------------------------------------
+
+async function runAutoActions() {
+  try {
+    const restaurantsResult = await redisCommand("SMEMBERS", "restaurants");
+    const restaurants = restaurantsResult.result || [];
+
+    for (const code of restaurants) {
+      try {
+        // Get auto settings
+        const autoSettingsData = await redisCommand("GET", k(code, "auto_settings"));
+        if (!autoSettingsData.result) continue;
+        const autoSettings = JSON.parse(autoSettingsData.result);
+        if (autoSettings.auto_action === 'disabled') continue;
+
+        const waitMs = (autoSettings.wait_minutes || 5) * 60 * 1000;
+        const acceptTime = autoSettings.accept_time || '30 Minutes';
+        const rejectReason = autoSettings.reject_reason || 'Zu beschäftigt';
+
+        // Get orders
+        const ordersData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+        const orders = (ordersData.result || []).map(o => JSON.parse(o));
+
+        // Get restaurant profile for website URL
+        const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
+        const profile = profileData.result ? JSON.parse(profileData.result) : null;
+        const website = profile?.website;
+        const baseUrl = website ? (website.startsWith('http') ? website : `https://${website}`) : null;
+
+        for (const order of orders) {
+          try {
+            // Only process processing orders
+            if (order.status === 'cancelled' || order.status === 'completed') continue;
+
+            // Check if already accepted
+            const acceptedData = await redisCommand("GET", k(code, `accepted_time:${order.order_id}`));
+            if (acceptedData.result) continue;
+
+            // Check if already auto-actioned
+            const autoActioned = await redisCommand("GET", k(code, `auto_actioned:${order.order_id}`));
+            if (autoActioned.result) continue;
+
+            // Check order age
+            const orderDate = order.date_created ? new Date(order.date_created).getTime() : null;
+            if (!orderDate) continue;
+            const age = Date.now() - orderDate;
+            if (age < waitMs) continue;
+
+            // Mark as auto-actioned to prevent duplicate processing
+            await redisCommand("SET", k(code, `auto_actioned:${order.order_id}`), 'yes');
+            await redisCommand("EXPIRE", k(code, `auto_actioned:${order.order_id}`), 86400);
+
+            console.log(`Auto ${autoSettings.auto_action} for restaurant ${code}, order ${order.order_id}`);
+
+            // Determine effective accept time (scheduled vs ASAP)
+            let effectiveAcceptTime = acceptTime;
+            if (autoSettings.auto_action === 'accept') {
+              const ordTime = order.orderable_order_time || '';
+              const ordDate = order.orderable_order_date || '';
+              const isScheduled = ordTime && ordTime.trim() !== '' &&
+                !ordTime.toLowerCase().includes('as soon as possible') &&
+                !ordTime.toLowerCase().includes('asap') &&
+                !ordTime.includes('(');
+              if (isScheduled) {
+                const cleanTime = ordTime.replace(/\s*\(.*?\)\s*/g, '').trim();
+                effectiveAcceptTime = `${cleanTime} — ${ordDate}`;
+              }
+            }
+
+            if (autoSettings.auto_action === 'accept') {
+              // Save accepted time to Redis
+              await redisCommand("SET", k(code, `accepted_time:${order.order_id}`), JSON.stringify({
+                accepted_time: effectiveAcceptTime,
+                accepted_at: new Date().toISOString(),
+                status: 'accepted',
+              }));
+              await redisCommand("EXPIRE", k(code, `accepted_time:${order.order_id}`), 86400);
+
+              // Call WordPress to update order status and send email
+              if (baseUrl) {
+                fetch(`${baseUrl}/wp-json/foodup/v1/order-accepted`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    secret: 'foodup2026',
+                    order_id: order.order_id,
+                    accepted_time: effectiveAcceptTime,
+                  }),
+                }).catch(e => console.log(`WP accept error for ${code}:`, e.message));
+              }
+
+              // Send push notification for print button
+              const deviceTokens = await getTokens(code);
+              if (deviceTokens.length > 0) {
+                let itemsString = '[]';
+                try { itemsString = JSON.stringify(order.items || []); } catch(e) {}
+
+                const messages = deviceTokens.map(token => ({
+                  to: token,
+                  sound: null,
+                  title: `✓ Order #${order.order_id} auto-accepted`,
+                  body: `${order.customer_name} - ${order.currency} ${order.total}`,
+                  data: {
+                    event_type: 'auto_accepted',
+                    restaurant_code: code,
+                    order_id: String(order.order_id),
+                    accepted_time: effectiveAcceptTime,
+                    customer_name: String(order.customer_name || ''),
+                    customer_email: String(order.customer_email || ''),
+                    customer_phone: String(order.customer_phone || ''),
+                    total: String(order.total || ''),
+                    currency: String(order.currency || ''),
+                    payment_method: String(order.payment_method || ''),
+                    note: String(order.note || ''),
+                    shipping_method: String(order.shipping?.method || ''),
+                    shipping_address: String(order.shipping?.address || ''),
+                    orderable_order_date: String(order.orderable_order_date || ''),
+                    orderable_order_time: String(order.orderable_order_time || ''),
+                    date_created: String(order.date_created || ''),
+                    items: itemsString,
+                  },
+                }));
+
+                fetch("https://exp.host/--/api/v2/push/send", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                  body: JSON.stringify(messages),
+                }).catch(() => {});
+              }
+
+            } else if (autoSettings.auto_action === 'reject') {
+              // Call WordPress to reject order and send email
+              if (baseUrl) {
+                fetch(`${baseUrl}/wp-json/foodup/v1/order-rejected`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    secret: 'foodup2026',
+                    order_id: order.order_id,
+                    reason: rejectReason,
+                  }),
+                }).catch(e => console.log(`WP reject error for ${code}:`, e.message));
+              }
+
+              // Send status update push notification
+              const deviceTokens = await getTokens(code);
+              if (deviceTokens.length > 0) {
+                const messages = deviceTokens.map(token => ({
+                  to: token,
+                  sound: null,
+                  title: `Order #${order.order_id} auto-rejected`,
+                  body: rejectReason,
+                  data: {
+                    event_type: 'status_update',
+                    restaurant_code: code,
+                    order_id: String(order.order_id),
+                    status: 'cancelled',
+                  },
+                }));
+                fetch("https://exp.host/--/api/v2/push/send", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                  body: JSON.stringify(messages),
+                }).catch(() => {});
+              }
+            }
+          } catch(orderErr) {
+            console.log(`Error processing order ${order.order_id} for ${code}:`, orderErr.message);
+          }
+        }
+      } catch(restaurantErr) {
+        console.log(`Error processing restaurant ${code}:`, restaurantErr.message);
+      }
+    }
+  } catch(err) {
+    console.log('Auto action error:', err.message);
+  }
+}
+
+// Run every minute
+setInterval(runAutoActions, 60 * 1000);
+// Also run once on startup after 10 seconds
+setTimeout(runAutoActions, 10 * 1000);
