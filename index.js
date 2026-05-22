@@ -402,7 +402,6 @@ app.post("/mark-delivered", async (req, res) => {
 
 res.json({ success: true });
 });
-
 app.get("/courier-delivered/:code/:name", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const name = req.params.name;
