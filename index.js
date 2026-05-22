@@ -396,12 +396,10 @@ app.post("/mark-delivered", async (req, res) => {
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
   history = history.filter(o => new Date(o.delivered_at) > thirtyDaysAgo);
 
-  await redisCommand("SET", courierKey, JSON.stringify(history));
+await redisCommand("SET", courierKey, JSON.stringify(history));
   res.json({ success: true });
 });
 
-res.json({ success: true });
-});
 app.get("/courier-delivered/:code/:name", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const name = req.params.name;
