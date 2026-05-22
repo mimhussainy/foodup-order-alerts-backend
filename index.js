@@ -400,15 +400,9 @@ app.post("/mark-delivered", async (req, res) => {
   res.json({ success: true });
 });
 
-  // Also save to courier delivered list
-  const courierKey = k(code, `courier_delivered:${delivery_name}`);
-  const stored = await redisCommand("GET", courierKey);
-  const history = stored.result ? JSON.parse(stored.result) : [];
-  history.unshift({ order_id, delivered_at: new Date().toISOString(), ...(order_data || {}) });
-  await redisCommand("SET", courierKey, JSON.stringify(history.slice(0, 50)));
-
-  res.json({ success: true });
+res.json({ success: true });
 });
+
 app.get("/courier-delivered/:code/:name", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const name = req.params.name;
