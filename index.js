@@ -378,9 +378,27 @@ app.post("/mark-delivered", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
 
+  const deliveredAt = new Date().toISOString();
+
   await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
-    order_id, delivery_name, delivered_at: new Date().toISOString(), ...(order_data || {}),
+    order_id, delivery_name, delivered_at: deliveredAt, ...(order_data || {}),
   }));
+
+  const courierKey = k(code, `courier_delivered:${delivery_name}`);
+  const stored = await redisCommand("GET", courierKey);
+  let history = stored.result ? JSON.parse(stored.result) : [];
+
+  // Add new entry
+  history.unshift({ order_id, delivered_at: deliveredAt, ...(order_data || {}) });
+
+  // Auto-clean orders older than 30 days
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  history = history.filter(o => new Date(o.delivered_at) > thirtyDaysAgo);
+
+  await redisCommand("SET", courierKey, JSON.stringify(history));
+  res.json({ success: true });
+});
 
   // Also save to courier delivered list
   const courierKey = k(code, `courier_delivered:${delivery_name}`);
@@ -403,6 +421,22 @@ app.get("/clear-courier-delivered/:code/:name", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const name = req.params.name;
   await redisCommand("DEL", k(code, `courier_delivered:${name}`));
+  res.json({ success: true });
+});
+
+// Remove single order from courier delivered history
+app.post("/remove-delivered", async (req, res) => {
+  const { order_id, delivery_name, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+
+  const courierKey = k(code, `courier_delivered:${delivery_name}`);
+  const stored = await redisCommand("GET", courierKey);
+  if (!stored.result) return res.json({ success: true });
+
+  const history = JSON.parse(stored.result);
+  const filtered = history.filter(o => String(o.order_id) !== String(order_id));
+  await redisCommand("SET", courierKey, JSON.stringify(filtered));
   res.json({ success: true });
 });
 
@@ -915,9 +949,56 @@ app.get("/printer-device/:code", async (req, res) => {
   res.json({ success: true, device_id: data.result || null });
 });
 
-// -------------------------------------------------------
-// HEALTH CHECK
-// -------------------------------------------------------
+app.post("/auto-accepted-notify", async (req, res) => {
+  const { restaurant_code, order_id, accepted_time, items, ...orderData } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+
+  console.log("Auto-accepted notify for:", code, order_id);
+
+  const deviceTokens = await getTokens(code);
+  if (deviceTokens.length === 0) return res.json({ success: false, message: "No tokens" });
+
+  let itemsString = '[]';
+  try {
+    itemsString = JSON.stringify(items || []);
+  } catch(e) {}
+
+  const messages = deviceTokens.map(token => ({
+    to: token,
+    sound: null,
+    title: `✓ Order #${order_id} auto-accepted`,
+    body: `${orderData.customer_name} - ${orderData.currency} ${orderData.total}`,
+    data: {
+      event_type: 'auto_accepted',
+      restaurant_code: code,
+      order_id: String(order_id),
+      accepted_time: String(accepted_time || ''),
+      customer_name: String(orderData.customer_name || ''),
+      customer_email: String(orderData.customer_email || ''),
+      customer_phone: String(orderData.customer_phone || ''),
+      total: String(orderData.total || ''),
+      currency: String(orderData.currency || ''),
+      payment_method: String(orderData.payment_method || ''),
+      note: String(orderData.note || ''),
+      shipping_method: String(orderData.shipping_method || ''),
+      shipping_address: String(orderData.shipping_address || ''),
+      orderable_order_date: String(orderData.orderable_order_date || ''),
+      orderable_order_time: String(orderData.orderable_order_time || ''),
+      date_created: String(orderData.date_created || ''),
+      items: itemsString,
+    },
+  }));
+
+  await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify(messages),
+  });
+
+  res.json({ success: true });
+});
+
 // -------------------------------------------------------
 // HEALTH CHECK
 // -------------------------------------------------------
