@@ -399,6 +399,13 @@ app.get("/courier-delivered/:code/:name", async (req, res) => {
   res.json({ success: true, delivered: history });
 });
 
+app.get("/clear-courier-delivered/:code/:name", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const name = req.params.name;
+  await redisCommand("DEL", k(code, `courier_delivered:${name}`));
+  res.json({ success: true });
+});
+
 app.get("/check-delivered/:code/:id", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const data = await redisCommand("GET", k(code, `delivered:${req.params.id}`));
