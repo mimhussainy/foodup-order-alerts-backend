@@ -426,8 +426,14 @@ app.get("/all-couriers-delivered/:code", async (req, res) => {
     const couriers = accountsResult.result || [];
     const result = {};
     await Promise.all(couriers.map(async (name) => {
-      const stored = await redisCommand("GET", k(code, `courier_delivered:${name}`));
-      result[name] = stored.result ? JSON.parse(stored.result) : [];
+      // Try original name first, then capitalized
+      let stored = await redisCommand("GET", k(code, `courier_delivered:${name}`));
+      if (!stored.result) {
+        const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+        stored = await redisCommand("GET", k(code, `courier_delivered:${capitalized}`));
+      }
+      const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+      result[displayName] = stored.result ? JSON.parse(stored.result) : [];
     }));
     res.json({ success: true, couriers: result });
   } catch(e) {
