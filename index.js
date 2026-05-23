@@ -370,6 +370,24 @@ app.post("/reset-delivery-password", async (req, res) => {
   res.json({ success: true });
 });
 
+app.get("/delivery-accounts-ios", async (req, res) => {
+  const { ios_pin, restaurant_code } = req.query;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  const storedPin = await redisCommand("GET", k(code, "ios_pin"));
+  if (!storedPin.result || storedPin.result !== ios_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  const result = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
+  const usernames = result.result || [];
+  const accounts = await Promise.all(usernames.map(async (u) => {
+    const data = await redisCommand("GET", k(code, `delivery_account:${u}`));
+    return data.result ? JSON.parse(data.result) : null;
+  }));
+  res.json({ success: true, accounts: accounts.filter(Boolean) });
+});
+
 // -------------------------------------------------------
 // DELIVERY TRACKING
 // -------------------------------------------------------
