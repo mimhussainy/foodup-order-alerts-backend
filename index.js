@@ -325,7 +325,10 @@ app.get("/delivery-accounts", async (req, res) => {
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
   const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
+  const storedIosPin = await redisCommand("GET", k(code, "ios_pin"));
+  const isOwnerPin = storedPin.result && storedPin.result === owner_pin;
+  const isIosPin = storedIosPin.result && storedIosPin.result === owner_pin;
+  if (!isOwnerPin && !isIosPin) {
     return res.json({ success: false, message: "Unauthorized" });
   }
   const result = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
