@@ -400,6 +400,22 @@ await redisCommand("SET", courierKey, JSON.stringify(history));
   res.json({ success: true });
 });
 
+app.get("/all-couriers-delivered/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  try {
+    const accountsResult = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
+    const couriers = accountsResult.result || [];
+    const result: { [key: string]: any[] } = {};
+    await Promise.all(couriers.map(async (name: string) => {
+      const stored = await redisCommand("GET", k(code, `courier_delivered:${name}`));
+      result[name] = stored.result ? JSON.parse(stored.result) : [];
+    }));
+    res.json({ success: true, couriers: result });
+  } catch(e) {
+    res.json({ success: false, couriers: {} });
+  }
+});
+
 app.get("/courier-delivered/:code/:name", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const name = req.params.name;
