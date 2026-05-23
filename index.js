@@ -406,7 +406,7 @@ app.get("/all-couriers-delivered/:code", async (req, res) => {
     const accountsResult = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
     const couriers = accountsResult.result || [];
     const result = {};
-    await Promise.all(couriers.map(async (name: string) => {
+    await Promise.all(couriers.map(async (name) => {
       const stored = await redisCommand("GET", k(code, `courier_delivered:${name}`));
       result[name] = stored.result ? JSON.parse(stored.result) : [];
     }));
