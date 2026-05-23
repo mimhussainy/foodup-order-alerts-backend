@@ -734,7 +734,27 @@ app.get("/debug-tokens/:code", async (req, res) => {
   res.json({ success: true, count: tokens.length, tokens });
 });
 
+// -------------------------------------------------------
+// PRINTER DEVICE ID
+// -------------------------------------------------------
 
+app.post("/set-printer-device", async (req, res) => {
+  const { restaurant_code, owner_pin, device_id } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  await redisCommand("SET", k(code, "printer_device_id"), device_id);
+  res.json({ success: true });
+});
+
+app.get("/printer-device/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("GET", k(code, "printer_device_id"));
+  res.json({ success: true, device_id: data.result || null });
+});
 
 // -------------------------------------------------------
 // WOOCOMMERCE WEBHOOK
