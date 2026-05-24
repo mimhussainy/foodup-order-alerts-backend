@@ -567,19 +567,7 @@ app.get("/claims/:code", async (req, res) => {
   try {
     const claims = {};
 
-    // Get active claims
-    const claimKeys = await redisCommand("KEYS", k(code, "claimed:*"));
-    if (claimKeys.result && claimKeys.result.length > 0) {
-      await Promise.all(claimKeys.result.map(async (key) => {
-        const data = await redisCommand("GET", key);
-        if (data.result) {
-          const claim = JSON.parse(data.result);
-          claims[String(claim.order_id)] = { name: claim.delivery_name, status: claim.delivery_status || 'in_bag' };
-        }
-      }));
-    }
-
-    // Get orders list and check delivered status for each
+// Get delivered status first
     const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
     const orders = (listData.result || []).map((o) => JSON.parse(o));
     await Promise.all(orders.map(async (order) => {
@@ -589,6 +577,22 @@ app.get("/claims/:code", async (req, res) => {
         claims[String(delivered.order_id)] = { name: delivered.delivery_name, status: 'delivered' };
       }
     }));
+
+    // Get active claims second — only add if not already delivered
+    const claimKeys = await redisCommand("KEYS", k(code, "claimed:*"));
+    if (claimKeys.result && claimKeys.result.length > 0) {
+      await Promise.all(claimKeys.result.map(async (key) => {
+        const data = await redisCommand("GET", key);
+        if (data.result) {
+          const claim = JSON.parse(data.result);
+          const orderId = String(claim.order_id);
+          // Don't overwrite delivered status with active claim
+          if (!claims[orderId] || claims[orderId].status !== 'delivered') {
+            claims[orderId] = { name: claim.delivery_name, status: claim.delivery_status || 'in_bag' };
+          }
+        }
+      }));
+    }
 
     res.json({ success: true, claims });
   } catch(e) {
