@@ -239,6 +239,18 @@ console.log("Full order data:", JSON.stringify(order));
 // PIN
 // -------------------------------------------------------
 
+app.post("/change-pin", async (req, res) => {
+  const { restaurant_code, current_pin, new_pin } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  const stored = await redisCommand("GET", k(code, "pin"));
+  if (!stored.result || stored.result !== current_pin) {
+    return res.json({ success: false, message: "Incorrect current PIN" });
+  }
+  await redisCommand("SET", k(code, "pin"), new_pin);
+  res.json({ success: true });
+});
+
 app.post("/verify-pin", async (req, res) => {
   const { pin, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
