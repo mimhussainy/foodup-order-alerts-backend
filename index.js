@@ -614,8 +614,16 @@ app.post("/restaurant-profile", async (req, res) => {
   if (!storedPin.result || storedPin.result !== owner_pin) {
     return res.json({ success: false, message: "Unauthorized" });
   }
+
+  const existing = await redisCommand("GET", k(code, "restaurant_profile"));
+  const current = existing.result ? JSON.parse(existing.result) : {};
+
   await redisCommand("SET", k(code, "restaurant_profile"), JSON.stringify({
-    name, phone, address, website, updated_at: new Date().toISOString(),
+    name: name !== undefined ? name : current.name,
+    phone: phone !== undefined ? phone : current.phone,
+    address: address !== undefined ? address : current.address,
+    website: website !== undefined ? website : current.website,
+    updated_at: new Date().toISOString(),
   }));
   res.json({ success: true });
 });
