@@ -780,6 +780,13 @@ app.post("/store-status", async (req, res) => {
   res.json({ success: true, is_open });
 });
 
+app.get("/debug-pin/:code/:pin", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const pin = req.params.pin;
+  const stored = await redisCommand("GET", k(code, "pin"));
+  res.json({ stored: stored.result, matches: stored.result === pin });
+});
+
 
 app.get("/debug-tokens/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
