@@ -373,6 +373,21 @@ app.get("/courier-phone/:code/:username", async (req, res) => {
   res.json({ success: true, phone: account.phone || '' });
 });
 
+app.post("/change-delivery-password", async (req, res) => {
+  const { username, current_password, new_password, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  const data = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
+  if (!data.result) return res.json({ success: false, message: "Account not found" });
+  const account = JSON.parse(data.result);
+  if (account.password !== current_password) {
+    return res.json({ success: false, message: "Incorrect current password" });
+  }
+  account.password = new_password;
+  await redisCommand("SET", k(code, `delivery_account:${username.toLowerCase()}`), JSON.stringify(account));
+  res.json({ success: true });
+});
+
 app.post("/update-delivery-phone", async (req, res) => {
   const { username, phone, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
