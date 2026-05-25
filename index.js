@@ -364,7 +364,14 @@ app.delete("/delete-delivery-account", async (req, res) => {
   res.json({ success: true });
 });
 
-app.post("/update-delivery-phone", async (req, res) => {
+app.get("/courier-phone/:code/:username", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const username = req.params.username.toLowerCase();
+  const data = await redisCommand("GET", k(code, `delivery_account:${username}`));
+  if (!data.result) return res.json({ success: false });
+  const account = JSON.parse(data.result);
+  res.json({ success: true, phone: account.phone || '' });
+});
   const { username, phone, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
