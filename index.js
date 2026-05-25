@@ -632,11 +632,13 @@ app.post("/restaurant-profile", async (req, res) => {
   const existing = await redisCommand("GET", k(code, "restaurant_profile"));
   const current = existing.result ? JSON.parse(existing.result) : {};
 
+const { print_logo_url } = req.body;
   await redisCommand("SET", k(code, "restaurant_profile"), JSON.stringify({
     name: name !== undefined ? name : current.name,
     phone: phone !== undefined ? phone : current.phone,
     address: address !== undefined ? address : current.address,
     website: website !== undefined ? website : current.website,
+    print_logo_url: print_logo_url !== undefined ? print_logo_url : current.print_logo_url,
     updated_at: new Date().toISOString(),
   }));
   res.json({ success: true });
