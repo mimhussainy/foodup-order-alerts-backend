@@ -293,7 +293,7 @@ app.post("/set-ios-pin", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/add-delivery-account", async (req, res) => {
-  const { username, password, restaurant_code, owner_pin } = req.body;
+  const { username, password, restaurant_code, owner_pin, phone } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
@@ -309,7 +309,7 @@ app.post("/add-delivery-account", async (req, res) => {
     return res.json({ success: false, message: "Username already exists" });
   }
   await redisCommand("SET", k(code, `delivery_account:${username.toLowerCase()}`), JSON.stringify({
-    username, password, created_at: new Date().toISOString(),
+    username, password, phone: phone || '', created_at: new Date().toISOString(),
   }));
   await redisCommand("SADD", k(code, "delivery_accounts"), username.toLowerCase());
   res.json({ success: true });
@@ -364,7 +364,17 @@ app.delete("/delete-delivery-account", async (req, res) => {
   res.json({ success: true });
 });
 
-app.post("/reset-delivery-password", async (req, res) => {
+app.post("/update-delivery-phone", async (req, res) => {
+  const { username, phone, restaurant_code } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  const data = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
+  if (!data.result) return res.json({ success: false, message: "Account not found" });
+  const account = JSON.parse(data.result);
+  account.phone = phone;
+  await redisCommand("SET", k(code, `delivery_account:${username.toLowerCase()}`), JSON.stringify(account));
+  res.json({ success: true });
+});
   const { username, new_password, owner_pin, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
