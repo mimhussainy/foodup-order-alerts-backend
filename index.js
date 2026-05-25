@@ -388,6 +388,19 @@ app.post("/change-delivery-password", async (req, res) => {
   res.json({ success: true });
 });
 
+app.post("/cancel-auto-action", async (req, res) => {
+  const { restaurant_code, order_id, owner_pin } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  await redisCommand("SET", k(code, `auto_actioned:${order_id}`), 'yes');
+  await redisCommand("EXPIRE", k(code, `auto_actioned:${order_id}`), 86400);
+  res.json({ success: true });
+});
+
 app.post("/update-delivery-phone", async (req, res) => {
   const { username, phone, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
