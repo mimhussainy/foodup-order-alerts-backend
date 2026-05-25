@@ -372,6 +372,8 @@ app.get("/courier-phone/:code/:username", async (req, res) => {
   const account = JSON.parse(data.result);
   res.json({ success: true, phone: account.phone || '' });
 });
+
+app.post("/update-delivery-phone", async (req, res) => {
   const { username, phone, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
@@ -382,6 +384,8 @@ app.get("/courier-phone/:code/:username", async (req, res) => {
   await redisCommand("SET", k(code, `delivery_account:${username.toLowerCase()}`), JSON.stringify(account));
   res.json({ success: true });
 });
+
+app.post("/reset-delivery-password", async (req, res) => {
   const { username, new_password, owner_pin, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
