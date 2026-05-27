@@ -389,13 +389,17 @@ app.post("/change-delivery-password", async (req, res) => {
 });
 
 app.post("/cancel-auto-action", async (req, res) => {
-  const { restaurant_code, order_id, owner_pin } = req.body;
+  const { restaurant_code, order_id, owner_pin, secret } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
-    return res.json({ success: false, message: "Unauthorized" });
+  const isPlugin = secret === 'foodup2026';
+  if (!isPlugin) {
+    const storedPin = await redisCommand("GET", k(code, "pin"));
+    if (!storedPin.result || storedPin.result !== owner_pin) {
+      return res.json({ success: false, message: "Unauthorized" });
+    }
   }
+  console.log(`Cancel auto-action for: ${code} order ${order_id}`);
   await redisCommand("SET", k(code, `auto_actioned:${order_id}`), 'yes');
   await redisCommand("EXPIRE", k(code, `auto_actioned:${order_id}`), 86400);
   res.json({ success: true });
