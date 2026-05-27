@@ -1189,6 +1189,7 @@ async function runAutoActions() {
             if (!orderDate) continue;
             const age = Date.now() - orderDate;
             if (age < waitMs) continue;
+            if (age > 2 * 60 * 60 * 1000) continue; // skip orders older than 2 hours
 
             // Mark as auto-actioned to prevent duplicate processing
             await redisCommand("SET", k(code, `auto_actioned:${order.order_id}`), 'yes');
