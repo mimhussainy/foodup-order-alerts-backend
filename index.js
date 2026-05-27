@@ -388,6 +388,13 @@ app.post("/change-delivery-password", async (req, res) => {
   res.json({ success: true });
 });
 
+app.get("/check-auto-accepted/:code/:order_id", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const order_id = req.params.order_id;
+  const data = await redisCommand("GET", k(code, `auto_accepted:${order_id}`));
+  res.json({ success: true, auto_accepted: !!data.result });
+});
+
 app.post("/cancel-auto-action", async (req, res) => {
   const { restaurant_code, order_id, owner_pin, secret } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
