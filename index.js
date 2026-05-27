@@ -860,7 +860,16 @@ app.post("/store-status", async (req, res) => {
   res.json({ success: true, is_open });
 });
 
-
+app.delete("/clear-accepted-times/:code", async (req, res) => {
+  const { secret } = req.body;
+  if (secret !== 'foodup2026') return res.json({ success: false, message: "Unauthorized" });
+  const code = req.params.code.toLowerCase().trim();
+  const keys = await redisCommand("KEYS", k(code, "accepted_time:*"));
+  if (keys.result && keys.result.length > 0) {
+    await Promise.all(keys.result.map(key => redisCommand("DEL", key)));
+  }
+  res.json({ success: true, cleared: keys.result?.length || 0 });
+});
 
 
 app.get("/debug-tokens/:code", async (req, res) => {
