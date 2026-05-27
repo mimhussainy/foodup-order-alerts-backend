@@ -1182,6 +1182,9 @@ async function runAutoActions() {
             // Mark as auto-actioned to prevent duplicate processing
             await redisCommand("SET", k(code, `auto_actioned:${order.order_id}`), 'yes');
             await redisCommand("EXPIRE", k(code, `auto_actioned:${order.order_id}`), 86400);
+            // Mark as auto-accepted for pill display
+            await redisCommand("SET", k(code, `auto_accepted:${order.order_id}`), 'yes');
+            await redisCommand("EXPIRE", k(code, `auto_accepted:${order.order_id}`), 86400);
 
             console.log(`Auto ${autoSettings.auto_action} for restaurant ${code}, order ${order.order_id}`);
 
