@@ -600,6 +600,10 @@ app.get("/order/:code/:id", async (req, res) => {
     if (data.result) {
       const order = JSON.parse(data.result);
       if (String(order.order_id) === String(orderId)) {
+        const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+        const orders = (listData.result || []).map((o) => JSON.parse(o));
+        const found = orders.find((o) => String(o.order_id) === String(orderId));
+        if (found) return res.json({ success: true, order: found });
         return res.json({ success: true, order });
       }
     }
