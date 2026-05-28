@@ -1944,6 +1944,21 @@ function copyOrder() {
     + '💰 Total: ' + total + '\n'
     + (note !== '—' ? '📝 Note: ' + note : '')).trim();
 
+  navigator.clipboard.writeText(text).then(() => {
+    document.getElementById('modal-copy-success').style.display = 'block';
+    setTimeout(() => document.getElementById('modal-copy-success').style.display = 'none', 2000);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    document.getElementById('modal-copy-success').style.display = 'block';
+    setTimeout(() => document.getElementById('modal-copy-success').style.display = 'none', 2000);
+  });
+}
+
 function toggleCard(idx) {
   const body = document.getElementById('body-' + idx);
   const chevron = document.getElementById('chevron-' + idx);
