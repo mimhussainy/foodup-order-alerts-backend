@@ -1868,12 +1868,12 @@ function showOrder(orderId) {
 
   const items = typeof o.items === 'string' ? JSON.parse(o.items || '[]') : (o.items || []);
   const itemsHtml = items.map(item => {
-    const addons = (item.addons || []).map(a => `<div class="modal-item-addon">↳ ${a.value || a.label || ''}</div>`).join('');
-    return `<div class="modal-item">
-      <div class="modal-item-name">${item.quantity}x ${item.name}</div>
-      ${addons}
-      <div class="modal-item-price">CHF ${parseFloat(item.total||0).toFixed(2)}</div>
-    </div>`;
+    const addons = (item.addons || []).map(a => '<div class="modal-item-addon">\u21b3 ' + (a.value || a.label || '') + '</div>').join('');
+    return '<div class="modal-item">'
+      + '<div class="modal-item-name">' + item.quantity + 'x ' + item.name + '</div>'
+      + addons
+      + '<div class="modal-item-price">CHF ' + parseFloat(item.total||0).toFixed(2) + '</div>'
+      + '</div>';
   }).join('');
 
   const scheduledTime = o.orderable_order_time && !o.orderable_order_time.toLowerCase().includes('as soon as possible')
@@ -1930,18 +1930,19 @@ function copyOrder() {
     itemsText += name + (addons ? '\n' + addons : '') + '\n';
   });
 
-  const text = `🛒 Order ${orderId}
-━━━━━━━━━━━━━━
-👤 ${name}
-📞 ${phone}
-📍 ${address}
-🚚 ${shipping}
-💳 ${payment}
-⏰ ${time}
-━━━━━━━━━━━━━━
-${itemsText}━━━━━━━━━━━━━━
-💰 Total: ${total}
-${note !== '—' ? '📝
+  const text = ('🛒 Order ' + orderId + '\n'
+    + '━━━━━━━━━━━━━━\n'
+    + '👤 ' + name + '\n'
+    + '📞 ' + phone + '\n'
+    + '📍 ' + address + '\n'
+    + '🚚 ' + shipping + '\n'
+    + '💳 ' + payment + '\n'
+    + '⏰ ' + time + '\n'
+    + '━━━━━━━━━━━━━━\n'
+    + itemsText
+    + '━━━━━━━━━━━━━━\n'
+    + '💰 Total: ' + total + '\n'
+    + (note !== '—' ? '📝 Note: ' + note : '')).trim();
 
 function toggleCard(idx) {
   const body = document.getElementById('body-' + idx);
