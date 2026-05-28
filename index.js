@@ -1450,15 +1450,18 @@ function login() {
       today.setHours(0, 0, 0, 0);
       const ordersToday = orders.filter(o => {
         if (!o.date_created) return false;
-        return new Date(o.date_created) >= today;
+        return new Date(o.date_created.replace(' ', 'T')) >= today;
       }).length;
 
       // Last order
       const lastOrder = orders.length > 0 ? orders[0] : null;
       let lastOrderTime = null;
       if (lastOrder) {
-        if (lastOrder.date_created) lastOrderTime = new Date(lastOrder.date_created);
-        else if (lastOrder.timestamp) lastOrderTime = new Date(lastOrder.timestamp);
+        if (lastOrder.date_created) {
+          lastOrderTime = new Date(lastOrder.date_created.replace(' ', 'T'));
+        } else if (lastOrder.timestamp) {
+          lastOrderTime = new Date(lastOrder.timestamp);
+        }
       }
 
       // App status
