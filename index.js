@@ -33,6 +33,58 @@ async function removeToken(code, token) {
 }
 
 // -------------------------------------------------------
+// RATE LIMITER
+// -------------------------------------------------------
+
+const rateLimitStore = {};
+
+function rateLimit(ip, action, maxAttempts = 5, windowMs = 15 * 60 * 1000) {
+  const key = `${action}:${ip}`;
+  const now = Date.now();
+  if (!rateLimitStore[key]) {
+    rateLimitStore[key] = { attempts: 0, firstAttempt: now, blockedUntil: null };
+  }
+  const record = rateLimitStore[key];
+
+  // If blocked, check if block has expired
+  if (record.blockedUntil) {
+    if (now < record.blockedUntil) {
+      const minutesLeft = Math.ceil((record.blockedUntil - now) / 60000);
+      return { allowed: false, blocked: true, minutesLeft, attemptsLeft: 0 };
+    } else {
+      // Block expired, reset
+      rateLimitStore[key] = { attempts: 0, firstAttempt: now, blockedUntil: null };
+      return { allowed: true, blocked: false, attemptsLeft: maxAttempts - 1 };
+    }
+  }
+
+  // Reset window if expired
+  if (now - record.firstAttempt > windowMs) {
+    rateLimitStore[key] = { attempts: 1, firstAttempt: now, blockedUntil: null };
+    return { allowed: true, blocked: false, attemptsLeft: maxAttempts - 1 };
+  }
+
+  record.attempts++;
+
+  if (record.attempts > maxAttempts) {
+    record.blockedUntil = now + windowMs;
+    return { allowed: false, blocked: true, minutesLeft: 15, attemptsLeft: 0 };
+  }
+
+  return { allowed: true, blocked: false, attemptsLeft: maxAttempts - record.attempts };
+}
+
+// Clean up old rate limit records every 30 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const key of Object.keys(rateLimitStore)) {
+    const record = rateLimitStore[key];
+    const expired = record.blockedUntil ? now > record.blockedUntil + 60000 : now - record.firstAttempt > 16 * 60 * 1000;
+    if (expired) delete rateLimitStore[key];
+  }
+}, 30 * 60 * 1000);
+
+// -------------------------------------------------------
 // RESTAURANT REGISTRATION
 // -------------------------------------------------------
 
