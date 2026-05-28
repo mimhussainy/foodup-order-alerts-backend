@@ -1392,7 +1392,7 @@ app.get("/dashboard/settings", async (req, res) => {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>FoodUp Monitor — Settings</title>
+<title>FoodUp Monitor - Settings</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f0f0f5; min-height:100vh; }
@@ -1403,25 +1403,22 @@ app.get("/dashboard/settings", async (req, res) => {
   .card { background:#fff; border-radius:14px; padding:20px; margin-bottom:16px; box-shadow:0 1px 4px rgba(0,0,0,0.06); }
   .card h3 { font-size:15px; font-weight:700; color:#111; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid #f0f0f0; }
   .field { margin-bottom:16px; }
-  .field:last-child { margin-bottom:0; }
   .field label { font-size:12px; color:#666; font-weight:600; display:block; margin-bottom:6px; }
   .field input { width:100%; padding:11px 14px; border:1px solid #ddd; border-radius:10px; font-size:14px; outline:none; }
   .field input:focus { border-color:#8B38CB; box-shadow:0 0 0 3px rgba(139,56,203,0.1); }
   .field .desc { font-size:11px; color:#999; margin-top:5px; }
   .save-btn { background:#8B38CB; color:#fff; border:none; padding:13px 20px; border-radius:10px; font-size:15px; font-weight:700; cursor:pointer; width:100%; }
-  .save-btn:active { background:#7a2fb8; }
   .saved-msg { text-align:center; font-size:13px; color:#2ecc71; margin-top:10px; display:none; font-weight:600; }
 </style>
 </head>
 <body>
 <div class="topbar">
-  <a href="/dashboard?p=${encodeURIComponent(p)}" class="back-btn">← Back</a>
-  <h1>⚙️ Settings</h1>
+  <a href="/dashboard?p=${encodeURIComponent(p)}" class="back-btn">Back</a>
+  <h1>Settings</h1>
 </div>
-
 <div class="content">
   <div class="card">
-    <h3>🔔 Alert Settings</h3>
+    <h3>Alert Settings</h3>
     <div class="field">
       <label>Alert Email</label>
       <input type="email" id="alert_email" value="${alertSettings.alert_email}" placeholder="your@email.com" />
@@ -1430,29 +1427,26 @@ app.get("/dashboard/settings", async (req, res) => {
     <div class="field">
       <label>Offline Threshold (minutes)</label>
       <input type="number" id="offline_threshold" value="${alertSettings.offline_threshold_minutes}" min="5" max="120" />
-      <div class="desc">How long the app must be offline before an alert is sent.</div>
+      <div class="desc">How long before an alert is sent.</div>
     </div>
     <button class="save-btn" onclick="saveSettings()">Save Settings</button>
-    <p class="saved-msg" id="saved_msg">✓ Settings saved successfully!</p>
+    <p class="saved-msg" id="saved_msg">Settings saved!</p>
   </div>
 </div>
-
 <script>
-async function saveSettings() {
-  const email = document.getElementById('alert_email').value;
-  const threshold = document.getElementById('offline_threshold').value;
-  try {
-    const res = await fetch('/alert-settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ secret: 'foodup2026', alert_email: email, offline_threshold_minutes: parseInt(threshold) })
-    });
-    const data = await res.json();
+function saveSettings() {
+  var email = document.getElementById('alert_email').value;
+  var threshold = document.getElementById('offline_threshold').value;
+  fetch('/alert-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ secret: 'foodup2026', alert_email: email, offline_threshold_minutes: parseInt(threshold) })
+  }).then(function(r) { return r.json(); }).then(function(data) {
     if (data.success) {
       document.getElementById('saved_msg').style.display = 'block';
-      setTimeout(() => document.getElementById('saved_msg').style.display = 'none', 3000);
+      setTimeout(function() { document.getElementById('saved_msg').style.display = 'none'; }, 3000);
     }
-  } catch(e) {}
+  }).catch(function(e) { console.log(e); });
 }
 </script>
 </body>
@@ -1468,8 +1462,7 @@ app.get("/dashboard", async (req, res) => {
   const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
 
   if (p !== dashPassword) {
-    return res.send(`
-<!DOCTYPE html>
+    return res.send(`<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1483,42 +1476,32 @@ app.get("/dashboard", async (req, res) => {
   .logo h1 { font-size:24px; font-weight:800; color:#8B38CB; }
   .logo p { font-size:13px; color:#888; margin-top:4px; }
   input { width:100%; padding:12px 16px; border:1px solid #ddd; border-radius:10px; font-size:15px; margin-bottom:16px; outline:none; }
-  input:focus { border-color:#8B38CB; box-shadow:0 0 0 3px rgba(139,56,203,0.1); }
+  input:focus { border-color:#8B38CB; }
   button { width:100%; padding:14px; background:#8B38CB; color:#fff; border:none; border-radius:10px; font-size:15px; font-weight:700; cursor:pointer; }
-  button:hover { background:#7a2fb8; }
   .error { color:#e74c3c; font-size:13px; text-align:center; margin-top:12px; display:none; }
 </style>
 </head>
 <body>
 <div class="login-card">
-  <div class="logo">
-    <h1>🍽️ FoodUp</h1>
-    <p>Restaurant Monitor Dashboard</p>
-  </div>
+  <div class="logo"><h1>FoodUp</h1><p>Restaurant Monitor Dashboard</p></div>
   <input type="password" id="pwd" placeholder="Enter dashboard password" onkeydown="if(event.key==='Enter')login()" />
   <button onclick="login()">Login</button>
   <p class="error" id="err">Incorrect password. Try again.</p>
 </div>
 <script>
 function login() {
-  const pwd = document.getElementById('pwd').value;
+  var pwd = document.getElementById('pwd').value;
   if (pwd) window.location.href = '/dashboard?p=' + encodeURIComponent(pwd);
-  else { document.getElementById('err').style.display='block'; }
+  else document.getElementById('err').style.display = 'block';
 }
 </script>
 </body>
 </html>`);
   }
 
-  // Fetch all restaurants
   const restaurantsResult = await redisCommand("SMEMBERS", "restaurants");
   const restaurants = restaurantsResult.result || [];
 
-  // Fetch alert settings
-  const alertData = await redisCommand("GET", "alert_settings");
-  const alertSettings = alertData.result ? JSON.parse(alertData.result) : { alert_email: '', offline_threshold_minutes: 30 };
-
-  // Fetch data for each restaurant
   const restaurantData = await Promise.all(restaurants.map(async (code) => {
     try {
       const [heartbeatData, tokensData, ordersData, profileData, printerData] = await Promise.all([
@@ -1534,7 +1517,6 @@ function login() {
       const orders = (ordersData.result || []).map(o => JSON.parse(o));
       const profile = profileData.result ? JSON.parse(profileData.result) : null;
 
-      // Orders today
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
@@ -1546,7 +1528,6 @@ function login() {
       const ordersToday = todayOrdersList.length;
       const revenueToday = todayOrdersList.reduce((sum, o) => sum + parseFloat(o.total || 0), 0);
 
-      // Last order
       let lastOrderTime = null;
       for (const o of orders) {
         if (!o.date_created) continue;
@@ -1554,10 +1535,9 @@ function login() {
         if (!lastOrderTime || t > lastOrderTime) lastOrderTime = t;
       }
 
-      // App status
       let appStatus = 'never';
       let appMinutesAgo = null;
-      if (heartbeat?.last_seen) {
+      if (heartbeat && heartbeat.last_seen) {
         appMinutesAgo = Math.floor((Date.now() - new Date(heartbeat.last_seen).getTime()) / 60000);
         if (appMinutesAgo < 10) appStatus = 'online';
         else if (appMinutesAgo < 30) appStatus = 'idle';
@@ -1566,8 +1546,8 @@ function login() {
 
       return {
         code,
-        name: profile?.name || code,
-        website: profile?.website || '',
+        name: (profile && profile.name) ? profile.name : code,
+        website: (profile && profile.website) ? profile.website : '',
         appStatus,
         appMinutesAgo,
         tokens: tokens.length,
@@ -1585,14 +1565,102 @@ function login() {
   const offlineCount = restaurantData.filter(r => r.appStatus === 'offline' || r.appStatus === 'never').length;
   const totalOrdersToday = restaurantData.reduce((s,r) => s + r.ordersToday, 0);
 
-  const dashHtml = `
-<!DOCTYPE html>
+  // Build order data for JS - do it server side safely
+  const orderDataForJS = {};
+  restaurantData.forEach(r => {
+    (r.todayOrdersList || []).forEach(o => {
+      orderDataForJS[o.order_id] = {
+        order_id: o.order_id,
+        customer_name: o.customer_name || '',
+        customer_phone: o.customer_phone || '',
+        customer_email: o.customer_email || '',
+        total: o.total || '',
+        currency: o.currency || 'CHF',
+        status: o.status || '',
+        payment_method: o.payment_method || '',
+        note: o.note || '',
+        orderable_order_date: o.orderable_order_date || '',
+        orderable_order_time: o.orderable_order_time || '',
+        shipping: o.shipping || {},
+        shipping_method: (o.shipping && o.shipping.method) ? o.shipping.method : '',
+        shipping_address: (o.shipping && o.shipping.address) ? o.shipping.address : '',
+        items: o.items || [],
+      };
+    });
+  });
+
+  // Build restaurant cards HTML server side
+  const sortedRestaurants = [...restaurantData].sort((a,b) => {
+    const order = {offline:0, never:1, idle:2, online:3, unknown:4};
+    return (order[a.appStatus]||4) - (order[b.appStatus]||4);
+  });
+
+  const cardsHtml = sortedRestaurants.map((r, idx) => {
+    const appTime = r.appMinutesAgo !== null
+      ? (r.appMinutesAgo < 60 ? r.appMinutesAgo + ' min ago' : Math.floor(r.appMinutesAgo/60) + 'h ' + (r.appMinutesAgo%60) + 'm ago')
+      : 'Never';
+    const lastOrderStr = r.lastOrderTime
+      ? (() => {
+          const m = Math.floor((Date.now() - new Date(r.lastOrderTime).getTime()) / 60000);
+          return m < 60 ? m + ' min ago' : m < 1440 ? Math.floor(m/60) + 'h ago' : Math.floor(m/1440) + 'd ago';
+        })()
+      : 'No orders';
+    const previewLastOrder = r.lastOrderTime
+      ? (() => {
+          const m = Math.floor((Date.now() - new Date(r.lastOrderTime).getTime()) / 60000);
+          return m < 60 ? m + 'm ago' : m < 1440 ? Math.floor(m/60) + 'h ago' : Math.floor(m/1440) + 'd ago';
+        })()
+      : 'none';
+    const statusLabel = r.appStatus === 'online' ? 'Online' : r.appStatus === 'idle' ? 'Idle' : r.appStatus === 'never' ? 'Never Seen' : 'Offline';
+    const todayOrders = r.todayOrdersList || [];
+
+    let ordersHtml = '<div class="no-orders">No orders today</div>';
+    if (todayOrders.length > 0) {
+      ordersHtml = todayOrders.slice(0,5).map(o => {
+        const mins = o.date_created ? Math.floor((Date.now() - new Date(o.date_created.replace(' ','T')).getTime()) / 60000) : null;
+        const timeStr = mins !== null ? (mins < 60 ? mins + ' min ago' : Math.floor(mins/60) + 'h ago') : '';
+        return '<div class="order-row" onclick="showOrder(' + JSON.stringify(String(o.order_id)) + ')">'
+          + '<div><div class="order-id">#' + o.order_id + '</div><div class="order-customer">' + (o.customer_name||'') + '</div></div>'
+          + '<div style="text-align:right"><div class="order-amount">' + (o.currency||'CHF') + ' ' + (o.total||'') + '</div><div class="order-time">' + timeStr + ' ></div></div>'
+          + '</div>';
+      }).join('');
+      if (todayOrders.length > 5) ordersHtml += '<div class="no-orders">+' + (todayOrders.length-5) + ' more</div>';
+    }
+
+    return '<div class="restaurant-card" data-status="' + r.appStatus + '" data-name="' + (r.name||r.code).toLowerCase() + '" data-orders="' + r.ordersToday + '" data-lastseen="' + (r.appMinutesAgo !== null ? r.appMinutesAgo : 99999) + '">'
+      + '<div class="card-header" onclick="toggleCard(' + idx + ')">'
+      + '<div class="card-header-left">'
+      + '<div class="status-dot ' + r.appStatus + '"></div>'
+      + '<div>'
+      + '<div class="card-name">' + (r.name||r.code) + '</div>'
+      + '<div class="card-meta">' + r.code + (r.website ? ' - ' + r.website : '') + '</div>'
+      + '<div class="card-preview">' + r.ordersToday + ' orders - CHF ' + (r.revenueToday ? r.revenueToday.toFixed(2) : '0.00') + ' - Last: ' + previewLastOrder + '</div>'
+      + '</div></div>'
+      + '<div class="card-right"><span class="status-badge ' + r.appStatus + '">' + statusLabel + '</span><span class="chevron" id="chevron-' + idx + '">v</span></div>'
+      + '</div>'
+      + '<div class="card-body" id="body-' + idx + '">'
+      + '<div class="stats-grid">'
+      + '<div class="stat-box"><div class="stat-label">App Last Seen</div><div class="stat-value ' + (r.appStatus==='online'?'good':r.appStatus==='idle'?'warn':'bad') + '">' + appTime + '</div></div>'
+      + '<div class="stat-box"><div class="stat-label">Orders Today</div><div class="stat-value ' + (r.ordersToday>0?'good':'') + '">' + r.ordersToday + '</div></div>'
+      + '<div class="stat-box"><div class="stat-label">Last Order</div><div class="stat-value">' + lastOrderStr + '</div></div>'
+      + '<div class="stat-box"><div class="stat-label">Devices</div><div class="stat-value ' + (r.tokens>0?'good':'bad') + '">' + r.tokens + ' registered</div></div>'
+      + '<div class="stat-box"><div class="stat-label">Revenue Today</div><div class="stat-value good">CHF ' + (r.revenueToday ? r.revenueToday.toFixed(2) : '0.00') + '</div></div>'
+      + '<div class="stat-box"><div class="stat-label">Printer</div><div class="stat-value ' + (r.hasPrinter?'good':'warn') + '">' + (r.hasPrinter?'Configured':'Not set') + '</div></div>'
+      + '</div>'
+      + '<div class="orders-section"><h4>Today\'s Orders</h4>' + ordersHtml + '</div>'
+      + '</div></div>';
+  }).join('');
+
+  const alertBannerHtml = offlineCount > 0
+    ? '<div class="alert-banner"><span>!</span><p>' + offlineCount + ' restaurant' + (offlineCount !== 1 ? 's' : '') + ' need' + (offlineCount === 1 ? 's' : '') + ' attention</p></div>'
+    : '';
+
+  const dashHtml = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>FoodUp Monitor</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -1651,7 +1719,7 @@ function login() {
   .status-badge.offline { background:#fef2f2; color:#991b1b; }
   .status-badge.never { background:#f5f5f5; color:#888; }
   .status-badge.unknown { background:#f5f5f5; color:#888; }
-  .chevron { font-size:12px; color:#ccc; transition:transform 0.2s; display:inline-block; }
+  .chevron { font-size:12px; color:#ccc; display:inline-block; transition:transform 0.2s; }
   .chevron.open { transform:rotate(180deg); }
   .card-body { display:none; padding:0 16px 16px; border-top:1px solid #f5f5f5; }
   .card-body.open { display:block; }
@@ -1666,7 +1734,6 @@ function login() {
   .orders-section h4 { font-size:12px; font-weight:700; color:#444; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; }
   .order-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid #f5f5f5; cursor:pointer; }
   .order-row:last-child { border-bottom:none; }
-  .order-row:active { background:#f9f9f9; }
   .order-id { font-size:12px; font-weight:700; color:#8B38CB; }
   .order-customer { font-size:12px; color:#444; }
   .order-amount { font-size:12px; font-weight:700; color:#111; }
@@ -1677,7 +1744,7 @@ function login() {
   .modal { background:#fff; border-radius:20px 20px 0 0; padding:24px 20px 40px; width:100%; max-width:700px; max-height:85vh; overflow-y:auto; }
   .modal-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
   .modal-title { font-size:18px; font-weight:800; color:#111; }
-  .modal-close { background:#f0f0f0; border:none; border-radius:50%; width:32px; height:32px; font-size:18px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .modal-close { background:#f0f0f0; border:none; border-radius:50%; width:32px; height:32px; font-size:18px; cursor:pointer; }
   .modal-section { margin-bottom:16px; }
   .modal-section h4 { font-size:11px; font-weight:700; color:#999; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; }
   .modal-row { display:flex; justify-content:space-between; align-items:flex-start; padding:6px 0; border-bottom:1px solid #f5f5f5; }
@@ -1693,8 +1760,6 @@ function login() {
   .modal-btn { padding:12px; border-radius:12px; font-size:14px; font-weight:700; border:none; cursor:pointer; text-align:center; text-decoration:none; display:block; }
   .modal-btn.call { background:#2ecc71; color:#fff; }
   .modal-btn.copy { background:#8B38CB; color:#fff; }
-  .modal-btn.call:active { background:#27ae60; }
-  .modal-btn.copy:active { background:#7a2fb8; }
   .copy-success { text-align:center; font-size:12px; color:#2ecc71; margin-top:8px; display:none; }
   .empty-state { text-align:center; padding:40px 20px; color:#bbb; }
   .empty-state p { font-size:14px; margin-top:8px; }
@@ -1702,46 +1767,37 @@ function login() {
 </style>
 </head>
 <body>
-
 <div class="topbar">
   <div class="topbar-inner">
-  <div class="topbar-row1">
-    <div>
-      <h1>🍽️ FoodUp Monitor</h1>
-      <div class="time" id="current-time"></div>
+    <div class="topbar-row1">
+      <div>
+        <h1>FoodUp Monitor</h1>
+        <div class="time" id="current-time"></div>
+      </div>
+      <div class="topbar-actions">
+        <a href="/dashboard/settings?p=PASS_PLACEHOLDER" class="icon-btn">Settings</a>
+        <button class="icon-btn" onclick="location.reload()">Refresh</button>
+      </div>
     </div>
-    <div class="topbar-actions">
-      <a href="/dashboard/settings?p=${encodeURIComponent(p)}" class="icon-btn">⚙️</a>
-      <button class="icon-btn" onclick="location.reload()">↻</button>
-    </div>
-  </div>
-<input class="search-bar" type="text" id="search" placeholder="🔍 Search restaurant..." oninput="applyFilters()" />
+    <input class="search-bar" type="text" id="search" placeholder="Search restaurant..." oninput="applyFilters()" />
   </div>
 </div>
-
 <div class="summary-row">
-  <div class="summary-card total"><div class="val">${restaurantData.length}</div><div class="lbl">Total</div></div>
-  <div class="summary-card s-online"><div class="val">${restaurantData.filter(r=>r.appStatus==='online').length}</div><div class="lbl">Online</div></div>
-  <div class="summary-card s-offline"><div class="val">${offlineCount}</div><div class="lbl">Offline</div></div>
-  <div class="summary-card s-orders"><div class="val">${totalOrdersToday}</div><div class="lbl">Orders</div></div>
+  <div class="summary-card total"><div class="val">TOTAL_PLACEHOLDER</div><div class="lbl">Total</div></div>
+  <div class="summary-card s-online"><div class="val">ONLINE_PLACEHOLDER</div><div class="lbl">Online</div></div>
+  <div class="summary-card s-offline"><div class="val">OFFLINE_PLACEHOLDER</div><div class="lbl">Offline</div></div>
+  <div class="summary-card s-orders"><div class="val">ORDERS_PLACEHOLDER</div><div class="lbl">Orders</div></div>
 </div>
-
-${offlineCount > 0 ? `
-<div class="alert-banner">
-  <span>🔴</span>
-  <p>${offlineCount} restaurant${offlineCount !== 1 ? 's' : ''} need${offlineCount === 1 ? 's' : ''} attention</p>
-</div>` : ''}
-
+ALERTBANNER_PLACEHOLDER
 <div class="filter-tabs">
-  <button class="tab all active" onclick="setFilter('all',this)">All (${restaurantData.length})</button>
-  <button class="tab online" onclick="setFilter('online',this)">🟢 Online (${restaurantData.filter(r=>r.appStatus==='online').length})</button>
-  <button class="tab offline" onclick="setFilter('offline',this)">🔴 Offline (${offlineCount})</button>
-  <button class="tab idle" onclick="setFilter('idle',this)">🟡 Idle (${restaurantData.filter(r=>r.appStatus==='idle').length})</button>
+  <button class="tab all active" onclick="setFilter('all',this)">All (TOTAL_PLACEHOLDER)</button>
+  <button class="tab online" onclick="setFilter('online',this)">Online (ONLINE_PLACEHOLDER)</button>
+  <button class="tab offline" onclick="setFilter('offline',this)">Offline (OFFLINE_PLACEHOLDER)</button>
+  <button class="tab idle" onclick="setFilter('idle',this)">Idle (IDLE_PLACEHOLDER)</button>
 </div>
-
 <div class="content">
   <div class="sort-row">
-    <span id="result-count">${restaurantData.length} restaurant${restaurantData.length !== 1 ? 's' : ''}</span>
+    <span id="result-count">TOTAL_PLACEHOLDER restaurants</span>
     <select class="sort-select" onchange="applyFilters()">
       <option value="status">Sort: Status first</option>
       <option value="name">Sort: Name A-Z</option>
@@ -1749,102 +1805,45 @@ ${offlineCount > 0 ? `
       <option value="lastseen">Sort: Last seen</option>
     </select>
   </div>
-
-  <div id="restaurant-list">
-  ${(() => {
-    const sorted = [...restaurantData].sort((a,b) => {
-      const order = {offline:0, never:1, idle:2, online:3, unknown:4};
-      return (order[a.appStatus]||4) - (order[b.appStatus]||4);
-    });
-    return sorted.map((r, idx) => {
-      const appTime = r.appMinutesAgo !== null
-        ? (r.appMinutesAgo < 60 ? r.appMinutesAgo + ' min ago' : Math.floor(r.appMinutesAgo/60) + 'h ' + (r.appMinutesAgo%60) + 'm ago')
-        : 'Never';
-      const lastOrderStr = r.lastOrderTime
-        ? (() => {
-            const m = Math.floor((Date.now() - new Date(r.lastOrderTime).getTime()) / 60000);
-            return m < 60 ? m + ' min ago' : m < 1440 ? Math.floor(m/60) + 'h ago' : Math.floor(m/1440) + 'd ago';
-          })()
-        : 'No orders';
-      const statusLabel = r.appStatus === 'online' ? 'Online' : r.appStatus === 'idle' ? 'Idle' : r.appStatus === 'never' ? 'Never Seen' : 'Offline';
-      const todayOrders = r.todayOrdersList || [];
-      const ordersHtml = todayOrders.length > 0
-        ? todayOrders.slice(0,5).map(o => {
-            const mins = o.date_created ? Math.floor((Date.now() - new Date(o.date_created.replace(' ','T')).getTime()) / 60000) : null;
-            const timeStr = mins !== null ? (mins < 60 ? mins + ' min ago' : Math.floor(mins/60) + 'h ago') : '';
-            return `<div class="order-row" onclick="showOrder('${o.order_id}')">
-              <div><div class="order-id">#${o.order_id}</div><div class="order-customer">${o.customer_name||''}</div></div>
-              <div style="text-align:right"><div class="order-amount">${o.currency||'CHF'} ${o.total||''}</div><div class="order-time">${timeStr} ›</div></div>
-            </div>`;
-          }).join('') + (todayOrders.length > 5 ? `<div class="no-orders">+${todayOrders.length-5} more orders today</div>` : '')
-        : '<div class="no-orders">No orders today</div>';
-
-      return `
-      <div class="restaurant-card" data-status="${r.appStatus}" data-name="${(r.name||r.code).toLowerCase()}" data-orders="${r.ordersToday}" data-lastseen="${r.appMinutesAgo !== null ? r.appMinutesAgo : 99999}">
-<div class="card-header" onclick="toggleCard(${idx})">
-          <div class="card-header-left">
-            <div class="status-dot ${r.appStatus}"></div>
-            <div>
-              <div class="card-name">${r.name||r.code}</div>
-              <div class="card-meta">${r.code}${r.website?' · '+r.website:''}</div>
-              <div class="card-preview">${r.ordersToday} order${r.ordersToday!==1?'s':''} · CHF ${r.revenueToday?r.revenueToday.toFixed(2):'0.00'} · Last: ${r.lastOrderTime ? (() => { const m = Math.floor((Date.now() - new Date(r.lastOrderTime).getTime()) / 60000); return m < 60 ? m + 'm ago' : m < 1440 ? Math.floor(m/60) + 'h ago' : Math.floor(m/1440) + 'd ago'; })() : 'none'}</div>
-            </div>
-          </div>
-          <div class="card-right">
-            <span class="status-badge ${r.appStatus}">${statusLabel}</span>
-            <span class="chevron" id="chevron-${idx}">▼</span>
-          </div>
-        </div>
-        <div class="card-body" id="body-${idx}">
-          <div class="stats-grid">
-            <div class="stat-box">
-              <div class="stat-label">App Last Seen</div>
-              <div class="stat-value ${r.appStatus==='online'?'good':r.appStatus==='idle'?'warn':'bad'}">${appTime}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Orders Today</div>
-              <div class="stat-value ${r.ordersToday>0?'good':''}">${r.ordersToday}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Last Order</div>
-              <div class="stat-value">${lastOrderStr}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Devices</div>
-              <div class="stat-value ${r.tokens>0?'good':'bad'}">${r.tokens} registered</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Revenue Today</div>
-              <div class="stat-value good">CHF ${r.revenueToday?r.revenueToday.toFixed(2):'0.00'}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Printer</div>
-              <div class="stat-value ${r.hasPrinter?'good':'warn'}">${r.hasPrinter?'Configured':'Not set'}</div>
-            </div>
-          </div>
-          <div class="orders-section">
-            <h4>Today's Orders</h4>
-            ${ordersHtml}
-          </div>
-        </div>
-      </div>`;
-    }).join('');
-  })()}
-  </div>
-
-  <div id="empty-state" class="empty-state" style="display:none;">
-    <div style="font-size:40px;">🔍</div>
-    <p>No restaurants found</p>
-  </div>
-
-  <div class="last-updated">Last updated: ${new Date().toLocaleString('de-CH')} · Auto-refresh in <span id="countdown">60</span>s</div>
+  <div id="restaurant-list">CARDS_PLACEHOLDER</div>
+  <div id="empty-state" class="empty-state" style="display:none;"><div style="font-size:40px;">?</div><p>No restaurants found</p></div>
+  <div class="last-updated">Last updated: LASTUPDATED_PLACEHOLDER - Auto-refresh in <span id="countdown">60</span>s</div>
 </div>
-
+<div class="modal-overlay" id="order-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div><div class="modal-title" id="modal-order-id"></div><div style="font-size:12px;color:#888;margin-top:2px;" id="modal-status"></div></div>
+      <button class="modal-close" onclick="closeModal()">X</button>
+    </div>
+    <div class="modal-section"><h4>Items</h4><div id="modal-items"></div></div>
+    <div class="modal-section">
+      <h4>Customer</h4>
+      <div class="modal-row"><span class="modal-label">Name</span><span class="modal-value" id="modal-customer-name"></span></div>
+      <div class="modal-row"><span class="modal-label">Phone</span><span class="modal-value" id="modal-customer-phone"></span></div>
+      <div class="modal-row"><span class="modal-label">Email</span><span class="modal-value" id="modal-customer-email"></span></div>
+    </div>
+    <div class="modal-section">
+      <h4>Delivery</h4>
+      <div class="modal-row"><span class="modal-label">Method</span><span class="modal-value" id="modal-shipping"></span></div>
+      <div class="modal-row"><span class="modal-label">Address</span><span class="modal-value" id="modal-address"></span></div>
+      <div class="modal-row"><span class="modal-label">Time</span><span class="modal-value" id="modal-time"></span></div>
+    </div>
+    <div class="modal-section">
+      <h4>Payment</h4>
+      <div class="modal-row"><span class="modal-label">Method</span><span class="modal-value" id="modal-payment"></span></div>
+      <div class="modal-row"><span class="modal-label">Total</span><span class="modal-value" id="modal-total" style="color:#8B38CB;"></span></div>
+      <div class="modal-row"><span class="modal-label">Note</span><span class="modal-value" id="modal-note"></span></div>
+    </div>
+    <div class="modal-actions">
+      <a class="modal-btn call" id="modal-call-btn" href="#">Call Customer</a>
+      <button class="modal-btn copy" onclick="copyOrder()">Copy Order</button>
+    </div>
+    <div class="copy-success" id="modal-copy-success">Copied to clipboard!</div>
+  </div>
+</div>
 <script>
-${JSON.stringify(restaurantData.reduce((acc, r) => { (r.todayOrdersList || []).forEach(o => { acc[o.order_id] = o; }); return acc; }, {}))}
-</script>
-<script>
-let currentFilter = 'all';
+var currentFilter = 'all';
+var orderData = ORDERDATA_PLACEHOLDER;
 
 function updateTime() {
   document.getElementById('current-time').textContent = new Date().toLocaleTimeString('de-CH');
@@ -1861,9 +1860,10 @@ setInterval(function() {
 }, 1000);
 
 function showOrder(orderId) {
-  var o = window.orderData[orderId];
+  var o = orderData[orderId];
   if (!o) return;
-  var items = typeof o.items === 'string' ? JSON.parse(o.items || '[]') : (o.items || []);
+  var items = Array.isArray(o.items) ? o.items : [];
+  try { if (typeof o.items === 'string') items = JSON.parse(o.items); } catch(e) {}
   var itemsHtml = items.map(function(item) {
     var addons = (item.addons || []).map(function(a) {
       return '<div class="modal-item-addon">' + (a.value || a.label || '') + '</div>';
@@ -1882,8 +1882,8 @@ function showOrder(orderId) {
   document.getElementById('modal-customer-phone').textContent = o.customer_phone || '-';
   document.getElementById('modal-customer-email').textContent = o.customer_email || '-';
   document.getElementById('modal-payment').textContent = o.payment_method || '-';
-  document.getElementById('modal-shipping').textContent = (o.shipping && o.shipping.method) ? o.shipping.method : (o.shipping_method || '-');
-  document.getElementById('modal-address').textContent = (o.shipping && o.shipping.address) ? o.shipping.address : (o.shipping_address || '-');
+  document.getElementById('modal-shipping').textContent = o.shipping_method || '-';
+  document.getElementById('modal-address').textContent = o.shipping_address || '-';
   document.getElementById('modal-time').textContent = scheduledTime;
   document.getElementById('modal-note').textContent = o.note || '-';
   document.getElementById('modal-total').textContent = (o.currency || 'CHF') + ' ' + o.total;
@@ -1900,25 +1900,28 @@ function closeModal() {
 }
 
 function copyOrder() {
-  var name = document.getElementById('modal-customer-name').textContent;
-  var phone = document.getElementById('modal-customer-phone').textContent;
-  var address = document.getElementById('modal-address').textContent;
-  var shipping = document.getElementById('modal-shipping').textContent;
-  var payment = document.getElementById('modal-payment').textContent;
-  var time = document.getElementById('modal-time').textContent;
-  var total = document.getElementById('modal-total').textContent;
-  var note = document.getElementById('modal-note').textContent;
-  var orderId = document.getElementById('modal-order-id').textContent;
+  var lines = [
+    'Order ' + document.getElementById('modal-order-id').textContent,
+    '---',
+    'Name: ' + document.getElementById('modal-customer-name').textContent,
+    'Phone: ' + document.getElementById('modal-customer-phone').textContent,
+    'Address: ' + document.getElementById('modal-address').textContent,
+    'Delivery: ' + document.getElementById('modal-shipping').textContent,
+    'Payment: ' + document.getElementById('modal-payment').textContent,
+    'Time: ' + document.getElementById('modal-time').textContent,
+    '---'
+  ];
   var itemEls = document.querySelectorAll('#modal-items .modal-item');
-  var itemsText = '';
   itemEls.forEach(function(el) {
     var n = el.querySelector('.modal-item-name') ? el.querySelector('.modal-item-name').textContent : '';
-    var addons = Array.from(el.querySelectorAll('.modal-item-addon')).map(function(a) { return '  ' + a.textContent; }).join('\n');
-    itemsText += n + (addons ? '\n' + addons : '') + '\n';
+    lines.push(n);
+    el.querySelectorAll('.modal-item-addon').forEach(function(a) { lines.push('  ' + a.textContent); });
   });
-  var lines = ['Order ' + orderId, '---', 'Name: ' + name, 'Phone: ' + phone, 'Address: ' + address, 'Delivery: ' + shipping, 'Payment: ' + payment, 'Time: ' + time, '---', itemsText, '---', 'Total: ' + total];
-  if (note !== '-') lines.push('Note: ' + note);
-  var text = lines.join('\n').trim();
+  lines.push('---');
+  lines.push('Total: ' + document.getElementById('modal-total').textContent);
+  var note = document.getElementById('modal-note').textContent;
+  if (note && note !== '-') lines.push('Note: ' + note);
+  var text = lines.join('\n');
   if (navigator.clipboard) {
     navigator.clipboard.writeText(text).then(function() {
       document.getElementById('modal-copy-success').style.display = 'block';
@@ -1929,11 +1932,8 @@ function copyOrder() {
 
 function fallbackCopy(text) {
   var ta = document.createElement('textarea');
-  ta.value = text;
-  document.body.appendChild(ta);
-  ta.select();
-  document.execCommand('copy');
-  document.body.removeChild(ta);
+  ta.value = text; document.body.appendChild(ta); ta.select();
+  document.execCommand('copy'); document.body.removeChild(ta);
   document.getElementById('modal-copy-success').style.display = 'block';
   setTimeout(function() { document.getElementById('modal-copy-success').style.display = 'none'; }, 2000);
 }
@@ -1948,7 +1948,8 @@ function toggleCard(idx) {
 
 function setFilter(filter, btn) {
   currentFilter = filter;
-  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+  var tabs = document.querySelectorAll('.tab');
+  for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
   btn.classList.add('active');
   applyFilters();
 }
@@ -1975,7 +1976,7 @@ function applyFilters() {
     if (sort === 'name') return a.dataset.name.localeCompare(b.dataset.name);
     if (sort === 'orders') return parseInt(b.dataset.orders) - parseInt(a.dataset.orders);
     if (sort === 'lastseen') return parseInt(a.dataset.lastseen) - parseInt(b.dataset.lastseen);
-    var ord = {offline:0, never:1, idle:2, online:3, unknown:4};
+    var ord = {offline:0,never:1,idle:2,online:3,unknown:4};
     return (ord[a.dataset.status]||4) - (ord[b.dataset.status]||4);
   });
   visibleCards.forEach(function(c) { list.appendChild(c); });
@@ -1987,54 +1988,28 @@ document.getElementById('order-modal').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
 });
 </script>
-<div class="modal-overlay" id="order-modal">
-  <div class="modal">
-    <div class="modal-header">
-      <div>
-        <div class="modal-title" id="modal-order-id"></div>
-        <div style="font-size:12px; color:#888; margin-top:2px;" id="modal-status"></div>
-      </div>
-      <button class="modal-close" onclick="closeModal()">✕</button>
-    </div>
-
-    <div class="modal-section">
-      <h4>Items</h4>
-      <div id="modal-items"></div>
-    </div>
-
-    <div class="modal-section">
-      <h4>Customer</h4>
-      <div class="modal-row"><span class="modal-label">Name</span><span class="modal-value" id="modal-customer-name"></span></div>
-      <div class="modal-row"><span class="modal-label">Phone</span><span class="modal-value" id="modal-customer-phone"></span></div>
-      <div class="modal-row"><span class="modal-label">Email</span><span class="modal-value" id="modal-customer-email"></span></div>
-    </div>
-
-    <div class="modal-section">
-      <h4>Delivery</h4>
-      <div class="modal-row"><span class="modal-label">Method</span><span class="modal-value" id="modal-shipping"></span></div>
-      <div class="modal-row"><span class="modal-label">Address</span><span class="modal-value" id="modal-address"></span></div>
-      <div class="modal-row"><span class="modal-label">Time</span><span class="modal-value" id="modal-time"></span></div>
-    </div>
-
-    <div class="modal-section">
-      <h4>Payment</h4>
-      <div class="modal-row"><span class="modal-label">Method</span><span class="modal-value" id="modal-payment"></span></div>
-      <div class="modal-row"><span class="modal-label">Total</span><span class="modal-value" id="modal-total" style="color:#8B38CB;"></span></div>
-      <div class="modal-row"><span class="modal-label">Note</span><span class="modal-value" id="modal-note"></span></div>
-    </div>
-
-    <div class="modal-actions">
-      <a class="modal-btn call" id="modal-call-btn" href="#">📞 Call Customer</a>
-      <button class="modal-btn copy" onclick="copyOrder()">📋 Copy Order</button>
-    </div>
-    <div class="copy-success" id="modal-copy-success">✓ Copied to clipboard!</div>
-  </div>
-</div>
-
 </body>
 </html>`;
 
-  res.send(dashHtml);
+  // Now safely replace all placeholders
+  const onlineCount = restaurantData.filter(r=>r.appStatus==='online').length;
+  const idleCount = restaurantData.filter(r=>r.appStatus==='idle').length;
+  const encodedP = encodeURIComponent(p);
+  const lastUpdated = new Date().toLocaleString('de-CH');
+
+  const finalHtml = dashHtml
+    .replace(/PASS_PLACEHOLDER/g, encodedP)
+    .replace(/TOTAL_PLACEHOLDER/g, String(restaurantData.length))
+    .replace(/ONLINE_PLACEHOLDER/g, String(onlineCount))
+    .replace(/OFFLINE_PLACEHOLDER/g, String(offlineCount))
+    .replace(/ORDERS_PLACEHOLDER/g, String(totalOrdersToday))
+    .replace(/IDLE_PLACEHOLDER/g, String(idleCount))
+    .replace('ALERTBANNER_PLACEHOLDER', alertBannerHtml)
+    .replace('CARDS_PLACEHOLDER', cardsHtml)
+    .replace('LASTUPDATED_PLACEHOLDER', lastUpdated)
+    .replace('ORDERDATA_PLACEHOLDER', JSON.stringify(orderDataForJS));
+
+  res.send(finalHtml);
 });
 
 // -------------------------------------------------------
@@ -2057,19 +2032,14 @@ async function checkAndSendAlerts() {
         const alertSentData = await redisCommand("GET", k(code, "alert_sent"));
         const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
         const profile = profileData.result ? JSON.parse(profileData.result) : null;
-        const name = profile?.name || code;
+        const name = (profile && profile.name) ? profile.name : code;
 
         if (!heartbeatData.result) {
           if (!alertSentData.result) {
             await sendAlertEmail(
               alertSettings.alert_email,
-              `⚠️ FoodUp Alert — ${name} app never connected`,
-              `<div style="font-family:Arial,sans-serif; padding:20px;">
-                <h2 style="color:#8B38CB;">⚠️ FoodUp Monitor Alert</h2>
-                <p>Restaurant <strong>${name}</strong> (${code}) has never sent a heartbeat.</p>
-                <p>The app may not be installed or logged in correctly.</p>
-                <p style="color:#999; font-size:12px;">Sent at ${new Date().toLocaleString('de-CH')}</p>
-              </div>`
+              'FoodUp Alert - ' + name + ' app never connected',
+              '<div style="font-family:Arial,sans-serif;padding:20px;"><h2 style="color:#8B38CB;">FoodUp Monitor Alert</h2><p>Restaurant <strong>' + name + '</strong> (' + code + ') has never sent a heartbeat.</p><p>The app may not be installed or logged in correctly.</p><p style="color:#999;font-size:12px;">Sent at ' + new Date().toLocaleString('de-CH') + '</p></div>'
             );
             await redisCommand("SET", k(code, "alert_sent"), "never_seen");
             await redisCommand("EXPIRE", k(code, "alert_sent"), 86400);
@@ -2087,16 +2057,8 @@ async function checkAndSendAlerts() {
               : minutesOffline + ' minutes';
             await sendAlertEmail(
               alertSettings.alert_email,
-              `🔴 FoodUp Alert — ${name} is offline`,
-              `<div style="font-family:Arial,sans-serif; padding:20px;">
-                <h2 style="color:#e74c3c;">🔴 FoodUp Monitor Alert</h2>
-                <p>Restaurant <strong>${name}</strong> (${code}) has been offline for <strong>${hoursOffline}</strong>.</p>
-                <p>Last seen: ${new Date(heartbeat.last_seen).toLocaleString('de-CH')}</p>
-                <p>Please check if the app is open and the device is connected to internet.</p>
-                <br>
-                <a href="https://foodup-order-alerts-backend.onrender.com/dashboard" style="background:#8B38CB; color:#fff; padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:700;">Open Dashboard</a>
-                <p style="color:#999; font-size:12px; margin-top:16px;">Sent at ${new Date().toLocaleString('de-CH')}</p>
-              </div>`
+              'FoodUp Alert - ' + name + ' is offline',
+              '<div style="font-family:Arial,sans-serif;padding:20px;"><h2 style="color:#e74c3c;">FoodUp Monitor Alert</h2><p>Restaurant <strong>' + name + '</strong> (' + code + ') has been offline for <strong>' + hoursOffline + '</strong>.</p><p>Last seen: ' + new Date(heartbeat.last_seen).toLocaleString('de-CH') + '</p><p>Please check if the app is open and the device is connected to internet.</p><br><a href="https://foodup-order-alerts-backend.onrender.com/dashboard" style="background:#8B38CB;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:700;">Open Dashboard</a><p style="color:#999;font-size:12px;margin-top:16px;">Sent at ' + new Date().toLocaleString('de-CH') + '</p></div>'
             );
             await redisCommand("SET", k(code, "alert_sent"), "offline");
             await redisCommand("EXPIRE", k(code, "alert_sent"), 3600);
@@ -2105,19 +2067,14 @@ async function checkAndSendAlerts() {
           if (alertSentData.result === "offline") {
             await sendAlertEmail(
               alertSettings.alert_email,
-              `✅ FoodUp Alert — ${name} is back online`,
-              `<div style="font-family:Arial,sans-serif; padding:20px;">
-                <h2 style="color:#2ecc71;">✅ FoodUp Monitor — Recovered</h2>
-                <p>Restaurant <strong>${name}</strong> (${code}) is back online.</p>
-                <p>Last seen: ${new Date(heartbeat.last_seen).toLocaleString('de-CH')}</p>
-                <p style="color:#999; font-size:12px;">Sent at ${new Date().toLocaleString('de-CH')}</p>
-              </div>`
+              'FoodUp Alert - ' + name + ' is back online',
+              '<div style="font-family:Arial,sans-serif;padding:20px;"><h2 style="color:#2ecc71;">FoodUp Monitor - Recovered</h2><p>Restaurant <strong>' + name + '</strong> (' + code + ') is back online.</p><p>Last seen: ' + new Date(heartbeat.last_seen).toLocaleString('de-CH') + '</p><p style="color:#999;font-size:12px;">Sent at ' + new Date().toLocaleString('de-CH') + '</p></div>'
             );
             await redisCommand("DEL", k(code, "alert_sent"));
           }
         }
       } catch(e) {
-        console.log(`Alert check error for ${code}:`, e.message);
+        console.log('Alert check error for ' + code + ':', e.message);
       }
     }
   } catch(e) {
