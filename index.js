@@ -1477,7 +1477,7 @@ app.get("/dashboard", async (req, res) => {
 <title>FoodUp Dashboard</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#f5f5f5; display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f5; display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; }
   .login-card { background:#fff; border-radius:16px; padding:32px 28px; max-width:360px; width:100%; box-shadow:0 4px 20px rgba(0,0,0,0.1); }
   .logo { text-align:center; margin-bottom:24px; }
   .logo h1 { font-size:24px; font-weight:800; color:#8B38CB; }
@@ -1537,22 +1537,21 @@ function login() {
       // Orders today
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      const ordersToday = orders.filter(o => {
+
+      const todayOrdersList = orders.filter(o => {
         if (!o.date_created) return false;
         return new Date(o.date_created.replace(' ', 'T')) >= today;
-      }).length;
+      }).sort((a,b) => new Date(b.date_created.replace(' ','T')) - new Date(a.date_created.replace(' ','T')));
+
+      const ordersToday = todayOrdersList.length;
+      const revenueToday = todayOrdersList.reduce((sum, o) => sum + parseFloat(o.total || 0), 0);
 
       // Last order
-// Find the most recent order by date
       let lastOrderTime = null;
-      let lastOrder = null;
       for (const o of orders) {
         if (!o.date_created) continue;
         const t = new Date(o.date_created.replace(' ', 'T'));
-        if (!lastOrderTime || t > lastOrderTime) {
-          lastOrderTime = t;
-          lastOrder = o;
-        }
+        if (!lastOrderTime || t > lastOrderTime) lastOrderTime = t;
       }
 
       // App status
@@ -1571,16 +1570,20 @@ function login() {
         website: profile?.website || '',
         appStatus,
         appMinutesAgo,
-        lastSeen: heartbeat?.last_seen || null,
         tokens: tokens.length,
         ordersToday,
         lastOrderTime,
         hasPrinter: !!printerData.result,
+        todayOrdersList,
+        revenueToday,
       };
     } catch(e) {
-      return { code, name: code, appStatus: 'unknown', tokens: 0, ordersToday: 0 };
+      return { code, name: code, appStatus: 'unknown', tokens: 0, ordersToday: 0, todayOrdersList: [], revenueToday: 0 };
     }
   }));
+
+  const offlineCount = restaurantData.filter(r => r.appStatus === 'offline' || r.appStatus === 'never').length;
+  const totalOrdersToday = restaurantData.reduce((s,r) => s + r.ordersToday, 0);
 
   const dashHtml = `
 <!DOCTYPE html>
@@ -1594,119 +1597,283 @@ function login() {
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f0f0f5; min-height:100vh; }
-  .topbar { background:#8B38CB; padding:16px 20px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:100; }
-  .topbar h1 { color:#fff; font-size:18px; font-weight:800; }
-  .topbar .time { color:rgba(255,255,255,0.8); font-size:12px; }
-  .topbar .refresh-btn { background:rgba(255,255,255,0.2); border:none; color:#fff; padding:6px 12px; border-radius:20px; font-size:12px; font-weight:700; cursor:pointer; }
-  .content { padding:16px; max-width:600px; margin:0 auto; }
-  .summary-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:16px; }
-  .summary-card { background:#fff; border-radius:12px; padding:12px; text-align:center; }
-  .summary-card .val { font-size:22px; font-weight:800; color:#8B38CB; }
-  .summary-card .lbl { font-size:11px; color:#888; margin-top:2px; text-transform:uppercase; letter-spacing:0.5px; }
-  .section-title { font-size:13px; font-weight:700; color:#444; text-transform:uppercase; letter-spacing:1px; margin:0 0 10px 0; }
-  .restaurant-card { background:#fff; border-radius:14px; padding:16px; margin-bottom:12px; box-shadow:0 1px 4px rgba(0,0,0,0.06); }
-  .restaurant-card.online { border-left:4px solid #2ecc71; }
-  .restaurant-card.idle { border-left:4px solid #f39c12; }
-  .restaurant-card.offline { border-left:4px solid #e74c3c; }
-  .restaurant-card.never { border-left:4px solid #ccc; }
-  .restaurant-card.unknown { border-left:4px solid #ccc; }
-  .card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
-  .card-title { font-size:16px; font-weight:700; color:#111; }
-  .card-code { font-size:11px; color:#999; margin-top:2px; }
-  .status-badge { padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; }
+  .topbar { background:#8B38CB; padding:14px 16px; position:sticky; top:0; z-index:100; }
+  .topbar-row1 { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .topbar h1 { color:#fff; font-size:17px; font-weight:800; }
+  .topbar .time { color:rgba(255,255,255,0.8); font-size:11px; }
+  .topbar-actions { display:flex; gap:8px; align-items:center; }
+  .icon-btn { background:rgba(255,255,255,0.2); border:none; color:#fff; padding:6px 12px; border-radius:20px; font-size:12px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-block; }
+  .search-bar { background:rgba(255,255,255,0.2); border:none; border-radius:10px; padding:8px 12px; width:100%; color:#fff; font-size:14px; outline:none; }
+  .search-bar::placeholder { color:rgba(255,255,255,0.6); }
+  .filter-tabs { display:flex; gap:6px; padding:10px 16px; overflow-x:auto; scrollbar-width:none; background:#f0f0f5; }
+  .filter-tabs::-webkit-scrollbar { display:none; }
+  .tab { padding:6px 14px; border-radius:20px; font-size:13px; font-weight:700; border:none; cursor:pointer; white-space:nowrap; }
+  .tab.all { background:#fff; color:#444; }
+  .tab.online { background:#e8fdf2; color:#1a7a45; }
+  .tab.offline { background:#fef2f2; color:#991b1b; }
+  .tab.idle { background:#fffbeb; color:#92400e; }
+  .tab.active.all { background:#444; color:#fff; }
+  .tab.active.online { background:#2ecc71; color:#fff; }
+  .tab.active.offline { background:#e74c3c; color:#fff; }
+  .tab.active.idle { background:#f39c12; color:#fff; }
+  .summary-row { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:12px 16px; }
+  .summary-card { background:#fff; border-radius:12px; padding:10px 8px; text-align:center; }
+  .summary-card .val { font-size:20px; font-weight:800; }
+  .summary-card .lbl { font-size:10px; color:#888; margin-top:2px; text-transform:uppercase; letter-spacing:0.5px; }
+  .summary-card.total .val { color:#8B38CB; }
+  .summary-card.s-online .val { color:#2ecc71; }
+  .summary-card.s-offline .val { color:#e74c3c; }
+  .summary-card.s-orders .val { color:#3498db; }
+  .alert-banner { margin:0 16px 8px; background:#fef2f2; border:1px solid #fecaca; border-radius:12px; padding:10px 14px; display:flex; align-items:center; gap:8px; }
+  .alert-banner p { font-size:13px; font-weight:700; color:#991b1b; }
+  .content { padding:0 16px 32px; }
+  .sort-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; padding-top:4px; }
+  .sort-row span { font-size:12px; color:#888; }
+  .sort-select { background:#fff; border:1px solid #ddd; border-radius:8px; padding:5px 10px; font-size:12px; color:#444; outline:none; }
+  .restaurant-card { background:#fff; border-radius:14px; margin-bottom:10px; box-shadow:0 1px 4px rgba(0,0,0,0.06); overflow:hidden; }
+  .card-header { padding:14px 16px; display:flex; align-items:center; justify-content:space-between; cursor:pointer; user-select:none; }
+  .card-header-left { display:flex; align-items:center; gap:10px; }
+  .status-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+  .status-dot.online { background:#2ecc71; }
+  .status-dot.idle { background:#f39c12; }
+  .status-dot.offline { background:#e74c3c; animation:pulse 2s infinite; }
+  .status-dot.never { background:#ccc; }
+  .status-dot.unknown { background:#ccc; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .card-name { font-size:15px; font-weight:700; color:#111; }
+  .card-meta { font-size:11px; color:#999; margin-top:1px; }
+  .card-right { display:flex; align-items:center; gap:8px; }
+  .status-badge { padding:3px 9px; border-radius:20px; font-size:11px; font-weight:700; }
   .status-badge.online { background:#e8fdf2; color:#1a7a45; }
   .status-badge.idle { background:#fffbeb; color:#92400e; }
   .status-badge.offline { background:#fef2f2; color:#991b1b; }
   .status-badge.never { background:#f5f5f5; color:#888; }
   .status-badge.unknown { background:#f5f5f5; color:#888; }
-  .card-stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-  .stat-item { background:#f9f9f9; border-radius:8px; padding:8px 10px; }
-  .stat-label { font-size:11px; color:#999; margin-bottom:2px; }
-  .stat-value { font-size:13px; font-weight:700; color:#333; }
-  .stat-value.good { color:#2ecc71; }
-  .stat-value.warn { color:#f39c12; }
-  .stat-value.bad { color:#e74c3c; }
-  .save-btn { background:#8B38CB; color:#fff; border:none; padding:10px 20px; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; width:100%; }
-  .save-btn:active { background:#7a2fb8; }
+  .chevron { font-size:12px; color:#ccc; transition:transform 0.2s; display:inline-block; }
+  .chevron.open { transform:rotate(180deg); }
+  .card-body { display:none; padding:0 16px 16px; border-top:1px solid #f5f5f5; }
+  .card-body.open { display:block; }
+  .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
+  .stat-box { background:#f9f9f9; border-radius:10px; padding:10px 12px; }
+  .stat-box .stat-label { font-size:11px; color:#999; margin-bottom:3px; }
+  .stat-box .stat-value { font-size:14px; font-weight:700; color:#333; }
+  .stat-box .stat-value.good { color:#2ecc71; }
+  .stat-box .stat-value.warn { color:#f39c12; }
+  .stat-box .stat-value.bad { color:#e74c3c; }
+  .orders-section { margin-top:12px; }
+  .orders-section h4 { font-size:12px; font-weight:700; color:#444; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; }
+  .order-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid #f5f5f5; }
+  .order-row:last-child { border-bottom:none; }
+  .order-id { font-size:12px; font-weight:700; color:#8B38CB; }
+  .order-customer { font-size:12px; color:#444; }
+  .order-amount { font-size:12px; font-weight:700; color:#111; }
+  .order-time { font-size:11px; color:#999; }
+  .no-orders { font-size:12px; color:#bbb; text-align:center; padding:12px 0; }
+  .empty-state { text-align:center; padding:40px 20px; color:#bbb; }
+  .empty-state p { font-size:14px; margin-top:8px; }
   .last-updated { text-align:center; font-size:11px; color:#bbb; margin-top:16px; padding-bottom:32px; }
 </style>
 </head>
 <body>
+
 <div class="topbar">
-  <div>
-    <h1>🍽️ FoodUp Monitor</h1>
-    <div class="time" id="current-time"></div>
+  <div class="topbar-row1">
+    <div>
+      <h1>🍽️ FoodUp Monitor</h1>
+      <div class="time" id="current-time"></div>
+    </div>
+    <div class="topbar-actions">
+      <a href="/dashboard/settings?p=${encodeURIComponent(p)}" class="icon-btn">⚙️</a>
+      <button class="icon-btn" onclick="location.reload()">↻</button>
+    </div>
   </div>
-  <a href="/dashboard/settings?p=${encodeURIComponent(p)}" style="background:rgba(255,255,255,0.2); border:none; color:#fff; padding:6px 12px; border-radius:20px; font-size:12px; font-weight:700; cursor:pointer; text-decoration:none; margin-right:8px;">⚙️ Settings</a>
-  <button class="refresh-btn" onclick="location.reload()">↻ Refresh</button>
+  <input class="search-bar" type="text" id="search" placeholder="🔍 Search restaurant..." oninput="applyFilters()" />
+</div>
+
+<div class="summary-row">
+  <div class="summary-card total"><div class="val">${restaurantData.length}</div><div class="lbl">Total</div></div>
+  <div class="summary-card s-online"><div class="val">${restaurantData.filter(r=>r.appStatus==='online').length}</div><div class="lbl">Online</div></div>
+  <div class="summary-card s-offline"><div class="val">${offlineCount}</div><div class="lbl">Offline</div></div>
+  <div class="summary-card s-orders"><div class="val">${totalOrdersToday}</div><div class="lbl">Orders</div></div>
+</div>
+
+${offlineCount > 0 ? `
+<div class="alert-banner">
+  <span>🔴</span>
+  <p>${offlineCount} restaurant${offlineCount !== 1 ? 's' : ''} need${offlineCount === 1 ? 's' : ''} attention</p>
+</div>` : ''}
+
+<div class="filter-tabs">
+  <button class="tab all active" onclick="setFilter('all',this)">All (${restaurantData.length})</button>
+  <button class="tab online" onclick="setFilter('online',this)">🟢 Online (${restaurantData.filter(r=>r.appStatus==='online').length})</button>
+  <button class="tab offline" onclick="setFilter('offline',this)">🔴 Offline (${offlineCount})</button>
+  <button class="tab idle" onclick="setFilter('idle',this)">🟡 Idle (${restaurantData.filter(r=>r.appStatus==='idle').length})</button>
 </div>
 
 <div class="content">
-
-  <div class="summary-row">
-    <div class="summary-card">
-      <div class="val">${restaurants.length}</div>
-      <div class="lbl">Restaurants</div>
-    </div>
-    <div class="summary-card">
-      <div class="val" style="color:#2ecc71;">${restaurantData.filter(r => r.appStatus === 'online').length}</div>
-      <div class="lbl">Online</div>
-    </div>
-    <div class="summary-card">
-      <div class="val" style="color:#e74c3c;">${restaurantData.filter(r => r.appStatus === 'offline' || r.appStatus === 'never').length}</div>
-      <div class="lbl">Offline</div>
-    </div>
+  <div class="sort-row">
+    <span id="result-count">${restaurantData.length} restaurant${restaurantData.length !== 1 ? 's' : ''}</span>
+    <select class="sort-select" onchange="applyFilters()">
+      <option value="status">Sort: Status first</option>
+      <option value="name">Sort: Name A-Z</option>
+      <option value="orders">Sort: Orders today</option>
+      <option value="lastseen">Sort: Last seen</option>
+    </select>
   </div>
 
-  <p class="section-title">Restaurants</p>
+  <div id="restaurant-list">
+  ${(() => {
+    const sorted = [...restaurantData].sort((a,b) => {
+      const order = {offline:0, never:1, idle:2, online:3, unknown:4};
+      return (order[a.appStatus]||4) - (order[b.appStatus]||4);
+    });
+    return sorted.map((r, idx) => {
+      const appTime = r.appMinutesAgo !== null
+        ? (r.appMinutesAgo < 60 ? r.appMinutesAgo + ' min ago' : Math.floor(r.appMinutesAgo/60) + 'h ' + (r.appMinutesAgo%60) + 'm ago')
+        : 'Never';
+      const lastOrderStr = r.lastOrderTime
+        ? (() => {
+            const m = Math.floor((Date.now() - new Date(r.lastOrderTime).getTime()) / 60000);
+            return m < 60 ? m + ' min ago' : m < 1440 ? Math.floor(m/60) + 'h ago' : Math.floor(m/1440) + 'd ago';
+          })()
+        : 'No orders';
+      const statusLabel = r.appStatus === 'online' ? 'Online' : r.appStatus === 'idle' ? 'Idle' : r.appStatus === 'never' ? 'Never Seen' : 'Offline';
+      const todayOrders = r.todayOrdersList || [];
+      const ordersHtml = todayOrders.length > 0
+        ? todayOrders.slice(0,5).map(o => {
+            const mins = o.date_created ? Math.floor((Date.now() - new Date(o.date_created.replace(' ','T')).getTime()) / 60000) : null;
+            const timeStr = mins !== null ? (mins < 60 ? mins + ' min ago' : Math.floor(mins/60) + 'h ago') : '';
+            return `<div class="order-row">
+              <div><div class="order-id">#${o.order_id}</div><div class="order-customer">${o.customer_name||''}</div></div>
+              <div style="text-align:right"><div class="order-amount">${o.currency||'CHF'} ${o.total||''}</div><div class="order-time">${timeStr}</div></div>
+            </div>`;
+          }).join('') + (todayOrders.length > 5 ? `<div class="no-orders">+${todayOrders.length-5} more orders today</div>` : '')
+        : '<div class="no-orders">No orders today</div>';
 
-  ${restaurantData.map(r => {
-    const statusLabel = r.appStatus === 'online' ? '🟢 Online' : r.appStatus === 'idle' ? '🟡 Idle' : r.appStatus === 'never' ? '⚫ Never Seen' : '🔴 Offline';
-    const appTime = r.appMinutesAgo !== null ? (r.appMinutesAgo < 60 ? r.appMinutesAgo + ' min ago' : Math.floor(r.appMinutesAgo/60) + 'h ' + (r.appMinutesAgo%60) + 'm ago') : 'Never';
-    const lastOrderStr = r.lastOrderTime ? (() => { const m = Math.floor((Date.now() - new Date(r.lastOrderTime).getTime()) / 60000); return m < 60 ? m + ' min ago' : Math.floor(m/60) + 'h ago'; })() : 'No orders';
-    return `
-    <div class="restaurant-card ${r.appStatus}">
-      <div class="card-header">
-        <div>
-          <div class="card-title">${r.name || r.code}</div>
-          <div class="card-code">${r.code}${r.website ? ' · ' + r.website : ''}</div>
+      return `
+      <div class="restaurant-card" data-status="${r.appStatus}" data-name="${(r.name||r.code).toLowerCase()}" data-orders="${r.ordersToday}" data-lastseen="${r.appMinutesAgo !== null ? r.appMinutesAgo : 99999}">
+        <div class="card-header" onclick="toggleCard(${idx})">
+          <div class="card-header-left">
+            <div class="status-dot ${r.appStatus}"></div>
+            <div>
+              <div class="card-name">${r.name||r.code}</div>
+              <div class="card-meta">${r.code}${r.website?' · '+r.website:''}</div>
+            </div>
+          </div>
+          <div class="card-right">
+            <span class="status-badge ${r.appStatus}">${statusLabel}</span>
+            <span class="chevron" id="chevron-${idx}">▼</span>
+          </div>
         </div>
-        <div class="status-badge ${r.appStatus}">${statusLabel}</div>
-      </div>
-      <div class="card-stats">
-        <div class="stat-item">
-          <div class="stat-label">App Last Seen</div>
-          <div class="stat-value ${r.appStatus === 'online' ? 'good' : r.appStatus === 'idle' ? 'warn' : 'bad'}">${appTime}</div>
+        <div class="card-body" id="body-${idx}">
+          <div class="stats-grid">
+            <div class="stat-box">
+              <div class="stat-label">App Last Seen</div>
+              <div class="stat-value ${r.appStatus==='online'?'good':r.appStatus==='idle'?'warn':'bad'}">${appTime}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Orders Today</div>
+              <div class="stat-value ${r.ordersToday>0?'good':''}">${r.ordersToday}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Last Order</div>
+              <div class="stat-value">${lastOrderStr}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Devices</div>
+              <div class="stat-value ${r.tokens>0?'good':'bad'}">${r.tokens} registered</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Revenue Today</div>
+              <div class="stat-value good">CHF ${r.revenueToday?r.revenueToday.toFixed(2):'0.00'}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Printer</div>
+              <div class="stat-value ${r.hasPrinter?'good':'warn'}">${r.hasPrinter?'Configured':'Not set'}</div>
+            </div>
+          </div>
+          <div class="orders-section">
+            <h4>Today's Orders</h4>
+            ${ordersHtml}
+          </div>
         </div>
-        <div class="stat-item">
-          <div class="stat-label">Orders Today</div>
-          <div class="stat-value ${r.ordersToday > 0 ? 'good' : ''}">${r.ordersToday}</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-label">Last Order</div>
-          <div class="stat-value">${lastOrderStr}</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-label">Devices</div>
-          <div class="stat-value ${r.tokens > 0 ? 'good' : 'bad'}">${r.tokens} registered</div>
-        </div>
-      </div>
-    </div>`;
-  }).join('')}
+      </div>`;
+    }).join('');
+  })()}
+  </div>
 
-<div class="last-updated">Last updated: ${new Date().toLocaleString('de-CH')}</div>
+  <div id="empty-state" class="empty-state" style="display:none;">
+    <div style="font-size:40px;">🔍</div>
+    <p>No restaurants found</p>
+  </div>
+
+  <div class="last-updated">Last updated: ${new Date().toLocaleString('de-CH')} · Auto-refresh in <span id="countdown">60</span>s</div>
+</div>
 
 <script>
+let currentFilter = 'all';
+
 function updateTime() {
   document.getElementById('current-time').textContent = new Date().toLocaleTimeString('de-CH');
 }
 updateTime();
 setInterval(updateTime, 1000);
 
+let countdown = 60;
+setInterval(() => {
+  countdown--;
+  const el = document.getElementById('countdown');
+  if (el) el.textContent = countdown;
+  if (countdown <= 0) location.reload();
+}, 1000);
 
+function toggleCard(idx) {
+  const body = document.getElementById('body-' + idx);
+  const chevron = document.getElementById('chevron-' + idx);
+  const isOpen = body.classList.contains('open');
+  body.classList.toggle('open', !isOpen);
+  chevron.classList.toggle('open', !isOpen);
+}
 
-// Auto refresh every 60 seconds
-setTimeout(() => location.reload(), 60000);
+function setFilter(filter, btn) {
+  currentFilter = filter;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  applyFilters();
+}
+
+function applyFilters() {
+  const search = document.getElementById('search').value.toLowerCase();
+  const sort = document.querySelector('.sort-select').value;
+  const cards = Array.from(document.querySelectorAll('.restaurant-card'));
+  let visible = 0;
+
+  cards.forEach(card => {
+    const status = card.dataset.status;
+    const name = card.dataset.name;
+    const matchesFilter = currentFilter === 'all' ||
+      (currentFilter === 'offline' && (status === 'offline' || status === 'never')) ||
+      (currentFilter === 'online' && status === 'online') ||
+      (currentFilter === 'idle' && status === 'idle');
+    const matchesSearch = !search || name.includes(search);
+    if (matchesFilter && matchesSearch) { card.style.display = 'block'; visible++; }
+    else card.style.display = 'none';
+  });
+
+  const list = document.getElementById('restaurant-list');
+  const visibleCards = cards.filter(c => c.style.display !== 'none');
+  visibleCards.sort((a, b) => {
+    if (sort === 'name') return a.dataset.name.localeCompare(b.dataset.name);
+    if (sort === 'orders') return parseInt(b.dataset.orders) - parseInt(a.dataset.orders);
+    if (sort === 'lastseen') return parseInt(a.dataset.lastseen) - parseInt(b.dataset.lastseen);
+    const order = {offline:0, never:1, idle:2, online:3, unknown:4};
+    return (order[a.dataset.status]||4) - (order[b.dataset.status]||4);
+  });
+  visibleCards.forEach(c => list.appendChild(c));
+
+  document.getElementById('result-count').textContent = visible + ' restaurant' + (visible !== 1 ? 's' : '');
+  document.getElementById('empty-state').style.display = visible === 0 ? 'block' : 'none';
+}
 </script>
 </body>
 </html>`;
@@ -1725,7 +1892,6 @@ async function checkAndSendAlerts() {
     const alertSettings = JSON.parse(alertData.result);
     if (!alertSettings.alert_email) return;
 
-    const thresholdMs = (alertSettings.offline_threshold_minutes || 30) * 60 * 1000;
     const restaurantsResult = await redisCommand("SMEMBERS", "restaurants");
     const restaurants = restaurantsResult.result || [];
 
@@ -1738,7 +1904,6 @@ async function checkAndSendAlerts() {
         const name = profile?.name || code;
 
         if (!heartbeatData.result) {
-          // App never seen — only alert once
           if (!alertSentData.result) {
             await sendAlertEmail(
               alertSettings.alert_email,
@@ -1760,9 +1925,10 @@ async function checkAndSendAlerts() {
         const minutesOffline = Math.floor((Date.now() - new Date(heartbeat.last_seen).getTime()) / 60000);
 
         if (minutesOffline >= alertSettings.offline_threshold_minutes) {
-          // Only send alert once per offline period
           if (!alertSentData.result) {
-            const hoursOffline = minutesOffline >= 60 ? Math.floor(minutesOffline/60) + 'h ' + (minutesOffline%60) + 'm' : minutesOffline + ' minutes';
+            const hoursOffline = minutesOffline >= 60
+              ? Math.floor(minutesOffline/60) + 'h ' + (minutesOffline%60) + 'm'
+              : minutesOffline + ' minutes';
             await sendAlertEmail(
               alertSettings.alert_email,
               `🔴 FoodUp Alert — ${name} is offline`,
@@ -1777,10 +1943,9 @@ async function checkAndSendAlerts() {
               </div>`
             );
             await redisCommand("SET", k(code, "alert_sent"), "offline");
-            await redisCommand("EXPIRE", k(code, "alert_sent"), 3600); // Re-alert after 1 hour if still offline
+            await redisCommand("EXPIRE", k(code, "alert_sent"), 3600);
           }
         } else {
-          // App is back online — clear alert sent flag and send recovery email if was offline
           if (alertSentData.result === "offline") {
             await sendAlertEmail(
               alertSettings.alert_email,
@@ -1806,7 +1971,6 @@ async function checkAndSendAlerts() {
 
 // Run alert checker every 5 minutes
 setInterval(checkAndSendAlerts, 5 * 60 * 1000);
-
 
 // -------------------------------------------------------
 // HEALTH CHECK
