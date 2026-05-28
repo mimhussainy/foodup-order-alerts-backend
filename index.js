@@ -980,10 +980,11 @@ app.post("/store-status", async (req, res) => {
 app.get("/health-check/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   try {
-    const [profileData, tokensData, pinData] = await Promise.all([
+const [profileData, tokensData, pinData, printerData] = await Promise.all([
       redisCommand("GET", k(code, "restaurant_profile")),
       redisCommand("SMEMBERS", k(code, "device_tokens")),
       redisCommand("GET", k(code, "pin")),
+      redisCommand("GET", k(code, "printer_device_id")),
     ]);
 
     const profile = profileData.result ? JSON.parse(profileData.result) : null;
@@ -997,6 +998,7 @@ app.get("/health-check/:code", async (req, res) => {
       has_profile: !!profile,
       has_website: !!(profile?.website),
       has_print_logo: !!(profile?.print_logo_url),
+      printer_device_id: printerData.result || '',
     });
   } catch(e) {
     res.json({ success: false, message: e.message });
