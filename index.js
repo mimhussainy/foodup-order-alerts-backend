@@ -1865,44 +1865,36 @@ const orderData = ${JSON.stringify(restaurantData.reduce((acc, r) => {
 function showOrder(orderId) {
   const o = orderData[orderId];
   if (!o) return;
-
   const items = typeof o.items === 'string' ? JSON.parse(o.items || '[]') : (o.items || []);
-  const itemsHtml = items.map(item => {
-    const addons = (item.addons || []).map(a => '<div class="modal-item-addon">\u21b3 ' + (a.value || a.label || '') + '</div>').join('');
+  const itemsHtml = items.map(function(item) {
+    const addons = (item.addons || []).map(function(a) {
+      return '<div class="modal-item-addon">\u21b3 ' + (a.value || a.label || '') + '</div>';
+    }).join('');
     return '<div class="modal-item">'
       + '<div class="modal-item-name">' + item.quantity + 'x ' + item.name + '</div>'
       + addons
       + '<div class="modal-item-price">CHF ' + parseFloat(item.total||0).toFixed(2) + '</div>'
       + '</div>';
   }).join('');
-
   const scheduledTime = o.orderable_order_time && !o.orderable_order_time.toLowerCase().includes('as soon as possible')
-    ? o.orderable_order_time.replace(/\s*\(.*?\)\s*/g, '').trim() + (o.orderable_order_date ? ' — ' + o.orderable_order_date : '')
+    ? o.orderable_order_time.replace(/\s*\(.*?\)\s*/g, '').trim() + (o.orderable_order_date ? ' \u2014 ' + o.orderable_order_date : '')
     : 'ASAP';
-
   document.getElementById('modal-order-id').textContent = '#' + o.order_id;
   document.getElementById('modal-status').textContent = o.status || '';
   document.getElementById('modal-items').innerHTML = itemsHtml;
-
-  document.getElementById('modal-customer-name').textContent = o.customer_name || '—';
-  document.getElementById('modal-customer-phone').textContent = o.customer_phone || '—';
-  document.getElementById('modal-customer-email').textContent = o.customer_email || '—';
-  document.getElementById('modal-payment').textContent = o.payment_method || '—';
-  document.getElementById('modal-shipping').textContent = o.shipping?.method || o.shipping_method || '—';
-  document.getElementById('modal-address').textContent = o.shipping?.address || o.shipping_address || '—';
+  document.getElementById('modal-customer-name').textContent = o.customer_name || '\u2014';
+  document.getElementById('modal-customer-phone').textContent = o.customer_phone || '\u2014';
+  document.getElementById('modal-customer-email').textContent = o.customer_email || '\u2014';
+  document.getElementById('modal-payment').textContent = o.payment_method || '\u2014';
+  document.getElementById('modal-shipping').textContent = (o.shipping && o.shipping.method) ? o.shipping.method : (o.shipping_method || '\u2014');
+  document.getElementById('modal-address').textContent = (o.shipping && o.shipping.address) ? o.shipping.address : (o.shipping_address || '\u2014');
   document.getElementById('modal-time').textContent = scheduledTime;
-  document.getElementById('modal-note').textContent = o.note || '—';
+  document.getElementById('modal-note').textContent = o.note || '\u2014';
   document.getElementById('modal-total').textContent = (o.currency || 'CHF') + ' ' + o.total;
-
   const phone = (o.customer_phone || '').replace(/\s/g, '');
   const callBtn = document.getElementById('modal-call-btn');
-  if (phone) {
-    callBtn.href = 'tel:' + phone;
-    callBtn.style.display = 'block';
-  } else {
-    callBtn.style.display = 'none';
-  }
-
+  if (phone) { callBtn.href = 'tel:' + phone; callBtn.style.display = 'block'; }
+  else { callBtn.style.display = 'none'; }
   document.getElementById('modal-copy-success').style.display = 'none';
   document.getElementById('order-modal').classList.add('open');
 }
@@ -1921,42 +1913,45 @@ function copyOrder() {
   const total = document.getElementById('modal-total').textContent;
   const note = document.getElementById('modal-note').textContent;
   const orderId = document.getElementById('modal-order-id').textContent;
-
   const itemEls = document.querySelectorAll('#modal-items .modal-item');
   let itemsText = '';
-  itemEls.forEach(el => {
-    const name = el.querySelector('.modal-item-name')?.textContent || '';
-    const addons = Array.from(el.querySelectorAll('.modal-item-addon')).map(a => '  ' + a.textContent).join('\n');
-    itemsText += name + (addons ? '\n' + addons : '') + '\n';
+  itemEls.forEach(function(el) {
+    const n = el.querySelector('.modal-item-name') ? el.querySelector('.modal-item-name').textContent : '';
+    const addons = Array.from(el.querySelectorAll('.modal-item-addon')).map(function(a) { return '  ' + a.textContent; }).join('\n');
+    itemsText += n + (addons ? '\n' + addons : '') + '\n';
   });
+  const text = [
+    '\uD83D\uDED2 Order ' + orderId,
+    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
+    '\uD83D\uDC64 ' + name,
+    '\uD83D\uDCDE ' + phone,
+    '\uD83D\uDCCD ' + address,
+    '\uD83D\uDE9A ' + shipping,
+    '\uD83D\uDCB3 ' + payment,
+    '\u23F0 ' + time,
+    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
+    itemsText,
+    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
+    '\uD83D\uDCB0 Total: ' + total,
+    note !== '\u2014' ? '\uD83D\uDCDD Note: ' + note : ''
+  ].filter(Boolean).join('\n').trim();
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(function() {
+      document.getElementById('modal-copy-success').style.display = 'block';
+      setTimeout(function() { document.getElementById('modal-copy-success').style.display = 'none'; }, 2000);
+    }).catch(function() { fallbackCopy(text); });
+  } else { fallbackCopy(text); }
+}
 
-  const text = ('🛒 Order ' + orderId + '\n'
-    + '━━━━━━━━━━━━━━\n'
-    + '👤 ' + name + '\n'
-    + '📞 ' + phone + '\n'
-    + '📍 ' + address + '\n'
-    + '🚚 ' + shipping + '\n'
-    + '💳 ' + payment + '\n'
-    + '⏰ ' + time + '\n'
-    + '━━━━━━━━━━━━━━\n'
-    + itemsText
-    + '━━━━━━━━━━━━━━\n'
-    + '💰 Total: ' + total + '\n'
-    + (note !== '—' ? '📝 Note: ' + note : '')).trim();
-
-  navigator.clipboard.writeText(text).then(() => {
-    document.getElementById('modal-copy-success').style.display = 'block';
-    setTimeout(() => document.getElementById('modal-copy-success').style.display = 'none', 2000);
-  }).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    document.getElementById('modal-copy-success').style.display = 'block';
-    setTimeout(() => document.getElementById('modal-copy-success').style.display = 'none', 2000);
-  });
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  document.getElementById('modal-copy-success').style.display = 'block';
+  setTimeout(function() { document.getElementById('modal-copy-success').style.display = 'none'; }, 2000);
 }
 
 function toggleCard(idx) {
@@ -1969,7 +1964,7 @@ function toggleCard(idx) {
 
 function setFilter(filter, btn) {
   currentFilter = filter;
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
   btn.classList.add('active');
   applyFilters();
 }
@@ -1979,8 +1974,7 @@ function applyFilters() {
   const sort = document.querySelector('.sort-select').value;
   const cards = Array.from(document.querySelectorAll('.restaurant-card'));
   let visible = 0;
-
-  cards.forEach(card => {
+  cards.forEach(function(card) {
     const status = card.dataset.status;
     const name = card.dataset.name;
     const matchesFilter = currentFilter === 'all' ||
@@ -1991,23 +1985,20 @@ function applyFilters() {
     if (matchesFilter && matchesSearch) { card.style.display = 'block'; visible++; }
     else card.style.display = 'none';
   });
-
   const list = document.getElementById('restaurant-list');
-  const visibleCards = cards.filter(c => c.style.display !== 'none');
-  visibleCards.sort((a, b) => {
+  const visibleCards = cards.filter(function(c) { return c.style.display !== 'none'; });
+  visibleCards.sort(function(a, b) {
     if (sort === 'name') return a.dataset.name.localeCompare(b.dataset.name);
     if (sort === 'orders') return parseInt(b.dataset.orders) - parseInt(a.dataset.orders);
     if (sort === 'lastseen') return parseInt(a.dataset.lastseen) - parseInt(b.dataset.lastseen);
     const order = {offline:0, never:1, idle:2, online:3, unknown:4};
     return (order[a.dataset.status]||4) - (order[b.dataset.status]||4);
   });
-  visibleCards.forEach(c => list.appendChild(c));
-
+  visibleCards.forEach(function(c) { list.appendChild(c); });
   document.getElementById('result-count').textContent = visible + ' restaurant' + (visible !== 1 ? 's' : '');
-document.getElementById('empty-state').style.display = visible === 0 ? 'block' : 'none';
+  document.getElementById('empty-state').style.display = visible === 0 ? 'block' : 'none';
 }
 
-// Close modal on overlay click
 document.getElementById('order-modal').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
 });
