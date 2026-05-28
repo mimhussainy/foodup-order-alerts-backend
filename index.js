@@ -1598,6 +1598,7 @@ function login() {
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f0f0f5; min-height:100vh; }
   .topbar { background:#8B38CB; padding:14px 16px; position:sticky; top:0; z-index:100; }
+  .topbar-inner { max-width:700px; margin:0 auto; }
   .topbar-row1 { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
   .topbar h1 { color:#fff; font-size:17px; font-weight:800; }
   .topbar .time { color:rgba(255,255,255,0.8); font-size:11px; }
@@ -1642,6 +1643,7 @@ function login() {
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
   .card-name { font-size:15px; font-weight:700; color:#111; }
   .card-meta { font-size:11px; color:#999; margin-top:1px; }
+  .card-preview { font-size:11px; color:#8B38CB; margin-top:3px; font-weight:600; }
   .card-right { display:flex; align-items:center; gap:8px; }
   .status-badge { padding:3px 9px; border-radius:20px; font-size:11px; font-weight:700; }
   .status-badge.online { background:#e8fdf2; color:#1a7a45; }
@@ -1662,13 +1664,38 @@ function login() {
   .stat-box .stat-value.bad { color:#e74c3c; }
   .orders-section { margin-top:12px; }
   .orders-section h4 { font-size:12px; font-weight:700; color:#444; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; }
-  .order-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid #f5f5f5; }
+  .order-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid #f5f5f5; cursor:pointer; }
   .order-row:last-child { border-bottom:none; }
+  .order-row:active { background:#f9f9f9; }
   .order-id { font-size:12px; font-weight:700; color:#8B38CB; }
   .order-customer { font-size:12px; color:#444; }
   .order-amount { font-size:12px; font-weight:700; color:#111; }
   .order-time { font-size:11px; color:#999; }
   .no-orders { font-size:12px; color:#bbb; text-align:center; padding:12px 0; }
+  .modal-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:flex-end; justify-content:center; }
+  .modal-overlay.open { display:flex; }
+  .modal { background:#fff; border-radius:20px 20px 0 0; padding:24px 20px 40px; width:100%; max-width:700px; max-height:85vh; overflow-y:auto; }
+  .modal-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+  .modal-title { font-size:18px; font-weight:800; color:#111; }
+  .modal-close { background:#f0f0f0; border:none; border-radius:50%; width:32px; height:32px; font-size:18px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .modal-section { margin-bottom:16px; }
+  .modal-section h4 { font-size:11px; font-weight:700; color:#999; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; }
+  .modal-row { display:flex; justify-content:space-between; align-items:flex-start; padding:6px 0; border-bottom:1px solid #f5f5f5; }
+  .modal-row:last-child { border-bottom:none; }
+  .modal-label { font-size:13px; color:#888; }
+  .modal-value { font-size:13px; font-weight:700; color:#111; text-align:right; max-width:60%; }
+  .modal-item { padding:8px 0; border-bottom:1px solid #f5f5f5; }
+  .modal-item:last-child { border-bottom:none; }
+  .modal-item-name { font-size:14px; font-weight:700; color:#111; }
+  .modal-item-addon { font-size:12px; color:#888; margin-top:2px; }
+  .modal-item-price { font-size:13px; font-weight:700; color:#8B38CB; margin-top:2px; }
+  .modal-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:20px; }
+  .modal-btn { padding:12px; border-radius:12px; font-size:14px; font-weight:700; border:none; cursor:pointer; text-align:center; text-decoration:none; display:block; }
+  .modal-btn.call { background:#2ecc71; color:#fff; }
+  .modal-btn.copy { background:#8B38CB; color:#fff; }
+  .modal-btn.call:active { background:#27ae60; }
+  .modal-btn.copy:active { background:#7a2fb8; }
+  .copy-success { text-align:center; font-size:12px; color:#2ecc71; margin-top:8px; display:none; }
   .empty-state { text-align:center; padding:40px 20px; color:#bbb; }
   .empty-state p { font-size:14px; margin-top:8px; }
   .last-updated { text-align:center; font-size:11px; color:#bbb; margin-top:16px; padding-bottom:32px; }
@@ -1677,6 +1704,7 @@ function login() {
 <body>
 
 <div class="topbar">
+  <div class="topbar-inner">
   <div class="topbar-row1">
     <div>
       <h1>🍽️ FoodUp Monitor</h1>
@@ -1687,7 +1715,8 @@ function login() {
       <button class="icon-btn" onclick="location.reload()">↻</button>
     </div>
   </div>
-  <input class="search-bar" type="text" id="search" placeholder="🔍 Search restaurant..." oninput="applyFilters()" />
+<input class="search-bar" type="text" id="search" placeholder="🔍 Search restaurant..." oninput="applyFilters()" />
+  </div>
 </div>
 
 <div class="summary-row">
@@ -1743,21 +1772,22 @@ ${offlineCount > 0 ? `
         ? todayOrders.slice(0,5).map(o => {
             const mins = o.date_created ? Math.floor((Date.now() - new Date(o.date_created.replace(' ','T')).getTime()) / 60000) : null;
             const timeStr = mins !== null ? (mins < 60 ? mins + ' min ago' : Math.floor(mins/60) + 'h ago') : '';
-            return `<div class="order-row">
+            return `<div class="order-row" onclick="showOrder('${o.order_id}')">
               <div><div class="order-id">#${o.order_id}</div><div class="order-customer">${o.customer_name||''}</div></div>
-              <div style="text-align:right"><div class="order-amount">${o.currency||'CHF'} ${o.total||''}</div><div class="order-time">${timeStr}</div></div>
+              <div style="text-align:right"><div class="order-amount">${o.currency||'CHF'} ${o.total||''}</div><div class="order-time">${timeStr} ›</div></div>
             </div>`;
           }).join('') + (todayOrders.length > 5 ? `<div class="no-orders">+${todayOrders.length-5} more orders today</div>` : '')
         : '<div class="no-orders">No orders today</div>';
 
       return `
       <div class="restaurant-card" data-status="${r.appStatus}" data-name="${(r.name||r.code).toLowerCase()}" data-orders="${r.ordersToday}" data-lastseen="${r.appMinutesAgo !== null ? r.appMinutesAgo : 99999}">
-        <div class="card-header" onclick="toggleCard(${idx})">
+<div class="card-header" onclick="toggleCard(${idx})">
           <div class="card-header-left">
             <div class="status-dot ${r.appStatus}"></div>
             <div>
               <div class="card-name">${r.name||r.code}</div>
               <div class="card-meta">${r.code}${r.website?' · '+r.website:''}</div>
+              <div class="card-preview">${r.ordersToday} order${r.ordersToday!==1?'s':''} · CHF ${r.revenueToday?r.revenueToday.toFixed(2):'0.00'} · Last: ${r.lastOrderTime ? (() => { const m = Math.floor((Date.now() - new Date(r.lastOrderTime).getTime()) / 60000); return m < 60 ? m + 'm ago' : m < 1440 ? Math.floor(m/60) + 'h ago' : Math.floor(m/1440) + 'd ago'; })() : 'none'}</div>
             </div>
           </div>
           <div class="card-right">
@@ -1827,6 +1857,92 @@ setInterval(() => {
   if (countdown <= 0) location.reload();
 }, 1000);
 
+const orderData = ${JSON.stringify(restaurantData.reduce((acc, r) => {
+  (r.todayOrdersList || []).forEach(o => { acc[o.order_id] = o; });
+  return acc;
+}, {}))};
+
+function showOrder(orderId) {
+  const o = orderData[orderId];
+  if (!o) return;
+
+  const items = typeof o.items === 'string' ? JSON.parse(o.items || '[]') : (o.items || []);
+  const itemsHtml = items.map(item => {
+    const addons = (item.addons || []).map(a => `<div class="modal-item-addon">↳ ${a.value || a.label || ''}</div>`).join('');
+    return `<div class="modal-item">
+      <div class="modal-item-name">${item.quantity}x ${item.name}</div>
+      ${addons}
+      <div class="modal-item-price">CHF ${parseFloat(item.total||0).toFixed(2)}</div>
+    </div>`;
+  }).join('');
+
+  const scheduledTime = o.orderable_order_time && !o.orderable_order_time.toLowerCase().includes('as soon as possible')
+    ? o.orderable_order_time.replace(/\s*\(.*?\)\s*/g, '').trim() + (o.orderable_order_date ? ' — ' + o.orderable_order_date : '')
+    : 'ASAP';
+
+  document.getElementById('modal-order-id').textContent = '#' + o.order_id;
+  document.getElementById('modal-status').textContent = o.status || '';
+  document.getElementById('modal-items').innerHTML = itemsHtml;
+
+  document.getElementById('modal-customer-name').textContent = o.customer_name || '—';
+  document.getElementById('modal-customer-phone').textContent = o.customer_phone || '—';
+  document.getElementById('modal-customer-email').textContent = o.customer_email || '—';
+  document.getElementById('modal-payment').textContent = o.payment_method || '—';
+  document.getElementById('modal-shipping').textContent = o.shipping?.method || o.shipping_method || '—';
+  document.getElementById('modal-address').textContent = o.shipping?.address || o.shipping_address || '—';
+  document.getElementById('modal-time').textContent = scheduledTime;
+  document.getElementById('modal-note').textContent = o.note || '—';
+  document.getElementById('modal-total').textContent = (o.currency || 'CHF') + ' ' + o.total;
+
+  const phone = (o.customer_phone || '').replace(/\s/g, '');
+  const callBtn = document.getElementById('modal-call-btn');
+  if (phone) {
+    callBtn.href = 'tel:' + phone;
+    callBtn.style.display = 'block';
+  } else {
+    callBtn.style.display = 'none';
+  }
+
+  document.getElementById('modal-copy-success').style.display = 'none';
+  document.getElementById('order-modal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('order-modal').classList.remove('open');
+}
+
+function copyOrder() {
+  const name = document.getElementById('modal-customer-name').textContent;
+  const phone = document.getElementById('modal-customer-phone').textContent;
+  const address = document.getElementById('modal-address').textContent;
+  const shipping = document.getElementById('modal-shipping').textContent;
+  const payment = document.getElementById('modal-payment').textContent;
+  const time = document.getElementById('modal-time').textContent;
+  const total = document.getElementById('modal-total').textContent;
+  const note = document.getElementById('modal-note').textContent;
+  const orderId = document.getElementById('modal-order-id').textContent;
+
+  const itemEls = document.querySelectorAll('#modal-items .modal-item');
+  let itemsText = '';
+  itemEls.forEach(el => {
+    const name = el.querySelector('.modal-item-name')?.textContent || '';
+    const addons = Array.from(el.querySelectorAll('.modal-item-addon')).map(a => '  ' + a.textContent).join('\n');
+    itemsText += name + (addons ? '\n' + addons : '') + '\n';
+  });
+
+  const text = `🛒 Order ${orderId}
+━━━━━━━━━━━━━━
+👤 ${name}
+📞 ${phone}
+📍 ${address}
+🚚 ${shipping}
+💳 ${payment}
+⏰ ${time}
+━━━━━━━━━━━━━━
+${itemsText}━━━━━━━━━━━━━━
+💰 Total: ${total}
+${note !== '—' ? '📝
+
 function toggleCard(idx) {
   const body = document.getElementById('body-' + idx);
   const chevron = document.getElementById('chevron-' + idx);
@@ -1872,9 +1988,58 @@ function applyFilters() {
   visibleCards.forEach(c => list.appendChild(c));
 
   document.getElementById('result-count').textContent = visible + ' restaurant' + (visible !== 1 ? 's' : '');
-  document.getElementById('empty-state').style.display = visible === 0 ? 'block' : 'none';
+document.getElementById('empty-state').style.display = visible === 0 ? 'block' : 'none';
 }
+
+// Close modal on overlay click
+document.getElementById('order-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
 </script>
+<div class="modal-overlay" id="order-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modal-order-id"></div>
+        <div style="font-size:12px; color:#888; margin-top:2px;" id="modal-status"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+
+    <div class="modal-section">
+      <h4>Items</h4>
+      <div id="modal-items"></div>
+    </div>
+
+    <div class="modal-section">
+      <h4>Customer</h4>
+      <div class="modal-row"><span class="modal-label">Name</span><span class="modal-value" id="modal-customer-name"></span></div>
+      <div class="modal-row"><span class="modal-label">Phone</span><span class="modal-value" id="modal-customer-phone"></span></div>
+      <div class="modal-row"><span class="modal-label">Email</span><span class="modal-value" id="modal-customer-email"></span></div>
+    </div>
+
+    <div class="modal-section">
+      <h4>Delivery</h4>
+      <div class="modal-row"><span class="modal-label">Method</span><span class="modal-value" id="modal-shipping"></span></div>
+      <div class="modal-row"><span class="modal-label">Address</span><span class="modal-value" id="modal-address"></span></div>
+      <div class="modal-row"><span class="modal-label">Time</span><span class="modal-value" id="modal-time"></span></div>
+    </div>
+
+    <div class="modal-section">
+      <h4>Payment</h4>
+      <div class="modal-row"><span class="modal-label">Method</span><span class="modal-value" id="modal-payment"></span></div>
+      <div class="modal-row"><span class="modal-label">Total</span><span class="modal-value" id="modal-total" style="color:#8B38CB;"></span></div>
+      <div class="modal-row"><span class="modal-label">Note</span><span class="modal-value" id="modal-note"></span></div>
+    </div>
+
+    <div class="modal-actions">
+      <a class="modal-btn call" id="modal-call-btn" href="#">📞 Call Customer</a>
+      <button class="modal-btn copy" onclick="copyOrder()">📋 Copy Order</button>
+    </div>
+    <div class="copy-success" id="modal-copy-success">✓ Copied to clipboard!</div>
+  </div>
+</div>
+
 </body>
 </html>`;
 
