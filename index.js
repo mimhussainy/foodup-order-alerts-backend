@@ -307,11 +307,35 @@ app.post("/verify-pin", async (req, res) => {
   const { pin, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+  const limit = rateLimit(ip, `verify-pin:${code}`);
+  if (!limit.allowed) {
+    return res.json({
+      success: false,
+      rate_limited: true,
+      message: limit.blocked
+        ? `Too many failed attempts. Try again in ${limit.minutesLeft} minute${limit.minutesLeft > 1 ? 's' : ''}.`
+        : 'Rate limit exceeded.',
+      minutes_left: limit.minutesLeft,
+    });
+  }
+
   const stored = await redisCommand("GET", k(code, "pin"));
   if (stored.result && stored.result === pin) {
+    // Reset rate limit on success
+    const key = `verify-pin:${code}:${ip}`;
+    delete rateLimitStore[key];
     res.json({ success: true });
   } else {
-    res.json({ success: false });
+    res.json({
+      success: false,
+      rate_limited: false,
+      attempts_left: limit.attemptsLeft,
+      message: limit.attemptsLeft <= 2
+        ? `Incorrect PIN. ${limit.attemptsLeft} attempt${limit.attemptsLeft !== 1 ? 's' : ''} left before 15 minute lockout.`
+        : 'Incorrect PIN.',
+    });
   }
 });
 
@@ -319,12 +343,31 @@ app.post("/verify-ios-pin", async (req, res) => {
   const { ios_pin, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+  const limit = rateLimit(ip, `verify-ios-pin:${code}`);
+  if (!limit.allowed) {
+    return res.json({
+      success: false,
+      rate_limited: true,
+      message: `Too many failed attempts. Try again in ${limit.minutesLeft} minute${limit.minutesLeft > 1 ? 's' : ''}.`,
+      minutes_left: limit.minutesLeft,
+    });
+  }
+
   const stored = await redisCommand("GET", k(code, "ios_pin"));
   if (!stored.result) return res.json({ success: false, message: "iOS PIN not set" });
   if (stored.result === ios_pin) {
     res.json({ success: true });
   } else {
-    res.json({ success: false, message: "Incorrect iOS PIN" });
+    res.json({
+      success: false,
+      rate_limited: false,
+      attempts_left: limit.attemptsLeft,
+      message: limit.attemptsLeft <= 2
+        ? `Incorrect PIN. ${limit.attemptsLeft} attempt${limit.attemptsLeft !== 1 ? 's' : ''} left before 15 minute lockout.`
+        : 'Incorrect iOS PIN.',
+    });
   }
 });
 
@@ -372,6 +415,17 @@ app.post("/verify-delivery-account", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+  const limit = rateLimit(ip, `verify-delivery:${code}:${username?.toLowerCase()}`);
+  if (!limit.allowed) {
+    return res.json({
+      success: false,
+      rate_limited: true,
+      message: `Too many failed attempts. Try again in ${limit.minutesLeft} minute${limit.minutesLeft > 1 ? 's' : ''}.`,
+      minutes_left: limit.minutesLeft,
+    });
+  }
+
   const data = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
   if (!data.result) return res.json({ success: false, message: "Account not found" });
 
@@ -379,7 +433,14 @@ app.post("/verify-delivery-account", async (req, res) => {
   if (account.password === password) {
     res.json({ success: true, username: account.username });
   } else {
-    res.json({ success: false, message: "Incorrect password" });
+    res.json({
+      success: false,
+      rate_limited: false,
+      attempts_left: limit.attemptsLeft,
+      message: limit.attemptsLeft <= 2
+        ? `Incorrect password. ${limit.attemptsLeft} attempt${limit.attemptsLeft !== 1 ? 's' : ''} left before 15 minute lockout.`
+        : 'Incorrect password.',
+    });
   }
 });
 
@@ -910,6 +971,36 @@ app.post("/store-status", async (req, res) => {
   if (!code) return res.json({ success: false });
   await redisCommand("SET", k(code, "store_status"), is_open ? 'open' : 'closed');
   res.json({ success: true, is_open });
+});
+
+// -------------------------------------------------------
+// HEALTH CHECK ENDPOINT
+// -------------------------------------------------------
+
+app.get("/health-check/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  try {
+    const [profileData, tokensData, pinData] = await Promise.all([
+      redisCommand("GET", k(code, "restaurant_profile")),
+      redisCommand("SMEMBERS", k(code, "device_tokens")),
+      redisCommand("GET", k(code, "pin")),
+    ]);
+
+    const profile = profileData.result ? JSON.parse(profileData.result) : null;
+    const tokens = tokensData.result || [];
+
+    res.json({
+      success: true,
+      registered: !!pinData.result,
+      tokens_count: tokens.length,
+      has_tokens: tokens.length > 0,
+      has_profile: !!profile,
+      has_website: !!(profile?.website),
+      has_print_logo: !!(profile?.print_logo_url),
+    });
+  } catch(e) {
+    res.json({ success: false, message: e.message });
+  }
 });
 
 app.delete("/clear-accepted-times/:code", async (req, res) => {
