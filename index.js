@@ -1841,6 +1841,9 @@ ${offlineCount > 0 ? `
 </div>
 
 <script>
+${JSON.stringify(restaurantData.reduce((acc, r) => { (r.todayOrdersList || []).forEach(o => { acc[o.order_id] = o; }); return acc; }, {}))}
+</script>
+<script>
 let currentFilter = 'all';
 
 function updateTime() {
@@ -1849,50 +1852,43 @@ function updateTime() {
 updateTime();
 setInterval(updateTime, 1000);
 
-let countdown = 60;
-setInterval(() => {
+var countdown = 60;
+setInterval(function() {
   countdown--;
-  const el = document.getElementById('countdown');
+  var el = document.getElementById('countdown');
   if (el) el.textContent = countdown;
   if (countdown <= 0) location.reload();
 }, 1000);
 
-const orderData = ${JSON.stringify(restaurantData.reduce((acc, r) => {
-  (r.todayOrdersList || []).forEach(o => { acc[o.order_id] = o; });
-  return acc;
-}, {}))};
-
 function showOrder(orderId) {
-  const o = orderData[orderId];
+  var o = window.orderData[orderId];
   if (!o) return;
-  const items = typeof o.items === 'string' ? JSON.parse(o.items || '[]') : (o.items || []);
-  const itemsHtml = items.map(function(item) {
-    const addons = (item.addons || []).map(function(a) {
-      return '<div class="modal-item-addon">\u21b3 ' + (a.value || a.label || '') + '</div>';
+  var items = typeof o.items === 'string' ? JSON.parse(o.items || '[]') : (o.items || []);
+  var itemsHtml = items.map(function(item) {
+    var addons = (item.addons || []).map(function(a) {
+      return '<div class="modal-item-addon">' + (a.value || a.label || '') + '</div>';
     }).join('');
-    return '<div class="modal-item">'
-      + '<div class="modal-item-name">' + item.quantity + 'x ' + item.name + '</div>'
-      + addons
-      + '<div class="modal-item-price">CHF ' + parseFloat(item.total||0).toFixed(2) + '</div>'
-      + '</div>';
+    return '<div class="modal-item"><div class="modal-item-name">' + item.quantity + 'x ' + item.name + '</div>' + addons + '<div class="modal-item-price">CHF ' + parseFloat(item.total||0).toFixed(2) + '</div></div>';
   }).join('');
-  const scheduledTime = o.orderable_order_time && !o.orderable_order_time.toLowerCase().includes('as soon as possible')
-    ? o.orderable_order_time.replace(/\s*\(.*?\)\s*/g, '').trim() + (o.orderable_order_date ? ' \u2014 ' + o.orderable_order_date : '')
-    : 'ASAP';
+  var scheduledTime = 'ASAP';
+  if (o.orderable_order_time && o.orderable_order_time.toLowerCase().indexOf('as soon as possible') === -1) {
+    scheduledTime = o.orderable_order_time.replace(/\s*\(.*?\)\s*/g, '').trim();
+    if (o.orderable_order_date) scheduledTime += ' - ' + o.orderable_order_date;
+  }
   document.getElementById('modal-order-id').textContent = '#' + o.order_id;
   document.getElementById('modal-status').textContent = o.status || '';
   document.getElementById('modal-items').innerHTML = itemsHtml;
-  document.getElementById('modal-customer-name').textContent = o.customer_name || '\u2014';
-  document.getElementById('modal-customer-phone').textContent = o.customer_phone || '\u2014';
-  document.getElementById('modal-customer-email').textContent = o.customer_email || '\u2014';
-  document.getElementById('modal-payment').textContent = o.payment_method || '\u2014';
-  document.getElementById('modal-shipping').textContent = (o.shipping && o.shipping.method) ? o.shipping.method : (o.shipping_method || '\u2014');
-  document.getElementById('modal-address').textContent = (o.shipping && o.shipping.address) ? o.shipping.address : (o.shipping_address || '\u2014');
+  document.getElementById('modal-customer-name').textContent = o.customer_name || '-';
+  document.getElementById('modal-customer-phone').textContent = o.customer_phone || '-';
+  document.getElementById('modal-customer-email').textContent = o.customer_email || '-';
+  document.getElementById('modal-payment').textContent = o.payment_method || '-';
+  document.getElementById('modal-shipping').textContent = (o.shipping && o.shipping.method) ? o.shipping.method : (o.shipping_method || '-');
+  document.getElementById('modal-address').textContent = (o.shipping && o.shipping.address) ? o.shipping.address : (o.shipping_address || '-');
   document.getElementById('modal-time').textContent = scheduledTime;
-  document.getElementById('modal-note').textContent = o.note || '\u2014';
+  document.getElementById('modal-note').textContent = o.note || '-';
   document.getElementById('modal-total').textContent = (o.currency || 'CHF') + ' ' + o.total;
-  const phone = (o.customer_phone || '').replace(/\s/g, '');
-  const callBtn = document.getElementById('modal-call-btn');
+  var phone = (o.customer_phone || '').replace(/\s/g, '');
+  var callBtn = document.getElementById('modal-call-btn');
   if (phone) { callBtn.href = 'tel:' + phone; callBtn.style.display = 'block'; }
   else { callBtn.style.display = 'none'; }
   document.getElementById('modal-copy-success').style.display = 'none';
@@ -1904,37 +1900,25 @@ function closeModal() {
 }
 
 function copyOrder() {
-  const name = document.getElementById('modal-customer-name').textContent;
-  const phone = document.getElementById('modal-customer-phone').textContent;
-  const address = document.getElementById('modal-address').textContent;
-  const shipping = document.getElementById('modal-shipping').textContent;
-  const payment = document.getElementById('modal-payment').textContent;
-  const time = document.getElementById('modal-time').textContent;
-  const total = document.getElementById('modal-total').textContent;
-  const note = document.getElementById('modal-note').textContent;
-  const orderId = document.getElementById('modal-order-id').textContent;
-  const itemEls = document.querySelectorAll('#modal-items .modal-item');
-  let itemsText = '';
+  var name = document.getElementById('modal-customer-name').textContent;
+  var phone = document.getElementById('modal-customer-phone').textContent;
+  var address = document.getElementById('modal-address').textContent;
+  var shipping = document.getElementById('modal-shipping').textContent;
+  var payment = document.getElementById('modal-payment').textContent;
+  var time = document.getElementById('modal-time').textContent;
+  var total = document.getElementById('modal-total').textContent;
+  var note = document.getElementById('modal-note').textContent;
+  var orderId = document.getElementById('modal-order-id').textContent;
+  var itemEls = document.querySelectorAll('#modal-items .modal-item');
+  var itemsText = '';
   itemEls.forEach(function(el) {
-    const n = el.querySelector('.modal-item-name') ? el.querySelector('.modal-item-name').textContent : '';
-    const addons = Array.from(el.querySelectorAll('.modal-item-addon')).map(function(a) { return '  ' + a.textContent; }).join('\n');
+    var n = el.querySelector('.modal-item-name') ? el.querySelector('.modal-item-name').textContent : '';
+    var addons = Array.from(el.querySelectorAll('.modal-item-addon')).map(function(a) { return '  ' + a.textContent; }).join('\n');
     itemsText += n + (addons ? '\n' + addons : '') + '\n';
   });
-  const text = [
-    '\uD83D\uDED2 Order ' + orderId,
-    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
-    '\uD83D\uDC64 ' + name,
-    '\uD83D\uDCDE ' + phone,
-    '\uD83D\uDCCD ' + address,
-    '\uD83D\uDE9A ' + shipping,
-    '\uD83D\uDCB3 ' + payment,
-    '\u23F0 ' + time,
-    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
-    itemsText,
-    '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501',
-    '\uD83D\uDCB0 Total: ' + total,
-    note !== '\u2014' ? '\uD83D\uDCDD Note: ' + note : ''
-  ].filter(Boolean).join('\n').trim();
+  var lines = ['Order ' + orderId, '---', 'Name: ' + name, 'Phone: ' + phone, 'Address: ' + address, 'Delivery: ' + shipping, 'Payment: ' + payment, 'Time: ' + time, '---', itemsText, '---', 'Total: ' + total];
+  if (note !== '-') lines.push('Note: ' + note);
+  var text = lines.join('\n').trim();
   if (navigator.clipboard) {
     navigator.clipboard.writeText(text).then(function() {
       document.getElementById('modal-copy-success').style.display = 'block';
@@ -1944,7 +1928,7 @@ function copyOrder() {
 }
 
 function fallbackCopy(text) {
-  const ta = document.createElement('textarea');
+  var ta = document.createElement('textarea');
   ta.value = text;
   document.body.appendChild(ta);
   ta.select();
@@ -1955,9 +1939,9 @@ function fallbackCopy(text) {
 }
 
 function toggleCard(idx) {
-  const body = document.getElementById('body-' + idx);
-  const chevron = document.getElementById('chevron-' + idx);
-  const isOpen = body.classList.contains('open');
+  var body = document.getElementById('body-' + idx);
+  var chevron = document.getElementById('chevron-' + idx);
+  var isOpen = body.classList.contains('open');
   body.classList.toggle('open', !isOpen);
   chevron.classList.toggle('open', !isOpen);
 }
@@ -1970,29 +1954,29 @@ function setFilter(filter, btn) {
 }
 
 function applyFilters() {
-  const search = document.getElementById('search').value.toLowerCase();
-  const sort = document.querySelector('.sort-select').value;
-  const cards = Array.from(document.querySelectorAll('.restaurant-card'));
-  let visible = 0;
+  var search = document.getElementById('search').value.toLowerCase();
+  var sort = document.querySelector('.sort-select').value;
+  var cards = Array.from(document.querySelectorAll('.restaurant-card'));
+  var visible = 0;
   cards.forEach(function(card) {
-    const status = card.dataset.status;
-    const name = card.dataset.name;
-    const matchesFilter = currentFilter === 'all' ||
+    var status = card.dataset.status;
+    var name = card.dataset.name;
+    var matchesFilter = currentFilter === 'all' ||
       (currentFilter === 'offline' && (status === 'offline' || status === 'never')) ||
       (currentFilter === 'online' && status === 'online') ||
       (currentFilter === 'idle' && status === 'idle');
-    const matchesSearch = !search || name.includes(search);
+    var matchesSearch = !search || name.indexOf(search) !== -1;
     if (matchesFilter && matchesSearch) { card.style.display = 'block'; visible++; }
     else card.style.display = 'none';
   });
-  const list = document.getElementById('restaurant-list');
-  const visibleCards = cards.filter(function(c) { return c.style.display !== 'none'; });
+  var list = document.getElementById('restaurant-list');
+  var visibleCards = cards.filter(function(c) { return c.style.display !== 'none'; });
   visibleCards.sort(function(a, b) {
     if (sort === 'name') return a.dataset.name.localeCompare(b.dataset.name);
     if (sort === 'orders') return parseInt(b.dataset.orders) - parseInt(a.dataset.orders);
     if (sort === 'lastseen') return parseInt(a.dataset.lastseen) - parseInt(b.dataset.lastseen);
-    const order = {offline:0, never:1, idle:2, online:3, unknown:4};
-    return (order[a.dataset.status]||4) - (order[b.dataset.status]||4);
+    var ord = {offline:0, never:1, idle:2, online:3, unknown:4};
+    return (ord[a.dataset.status]||4) - (ord[b.dataset.status]||4);
   });
   visibleCards.forEach(function(c) { list.appendChild(c); });
   document.getElementById('result-count').textContent = visible + ' restaurant' + (visible !== 1 ? 's' : '');
