@@ -1605,7 +1605,7 @@ function login() {
   .icon-btn { background:rgba(255,255,255,0.2); border:none; color:#fff; padding:6px 12px; border-radius:20px; font-size:12px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-block; }
   .search-bar { background:rgba(255,255,255,0.2); border:none; border-radius:10px; padding:8px 12px; width:100%; color:#fff; font-size:14px; outline:none; }
   .search-bar::placeholder { color:rgba(255,255,255,0.6); }
-  .filter-tabs { display:flex; gap:6px; padding:10px 16px; overflow-x:auto; scrollbar-width:none; background:#f0f0f5; }
+  .filter-tabs { display:flex; gap:6px; padding:10px 16px; overflow-x:auto; scrollbar-width:none; background:#f0f0f5; max-width:700px; margin:0 auto; }
   .filter-tabs::-webkit-scrollbar { display:none; }
   .tab { padding:6px 14px; border-radius:20px; font-size:13px; font-weight:700; border:none; cursor:pointer; white-space:nowrap; }
   .tab.all { background:#fff; color:#444; }
@@ -1616,7 +1616,7 @@ function login() {
   .tab.active.online { background:#2ecc71; color:#fff; }
   .tab.active.offline { background:#e74c3c; color:#fff; }
   .tab.active.idle { background:#f39c12; color:#fff; }
-  .summary-row { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:12px 16px; }
+  .summary-row { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:12px 16px; max-width:700px; margin:0 auto; }
   .summary-card { background:#fff; border-radius:12px; padding:10px 8px; text-align:center; }
   .summary-card .val { font-size:20px; font-weight:800; }
   .summary-card .lbl { font-size:10px; color:#888; margin-top:2px; text-transform:uppercase; letter-spacing:0.5px; }
@@ -1624,9 +1624,9 @@ function login() {
   .summary-card.s-online .val { color:#2ecc71; }
   .summary-card.s-offline .val { color:#e74c3c; }
   .summary-card.s-orders .val { color:#3498db; }
-  .alert-banner { margin:0 16px 8px; background:#fef2f2; border:1px solid #fecaca; border-radius:12px; padding:10px 14px; display:flex; align-items:center; gap:8px; }
+  .alert-banner { margin:0 auto 8px; max-width:700px; padding:10px 16px; background:#fef2f2; border:1px solid #fecaca; border-radius:12px; display:flex; align-items:center; gap:8px; }
   .alert-banner p { font-size:13px; font-weight:700; color:#991b1b; }
-  .content { padding:0 16px 32px; }
+  .content { padding:0 16px 32px; max-width:700px; margin:0 auto; }
   .sort-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; padding-top:4px; }
   .sort-row span { font-size:12px; color:#888; }
   .sort-select { background:#fff; border:1px solid #ddd; border-radius:8px; padding:5px 10px; font-size:12px; color:#444; outline:none; }
