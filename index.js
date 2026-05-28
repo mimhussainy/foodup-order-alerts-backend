@@ -1454,13 +1454,15 @@ function login() {
       }).length;
 
       // Last order
-      const lastOrder = orders.length > 0 ? orders[0] : null;
+// Find the most recent order by date
       let lastOrderTime = null;
-      if (lastOrder) {
-        if (lastOrder.date_created) {
-          lastOrderTime = new Date(lastOrder.date_created.replace(' ', 'T'));
-        } else if (lastOrder.timestamp) {
-          lastOrderTime = new Date(lastOrder.timestamp);
+      let lastOrder = null;
+      for (const o of orders) {
+        if (!o.date_created) continue;
+        const t = new Date(o.date_created.replace(' ', 'T'));
+        if (!lastOrderTime || t > lastOrderTime) {
+          lastOrderTime = t;
+          lastOrder = o;
         }
       }
 
