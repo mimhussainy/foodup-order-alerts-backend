@@ -1371,6 +1371,95 @@ app.get("/alert-settings", async (req, res) => {
 });
 
 // -------------------------------------------------------
+// DASHBOARD SETTINGS PAGE
+// -------------------------------------------------------
+
+app.get("/dashboard/settings", async (req, res) => {
+  const { p } = req.query;
+  const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
+
+  if (p !== dashPassword) {
+    return res.redirect('/dashboard');
+  }
+
+  const alertData = await redisCommand("GET", "alert_settings");
+  const alertSettings = alertData.result ? JSON.parse(alertData.result) : { alert_email: '', offline_threshold_minutes: 30 };
+
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>FoodUp Monitor — Settings</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f0f0f5; min-height:100vh; }
+  .topbar { background:#8B38CB; padding:16px 20px; display:flex; align-items:center; gap:12px; position:sticky; top:0; z-index:100; }
+  .back-btn { background:rgba(255,255,255,0.2); border:none; color:#fff; padding:6px 12px; border-radius:20px; font-size:12px; font-weight:700; cursor:pointer; text-decoration:none; }
+  .topbar h1 { color:#fff; font-size:18px; font-weight:800; }
+  .content { padding:16px; max-width:600px; margin:0 auto; }
+  .card { background:#fff; border-radius:14px; padding:20px; margin-bottom:16px; box-shadow:0 1px 4px rgba(0,0,0,0.06); }
+  .card h3 { font-size:15px; font-weight:700; color:#111; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid #f0f0f0; }
+  .field { margin-bottom:16px; }
+  .field:last-child { margin-bottom:0; }
+  .field label { font-size:12px; color:#666; font-weight:600; display:block; margin-bottom:6px; }
+  .field input { width:100%; padding:11px 14px; border:1px solid #ddd; border-radius:10px; font-size:14px; outline:none; }
+  .field input:focus { border-color:#8B38CB; box-shadow:0 0 0 3px rgba(139,56,203,0.1); }
+  .field .desc { font-size:11px; color:#999; margin-top:5px; }
+  .save-btn { background:#8B38CB; color:#fff; border:none; padding:13px 20px; border-radius:10px; font-size:15px; font-weight:700; cursor:pointer; width:100%; }
+  .save-btn:active { background:#7a2fb8; }
+  .saved-msg { text-align:center; font-size:13px; color:#2ecc71; margin-top:10px; display:none; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/dashboard?p=${encodeURIComponent(p)}" class="back-btn">← Back</a>
+  <h1>⚙️ Settings</h1>
+</div>
+
+<div class="content">
+  <div class="card">
+    <h3>🔔 Alert Settings</h3>
+    <div class="field">
+      <label>Alert Email</label>
+      <input type="email" id="alert_email" value="${alertSettings.alert_email}" placeholder="your@email.com" />
+      <div class="desc">Receives notifications when a restaurant goes offline.</div>
+    </div>
+    <div class="field">
+      <label>Offline Threshold (minutes)</label>
+      <input type="number" id="offline_threshold" value="${alertSettings.offline_threshold_minutes}" min="5" max="120" />
+      <div class="desc">How long the app must be offline before an alert is sent.</div>
+    </div>
+    <button class="save-btn" onclick="saveSettings()">Save Settings</button>
+    <p class="saved-msg" id="saved_msg">✓ Settings saved successfully!</p>
+  </div>
+</div>
+
+<script>
+async function saveSettings() {
+  const email = document.getElementById('alert_email').value;
+  const threshold = document.getElementById('offline_threshold').value;
+  try {
+    const res = await fetch('/alert-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: 'foodup2026', alert_email: email, offline_threshold_minutes: parseInt(threshold) })
+    });
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('saved_msg').style.display = 'block';
+      setTimeout(() => document.getElementById('saved_msg').style.display = 'none', 3000);
+    }
+  } catch(e) {}
+}
+</script>
+</body>
+</html>`);
+});
+
+// -------------------------------------------------------
 // DASHBOARD
 // -------------------------------------------------------
 
@@ -1537,15 +1626,8 @@ function login() {
   .stat-value.good { color:#2ecc71; }
   .stat-value.warn { color:#f39c12; }
   .stat-value.bad { color:#e74c3c; }
-  .alert-section { background:#fff; border-radius:14px; padding:16px; margin-bottom:16px; }
-  .alert-section h3 { font-size:14px; font-weight:700; color:#111; margin-bottom:12px; }
-  .alert-field { margin-bottom:12px; }
-  .alert-field label { font-size:12px; color:#666; font-weight:600; display:block; margin-bottom:6px; }
-  .alert-field input { width:100%; padding:10px 12px; border:1px solid #ddd; border-radius:8px; font-size:14px; outline:none; }
-  .alert-field input:focus { border-color:#8B38CB; }
   .save-btn { background:#8B38CB; color:#fff; border:none; padding:10px 20px; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; width:100%; }
   .save-btn:active { background:#7a2fb8; }
-  .saved-msg { text-align:center; font-size:13px; color:#2ecc71; margin-top:8px; display:none; }
   .last-updated { text-align:center; font-size:11px; color:#bbb; margin-top:16px; padding-bottom:32px; }
 </style>
 </head>
@@ -1555,6 +1637,7 @@ function login() {
     <h1>🍽️ FoodUp Monitor</h1>
     <div class="time" id="current-time"></div>
   </div>
+  <a href="/dashboard/settings?p=${encodeURIComponent(p)}" style="background:rgba(255,255,255,0.2); border:none; color:#fff; padding:6px 12px; border-radius:20px; font-size:12px; font-weight:700; cursor:pointer; text-decoration:none; margin-right:8px;">⚙️ Settings</a>
   <button class="refresh-btn" onclick="location.reload()">↻ Refresh</button>
 </div>
 
@@ -1611,22 +1694,7 @@ function login() {
     </div>`;
   }).join('')}
 
-  <p class="section-title" style="margin-top:20px;">Alert Settings</p>
-  <div class="alert-section">
-    <div class="alert-field">
-      <label>Alert Email (receives notifications when restaurants go offline)</label>
-      <input type="email" id="alert_email" value="${alertSettings.alert_email}" placeholder="your@email.com" />
-    </div>
-    <div class="alert-field">
-      <label>Offline Threshold (minutes before alert is sent)</label>
-      <input type="number" id="offline_threshold" value="${alertSettings.offline_threshold_minutes}" min="5" max="120" />
-    </div>
-    <button class="save-btn" onclick="saveAlertSettings()">Save Alert Settings</button>
-    <p class="saved-msg" id="saved_msg">✓ Settings saved!</p>
-  </div>
-
-  <div class="last-updated">Last updated: ${new Date().toLocaleString('de-CH')}</div>
-</div>
+<div class="last-updated">Last updated: ${new Date().toLocaleString('de-CH')}</div>
 
 <script>
 function updateTime() {
@@ -1635,22 +1703,7 @@ function updateTime() {
 updateTime();
 setInterval(updateTime, 1000);
 
-async function saveAlertSettings() {
-  const email = document.getElementById('alert_email').value;
-  const threshold = document.getElementById('offline_threshold').value;
-  try {
-    const res = await fetch('/alert-settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ secret: 'foodup2026', alert_email: email, offline_threshold_minutes: parseInt(threshold) })
-    });
-    const data = await res.json();
-    if (data.success) {
-      document.getElementById('saved_msg').style.display = 'block';
-      setTimeout(() => document.getElementById('saved_msg').style.display = 'none', 3000);
-    }
-  } catch(e) {}
-}
+
 
 // Auto refresh every 60 seconds
 setTimeout(() => location.reload(), 60000);
