@@ -1455,7 +1455,11 @@ function login() {
 
       // Last order
       const lastOrder = orders.length > 0 ? orders[0] : null;
-      const lastOrderTime = lastOrder?.date_created ? new Date(lastOrder.date_created) : null;
+      let lastOrderTime = null;
+      if (lastOrder) {
+        if (lastOrder.date_created) lastOrderTime = new Date(lastOrder.date_created);
+        else if (lastOrder.timestamp) lastOrderTime = new Date(lastOrder.timestamp);
+      }
 
       // App status
       let appStatus = 'never';
