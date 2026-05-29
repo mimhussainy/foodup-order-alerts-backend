@@ -1684,7 +1684,8 @@ function login() {
   .tab.active.all { background:#444; color:#fff; }
   .tab.active.online { background:#2ecc71; color:#fff; }
   .tab.active.offline { background:#e74c3c; color:#fff; }
-  .tab.active.idle { background:#f39c12; color:#fff; }
+  .tab-badge { background:rgba(255,255,255,0.35); border-radius:4px; padding:1px 6px; font-size:11px; font-weight:700; margin-left:4px; }
+  .tab:not(.active) .tab-badge { background:rgba(0,0,0,0.08); }
   .summary-row { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:12px 16px; max-width:700px; margin:0 auto; }
   .summary-card { background:#fff; border-radius:12px; padding:10px 8px; text-align:center; }
   .summary-card .val { font-size:20px; font-weight:800; }
@@ -1790,10 +1791,10 @@ function login() {
 </div>
 ALERTBANNER_PLACEHOLDER
 <div class="filter-tabs">
-  <button class="tab all active" onclick="setFilter('all',this)">All (TOTAL_PLACEHOLDER)</button>
-  <button class="tab online" onclick="setFilter('online',this)">Online (ONLINE_PLACEHOLDER)</button>
-  <button class="tab offline" onclick="setFilter('offline',this)">Offline (OFFLINE_PLACEHOLDER)</button>
-  <button class="tab idle" onclick="setFilter('idle',this)">Idle (IDLE_PLACEHOLDER)</button>
+  <button class="tab all active" onclick="setFilter('all',this)">All <span class="tab-badge">TOTAL_PLACEHOLDER</span></button>
+  <button class="tab online" onclick="setFilter('online',this)">Online <span class="tab-badge">ONLINE_PLACEHOLDER</span></button>
+  <button class="tab offline" onclick="setFilter('offline',this)">Offline <span class="tab-badge">OFFLINE_PLACEHOLDER</span></button>
+  <button class="tab idle" onclick="setFilter('idle',this)">Idle <span class="tab-badge">IDLE_PLACEHOLDER</span></button>
 </div>
 <div class="content">
   <div class="sort-row">
