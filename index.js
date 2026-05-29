@@ -1399,6 +1399,7 @@ app.get("/dashboard/settings", async (req, res) => {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>FoodUp Monitor - Settings</title>
+<link rel="icon" href="https://eatime.ch/wp-content/uploads/2026/05/foodup-icon.png" type="image/png">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f0f0f5; min-height:100vh; }
@@ -1474,6 +1475,7 @@ app.get("/dashboard", async (req, res) => {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>FoodUp Dashboard</title>
+<link rel="icon" href="https://eatime.ch/wp-content/uploads/2026/05/foodup-icon.png" type="image/png">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f5; display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; }
@@ -1668,6 +1670,7 @@ function login() {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>FoodUp Monitor</title>
+<link rel="icon" href="https://eatime.ch/wp-content/uploads/2026/05/foodup-icon.png" type="image/png">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f0f0f5; min-height:100vh; }
