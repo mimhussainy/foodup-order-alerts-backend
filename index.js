@@ -1921,7 +1921,7 @@ function copyOrder() {
   lines.push('Total: ' + document.getElementById('modal-total').textContent);
   var note = document.getElementById('modal-note').textContent;
   if (note && note !== '-') lines.push('Note: ' + note);
-  var text = lines.join('\n');
+  var text = lines.join(String.fromCharCode(10));
   if (navigator.clipboard) {
     navigator.clipboard.writeText(text).then(function() {
       document.getElementById('modal-copy-success').style.display = 'block';
