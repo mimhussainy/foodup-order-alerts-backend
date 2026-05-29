@@ -2007,7 +2007,7 @@ document.getElementById('order-modal').addEventListener('click', function(e) {
     .replace('ALERTBANNER_PLACEHOLDER', alertBannerHtml)
     .replace('CARDS_PLACEHOLDER', cardsHtml)
     .replace('LASTUPDATED_PLACEHOLDER', lastUpdated)
-    .replace('ORDERDATA_PLACEHOLDER', JSON.stringify(orderDataForJS));
+    .replace('ORDERDATA_PLACEHOLDER', JSON.stringify(orderDataForJS).replace(/<\/script>/gi, '<\\/script>').replace(/<!--/g, '<\\!--'));
 
   res.send(finalHtml);
 });
