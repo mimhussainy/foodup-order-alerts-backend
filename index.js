@@ -216,11 +216,17 @@ app.post("/new-order", async (req, res) => {
   const result = await response.json();
 console.log("Push result:", JSON.stringify(result));
 
-// Remove tokens from old eatime project
-const oldTokens = ['ExponentPushToken[Oyk8uvHt-8fn54wYhHGHWK]', 'ExponentPushToken[4yn6i8O119fnX-bmQ6Cwbc]'];
-for (const token of oldTokens) {
-  await removeToken(code, token);
-  console.log("Removed old token:", token);
+// Remove invalid tokens based on Expo response
+if (result.data) {
+  for (let i = 0; i < result.data.length; i++) {
+    if (result.data[i].status === 'error' && result.data[i].details && result.data[i].details.error === 'DeviceNotRegistered') {
+      const deadToken = deviceTokens[i];
+      if (deadToken) {
+        await removeToken(code, deadToken);
+        console.log("Removed dead token:", deadToken);
+      }
+    }
+  }
 }
 
 res.json({ success: true, result });
