@@ -1728,7 +1728,7 @@ function login() {
   .summary-card.s-online .val { color:#2ecc71; }
   .summary-card.s-offline .val { color:#e74c3c; }
   .summary-card.s-orders .val { color:#3498db; }
-  .alert-banner { margin:0 auto 8px; max-width:700px; padding:10px 16px; background:#fef2f2; border:1px solid #fecaca; border-radius:12px; display:flex; align-items:center; gap:8px; }
+  .alert-banner { margin:0 auto 8px; max-width:700px; padding:10px 16px; background:#fef2f2; border:1px solid #fecaca; border-radius:12px; display:flex; align-items:center; gap:8px; width:calc(100% - 32px); }
   .alert-banner p { font-size:13px; font-weight:700; color:#991b1b; }
   .content { padding:0 16px 32px; max-width:700px; margin:0 auto; }
   .sort-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; padding-top:4px; }
