@@ -1317,32 +1317,21 @@ app.post("/auto-accepted-notify", async (req, res) => {
 });
 
 // -------------------------------------------------------
-// NODEMAILER SETUP
+// SERVICES
 // -------------------------------------------------------
 
-const nodemailer = require('nodemailer');
+const { createAlertService } = require('./services/alertService');
+const { startWebsiteMonitor } = require('./services/websiteMonitor');
+const { createMonitoringRoutes } = require('./routes/monitoring');
 
-const emailTransporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.ALERT_EMAIL_USER,
-    pass: process.env.ALERT_EMAIL_PASS,
-  },
-});
+const alertService = createAlertService(redisCommand, k);
 
-async function sendAlertEmail(to, subject, html) {
-  try {
-    await emailTransporter.sendMail({
-      from: `"FoodUp Monitor" <${process.env.ALERT_EMAIL_USER}>`,
-      to,
-      subject,
-      html,
-    });
-    console.log('Alert email sent to:', to);
-  } catch(e) {
-    console.log('Alert email error:', e.message);
-  }
-}
+// -------------------------------------------------------
+// MONITORING ROUTES
+// -------------------------------------------------------
+
+const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
+app.use('/', createMonitoringRoutes(redisCommand, k, dashPassword));
 
 // -------------------------------------------------------
 // HEARTBEAT
@@ -1660,7 +1649,7 @@ function login() {
       if (todayOrders.length > 5) ordersHtml += '<div class="no-orders">+' + (todayOrders.length-5) + ' more</div>';
     }
 
-    return '<div class="restaurant-card" data-status="' + r.appStatus + '" data-name="' + (r.name||r.code).toLowerCase() + '" data-orders="' + r.ordersToday + '" data-lastseen="' + (r.appMinutesAgo !== null ? r.appMinutesAgo : 99999) + '">'
+    return '<div class="restaurant-card" data-status="' + r.appStatus + '" data-name="' + (r.name||r.code).toLowerCase() + '" data-orders="' + r.ordersToday + '" data-lastseen="' + (r.appMinutesAgo !== null ? r.appMinutesAgo : 99999) + '" data-code="' + r.code + '">'
       + '<div class="card-header" onclick="toggleCard(' + idx + ')">'
       + '<div class="card-header-left">'
       + '<div class="status-dot ' + r.appStatus + '"></div>'
@@ -1679,6 +1668,7 @@ function login() {
       + '<div class="stat-box"><div class="stat-label">Devices</div><div class="stat-value ' + (r.tokens>0?'good':'bad') + '">' + r.tokens + ' registered</div></div>'
       + '<div class="stat-box"><div class="stat-label">Revenue Today</div><div class="stat-value good">CHF ' + (r.revenueToday ? r.revenueToday.toFixed(2) : '0.00') + '</div></div>'
       + '<div class="stat-box"><div class="stat-label">Printer</div><div class="stat-value ' + (r.hasPrinter?'good':'warn') + '">' + (r.hasPrinter?'Configured':'Not set') + '</div></div>'
+      + '<div class="stat-box" style="grid-column:span 2"><div class="stat-label">Website</div><div id="website-health-' + idx + '" class="stat-value" style="font-size:12px;">Loading...</div></div>'
       + '</div>'
       + '<div class="orders-section"><h4>Today\'s Orders</h4>' + ordersHtml + '</div>'
       + '<div class="debug-section" id="debug-section-' + idx + '">'
@@ -1991,6 +1981,28 @@ function toggleCard(idx) {
   var isOpen = body.classList.contains('open');
   body.classList.toggle('open', !isOpen);
   chevron.classList.toggle('open', !isOpen);
+  if (!isOpen) {
+    var card = body.closest('.restaurant-card');
+    if (card) loadWebsiteHealth(card.dataset.code, idx);
+  }
+}
+
+function loadWebsiteHealth(code, idx) {
+  var el = document.getElementById('website-health-' + idx);
+  if (!el) return;
+  fetch('/website-health/' + code + '?p=' + encodeURIComponent(DASH_PASS))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.success) { el.innerHTML = '<span style="color:#999;">No data yet</span>'; return; }
+      var h = data.health;
+      var color = h.status === 'online' ? '#2ecc71' : '#e74c3c';
+      var checked = h.checked_at ? new Date(h.checked_at).toLocaleTimeString('de-CH') : '';
+      el.innerHTML = '<span style="color:' + color + ';font-weight:700;">' + h.status.toUpperCase() + '</span>'
+        + (h.response_ms ? ' <span style="color:#999;">' + h.response_ms + 'ms</span>' : '')
+        + (h.error ? ' <span style="color:#e74c3c;font-size:10px;">' + h.error + '</span>' : '')
+        + (checked ? ' <span style="color:#bbb;font-size:10px;">checked ' + checked + '</span>' : '');
+    })
+    .catch(function() { el.innerHTML = '<span style="color:#999;">Failed to load</span>'; });
 }
 
 function setFilter(filter, btn) {
@@ -2099,60 +2111,29 @@ const finalHtml = dashHtml
 
 async function checkAndSendAlerts() {
   try {
+    const restaurantsResult = await redisCommand("SMEMBERS", "restaurants");
+    const restaurants = restaurantsResult.result || [];
     const alertData = await redisCommand("GET", "alert_settings");
     if (!alertData.result) return;
     const alertSettings = JSON.parse(alertData.result);
-    if (!alertSettings.alert_email) return;
-
-    const restaurantsResult = await redisCommand("SMEMBERS", "restaurants");
-    const restaurants = restaurantsResult.result || [];
+    if (!alertSettings.offline_threshold_minutes) return;
 
     for (const code of restaurants) {
       try {
         const heartbeatData = await redisCommand("GET", k(code, "heartbeat"));
-        const alertSentData = await redisCommand("GET", k(code, "alert_sent"));
         const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
         const profile = profileData.result ? JSON.parse(profileData.result) : null;
         const name = (profile && profile.name) ? profile.name : code;
 
-        if (!heartbeatData.result) {
-          if (!alertSentData.result) {
-            await sendAlertEmail(
-              alertSettings.alert_email,
-              'FoodUp Alert - ' + name + ' app never connected',
-              '<div style="font-family:Arial,sans-serif;padding:20px;"><h2 style="color:#8B38CB;">FoodUp Monitor Alert</h2><p>Restaurant <strong>' + name + '</strong> (' + code + ') has never sent a heartbeat.</p><p>The app may not be installed or logged in correctly.</p><p style="color:#999;font-size:12px;">Sent at ' + new Date().toLocaleString('de-CH') + '</p></div>'
-            );
-            await redisCommand("SET", k(code, "alert_sent"), "never_seen");
-            await redisCommand("EXPIRE", k(code, "alert_sent"), 86400);
-          }
-          continue;
-        }
+        if (!heartbeatData.result) continue;
 
         const heartbeat = JSON.parse(heartbeatData.result);
         const minutesOffline = Math.floor((Date.now() - new Date(heartbeat.last_seen).getTime()) / 60000);
 
         if (minutesOffline >= alertSettings.offline_threshold_minutes) {
-          if (!alertSentData.result) {
-            const hoursOffline = minutesOffline >= 60
-              ? Math.floor(minutesOffline/60) + 'h ' + (minutesOffline%60) + 'm'
-              : minutesOffline + ' minutes';
-            await sendAlertEmail(
-              alertSettings.alert_email,
-              'FoodUp Alert - ' + name + ' is offline',
-              '<div style="font-family:Arial,sans-serif;padding:20px;"><h2 style="color:#e74c3c;">FoodUp Monitor Alert</h2><p>Restaurant <strong>' + name + '</strong> (' + code + ') has been offline for <strong>' + hoursOffline + '</strong>.</p><p>Last seen: ' + new Date(heartbeat.last_seen).toLocaleString('de-CH') + '</p><p>Please check if the app is open and the device is connected to internet.</p><br><a href="https://foodup-order-alerts-backend.onrender.com/dashboard" style="background:#8B38CB;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:700;">Open Dashboard</a><p style="color:#999;font-size:12px;margin-top:16px;">Sent at ' + new Date().toLocaleString('de-CH') + '</p></div>'
-            );
-            await redisCommand("SET", k(code, "alert_sent"), "offline");
-            await redisCommand("EXPIRE", k(code, "alert_sent"), 3600);
-          }
+          await alertService.handleAppOfflineAlert(code, minutesOffline, heartbeat, name);
         } else {
-          if (alertSentData.result === "offline") {
-            await sendAlertEmail(
-              alertSettings.alert_email,
-              'FoodUp Alert - ' + name + ' is back online',
-              '<div style="font-family:Arial,sans-serif;padding:20px;"><h2 style="color:#2ecc71;">FoodUp Monitor - Recovered</h2><p>Restaurant <strong>' + name + '</strong> (' + code + ') is back online.</p><p>Last seen: ' + new Date(heartbeat.last_seen).toLocaleString('de-CH') + '</p><p style="color:#999;font-size:12px;">Sent at ' + new Date().toLocaleString('de-CH') + '</p></div>'
-            );
-            await redisCommand("DEL", k(code, "alert_sent"));
-          }
+          await alertService.handleAppRecoveredAlert(code, name, heartbeat.last_seen);
         }
       } catch(e) {
         console.log('Alert check error for ' + code + ':', e.message);
@@ -2181,6 +2162,7 @@ app.get("/", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  startWebsiteMonitor(redisCommand, k, alertService);
 });
 
 // -------------------------------------------------------
