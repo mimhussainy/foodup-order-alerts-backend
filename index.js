@@ -181,8 +181,6 @@ app.post("/new-order", async (req, res) => {
     console.log("Items parse error:", e.message);
   }
 
-  console.log(`[push] sending to ${code} order ${order.order_id} date_created:${order.date_created} tokens:${deviceTokens.length}`);
-
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: order.sound === false ? null : "default",
