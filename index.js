@@ -1890,6 +1890,7 @@ ALERTBANNER_PLACEHOLDER
 <script>
 var currentFilter = 'all';
 var orderData = ORDERDATA_PLACEHOLDER;
+var DASH_PASS = DASHPASS_PLACEHOLDER;
 
 function updateTime() {
   document.getElementById('current-time').textContent = new Date().toLocaleTimeString('de-CH');
@@ -2037,7 +2038,7 @@ document.getElementById('order-modal').addEventListener('click', function(e) {
 function loadDebugLogs(code, idx) {
   var container = document.getElementById('debug-logs-' + idx);
   container.innerHTML = '<div style="color:#f39c12;">Loading...</div>';
-  fetch('/debug-logs/' + code + '?p=' + encodeURIComponent(PASS_PLACEHOLDER_JS))
+  fetch('/debug-logs/' + code + '?p=' + encodeURIComponent(DASH_PASS))
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (!data.success || !data.logs || data.logs.length === 0) {
@@ -2060,7 +2061,7 @@ function loadDebugLogs(code, idx) {
 }
 
 function clearDebugLogs(code, idx) {
-  fetch('/debug-logs/' + code + '?p=' + encodeURIComponent(PASS_PLACEHOLDER_JS), { method: 'DELETE' })
+  fetch('/debug-logs/' + code + '?p=' + encodeURIComponent(DASH_PASS), { method: 'DELETE' })
     .then(function() {
       var container = document.getElementById('debug-logs-' + idx);
       container.innerHTML = '<div style="color:#666;">Cleared</div>';
@@ -2077,7 +2078,7 @@ function clearDebugLogs(code, idx) {
   const lastUpdated = new Date().toLocaleString('de-CH');
 
 const finalHtml = dashHtml
-    .replace(/PASS_PLACEHOLDER_JS/g, p)
+    .replace('DASHPASS_PLACEHOLDER', JSON.stringify(p))
     .replace(/PASS_PLACEHOLDER/g, encodedP)
     .replace(/TOTAL_PLACEHOLDER/g, String(restaurantData.length))
     .replace(/ONLINE_PLACEHOLDER/g, String(onlineCount))
