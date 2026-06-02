@@ -1627,7 +1627,7 @@ function login() {
       ordersHtml = todayOrders.slice(0,5).map(o => {
         const mins = o.date_created ? Math.floor((Date.now() - new Date(o.date_created.replace(' ','T')).getTime()) / 60000) : null;
         const timeStr = mins !== null ? (mins < 60 ? mins + ' min ago' : Math.floor(mins/60) + 'h ago') : '';
-        return '<div class="order-row" onclick="showOrder(' + JSON.stringify(String(o.order_id)) + ')">'
+        return '<div class="order-row" onclick="showOrder(\'' + String(o.order_id) + '\')">'
           + '<div><div class="order-id">#' + o.order_id + '</div><div class="order-customer">' + (o.customer_name||'') + '</div></div>'
           + '<div style="text-align:right"><div class="order-amount">' + (o.currency||'CHF') + ' ' + (o.total||'') + '</div><div class="order-time">' + timeStr + ' ></div></div>'
           + '</div>';
