@@ -206,6 +206,7 @@ app.post("/new-order", async (req, res) => {
       orderable_order_date: String(order.orderable_order_date || ''),
       orderable_order_time: String(order.orderable_order_time || ''),
       date_created: String(order.date_created || ''),
+      sent_at: new Date().toISOString(),
     },
   }));
 
