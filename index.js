@@ -1415,8 +1415,9 @@ app.get("/dashboard/settings", async (req, res) => {
 <title>FoodUp Monitor - Settings</title>
 <link rel="icon" href="https://eatime.ch/wp-content/uploads/2026/05/foodup-icon.png" type="image/png">
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f0f0f5; min-height:100vh; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f0f0f5; min-height:100vh; }
   .topbar { background:#8B38CB; padding:16px 20px; display:flex; align-items:center; gap:12px; position:sticky; top:0; z-index:100; }
   .back-btn { background:rgba(255,255,255,0.2); border:none; color:#fff; padding:6px 12px; border-radius:20px; font-size:12px; font-weight:700; cursor:pointer; text-decoration:none; }
   .topbar h1 { color:#fff; font-size:18px; font-weight:800; }
