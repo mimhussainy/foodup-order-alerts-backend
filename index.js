@@ -1196,8 +1196,33 @@ app.post("/wc-webhook", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/log", async (req, res) => {
-  const { message } = req.body;
+  const { message, restaurant_code } = req.body;
   console.log("APP LOG:", message);
+  if (restaurant_code) {
+    const code = restaurant_code.toLowerCase().trim();
+    const entry = JSON.stringify({ message, ts: new Date().toISOString() });
+    await redisCommand("LPUSH", k(code, "debug_logs"), entry);
+    await redisCommand("LTRIM", k(code, "debug_logs"), 0, 49);
+  }
+  res.json({ success: true });
+});
+
+app.get("/debug-logs/:code", async (req, res) => {
+  const { p } = req.query;
+  const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
+  if (p !== dashPassword) return res.json({ success: false, message: 'Unauthorized' });
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("LRANGE", k(code, "debug_logs"), 0, 49);
+  const logs = (data.result || []).map(l => { try { return JSON.parse(l); } catch(e) { return { message: l, ts: '' }; } });
+  res.json({ success: true, logs });
+});
+
+app.delete("/debug-logs/:code", async (req, res) => {
+  const { p } = req.query;
+  const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
+  if (p !== dashPassword) return res.json({ success: false, message: 'Unauthorized' });
+  const code = req.params.code.toLowerCase().trim();
+  await redisCommand("DEL", k(code, "debug_logs"));
   res.json({ success: true });
 });
 
@@ -1656,6 +1681,16 @@ function login() {
       + '<div class="stat-box"><div class="stat-label">Printer</div><div class="stat-value ' + (r.hasPrinter?'good':'warn') + '">' + (r.hasPrinter?'Configured':'Not set') + '</div></div>'
       + '</div>'
       + '<div class="orders-section"><h4>Today\'s Orders</h4>' + ordersHtml + '</div>'
+      + '<div class="debug-section" id="debug-section-' + idx + '">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
+      + '<h4 style="font-size:12px;font-weight:700;color:#8B38CB;text-transform:uppercase;letter-spacing:0.5px;">App Debug Log</h4>'
+      + '<div style="display:flex;gap:8px;">'
+      + '<button onclick="loadDebugLogs(\'' + r.code + '\',' + idx + ')" style="background:#8B38CB;color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:700;cursor:pointer;">Load</button>'
+      + '<button onclick="clearDebugLogs(\'' + r.code + '\',' + idx + ')" style="background:#e74c3c;color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:700;cursor:pointer;">Clear</button>'
+      + '</div></div>'
+      + '<div id="debug-logs-' + idx + '" style="background:#111;border-radius:8px;padding:8px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:10px;color:#eee;">'
+      + '<div style="color:#666;">Tap Load to fetch logs</div>'
+      + '</div></div>'
       + '</div></div>';
   }).join('');
 
@@ -1774,6 +1809,7 @@ function login() {
   .empty-state { text-align:center; padding:40px 20px; color:#bbb; }
   .empty-state p { font-size:14px; margin-top:8px; }
   .last-updated { text-align:center; font-size:11px; color:#bbb; margin-top:16px; padding-bottom:32px; }
+  .debug-section { margin-top:12px; padding-top:12px; border-top:1px solid #f0f0f0; }
 </style>
 </head>
 <body>
@@ -1997,6 +2033,39 @@ function applyFilters() {
 document.getElementById('order-modal').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
 });
+
+function loadDebugLogs(code, idx) {
+  var container = document.getElementById('debug-logs-' + idx);
+  container.innerHTML = '<div style="color:#f39c12;">Loading...</div>';
+  fetch('/debug-logs/' + code + '?p=' + encodeURIComponent(PASS_PLACEHOLDER_JS))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.success || !data.logs || data.logs.length === 0) {
+        container.innerHTML = '<div style="color:#666;">No logs yet</div>';
+        return;
+      }
+      container.innerHTML = data.logs.map(function(l) {
+        var time = l.ts ? new Date(l.ts).toLocaleTimeString('de-CH') : '';
+        var color = l.message.indexOf('DROP') !== -1 ? '#e74c3c'
+          : l.message.indexOf('SHOW') !== -1 ? '#2ecc71'
+          : l.message.indexOf('QUEUED') !== -1 ? '#f39c12'
+          : l.message.indexOf('SRC:') !== -1 ? '#3498db'
+          : '#eee';
+        return '<div style="color:' + color + ';margin-bottom:2px;"><span style="color:#666;">' + time + '</span> ' + l.message + '</div>';
+      }).join('');
+    })
+    .catch(function() {
+      container.innerHTML = '<div style="color:#e74c3c;">Failed to load</div>';
+    });
+}
+
+function clearDebugLogs(code, idx) {
+  fetch('/debug-logs/' + code + '?p=' + encodeURIComponent(PASS_PLACEHOLDER_JS), { method: 'DELETE' })
+    .then(function() {
+      var container = document.getElementById('debug-logs-' + idx);
+      container.innerHTML = '<div style="color:#666;">Cleared</div>';
+    });
+}
 </script>
 </body>
 </html>`;
@@ -2007,7 +2076,8 @@ document.getElementById('order-modal').addEventListener('click', function(e) {
   const encodedP = encodeURIComponent(p);
   const lastUpdated = new Date().toLocaleString('de-CH');
 
-  const finalHtml = dashHtml
+const finalHtml = dashHtml
+    .replace(/PASS_PLACEHOLDER_JS/g, p)
     .replace(/PASS_PLACEHOLDER/g, encodedP)
     .replace(/TOTAL_PLACEHOLDER/g, String(restaurantData.length))
     .replace(/ONLINE_PLACEHOLDER/g, String(onlineCount))
