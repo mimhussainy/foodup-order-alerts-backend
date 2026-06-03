@@ -1981,14 +1981,23 @@ function toggleCard(idx) {
   var body = document.getElementById('body-' + idx);
   var chevron = document.getElementById('chevron-' + idx);
   var isOpen = body.classList.contains('open');
-  body.classList.toggle('open', !isOpen);
-  chevron.classList.toggle('open', !isOpen);
+
+  // Close all cards first
+  document.querySelectorAll('.card-body').forEach(function(b) {
+    b.classList.remove('open');
+  });
+  document.querySelectorAll('.chevron').forEach(function(c) {
+    c.classList.remove('open');
+  });
+
+  // If it wasn't open, open it
   if (!isOpen) {
+    body.classList.add('open');
+    chevron.classList.add('open');
     var card = body.closest('.restaurant-card');
     if (card) loadWebsiteHealth(card.dataset.code, idx);
   }
 }
-
 function loadWebsiteHealth(code, idx) {
   var el = document.getElementById('website-health-' + idx);
   if (!el) return;
