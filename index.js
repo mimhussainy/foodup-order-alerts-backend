@@ -27,6 +27,12 @@ async function redisCommand(...args) {
 
 const k = (code, key) => `${code}:${key}`;
 
+async function isValidOwnerOrIosPin(code, pin) {
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  const storedIosPin = await redisCommand("GET", k(code, "ios_pin"));
+  return storedPin.result === pin || storedIosPin.result === pin;
+}
+
 async function getTokens(code) {
   const result = await redisCommand("SMEMBERS", k(code, "device_tokens"));
   return result.result || [];
@@ -407,8 +413,7 @@ app.post("/add-delivery-account", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
+  if (!await isValidOwnerOrIosPin(code, owner_pin)) {
     return res.json({ success: false, message: "Unauthorized" });
   }
   if (!username || !password) {
@@ -464,11 +469,10 @@ app.get("/delivery-accounts", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
+  if (!await isValidOwnerOrIosPin(code, owner_pin)) {
     return res.json({ success: false, message: "Unauthorized" });
   }
-  
+
   const result = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
   const usernames = result.result || [];
   const accounts = await Promise.all(usernames.map(async (u) => {
@@ -483,8 +487,7 @@ app.delete("/delete-delivery-account", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
+if (!await isValidOwnerOrIosPin(code, owner_pin)) {
     return res.json({ success: false, message: "Unauthorized" });
   }
   await redisCommand("DEL", k(code, `delivery_account:${username.toLowerCase()}`));
@@ -557,8 +560,7 @@ app.post("/reset-delivery-password", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
+if (!await isValidOwnerOrIosPin(code, owner_pin)) {
     return res.json({ success: false, message: "Unauthorized" });
   }
   const data = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
@@ -816,8 +818,7 @@ app.post("/restaurant-profile", async (req, res) => {
 
   const isPlugin = secret === 'foodup2026';
   if (!isPlugin) {
-    const storedPin = await redisCommand("GET", k(code, "pin"));
-    if (!storedPin.result || storedPin.result !== owner_pin) {
+    if (!await isValidOwnerOrIosPin(code, owner_pin)) {
       return res.json({ success: false, message: "Unauthorized" });
     }
   }
@@ -931,8 +932,7 @@ const stats = {};
 app.delete("/clear-orders/:code", async (req, res) => {
   const { owner_pin } = req.body;
   const code = req.params.code.toLowerCase().trim();
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
+if (!await isValidOwnerOrIosPin(code, owner_pin)) {
     return res.json({ success: false, message: "Unauthorized" });
   }
   await redisCommand("DEL", k(code, "orders"));
@@ -958,9 +958,7 @@ app.get("/acceptance-times/:code", async (req, res) => {
 app.post("/acceptance-times", async (req, res) => {
   const { restaurant_code, owner_pin, times } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
-  if (!code) return res.json({ success: false });
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
+  if (!code) return res.json({ success: false });if (!await isValidOwnerOrIosPin(code, owner_pin)) {
     return res.json({ success: false, message: "Unauthorized" });
   }
   await redisCommand("SET", k(code, "acceptance_times"), JSON.stringify(times));
