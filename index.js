@@ -2229,8 +2229,8 @@ async function runAutoActions() {
             if (autoActioned.result) continue;
 
             // Check order age
-            const orderDate = order.date_created ? new Date(order.date_created).getTime() : null;
-            if (!orderDate) continue;
+            const orderDate = order.date_created ? new Date(order.date_created.replace(' ', 'T')).getTime() : null;
+            if (!orderDate || isNaN(orderDate)) continue;
             const age = Date.now() - orderDate;
             if (age < waitMs) continue;
             if (age > 2 * 60 * 60 * 1000) continue; // skip orders older than 2 hours
