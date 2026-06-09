@@ -165,6 +165,7 @@ app.post("/new-order", async (req, res) => {
   if (!order.date_created) {
     order.date_created = new Date().toISOString();
   }
+  order.received_at = new Date().toISOString();
   await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
   await redisCommand("LPUSH", k(code, "orders"), JSON.stringify(order));
   await redisCommand("LTRIM", k(code, "orders"), 0, 99);
@@ -2248,10 +2249,11 @@ async function runAutoActions() {
               continue;
             }
 
-            // Check order age
-            const orderDate = order.date_created ? new Date(order.date_created.replace(' ', 'T')).getTime() : null;
+            // Check order age — prefer received_at (set by backend on receipt, always UTC) over date_created (WC local time, UTC-naive)
+            const ageSrc = order.received_at || order.sent_at || order.date_created;
+            const orderDate = ageSrc ? new Date(ageSrc.replace(' ', 'T')).getTime() : null;
             if (!orderDate || isNaN(orderDate)) {
-              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: invalid date_created="${order.date_created}"`);
+              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: invalid date src="${ageSrc}"`);
               continue;
             }
             const age = Date.now() - orderDate;
