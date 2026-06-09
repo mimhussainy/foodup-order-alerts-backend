@@ -2373,3 +2373,10 @@ async function runAutoActions() {
 setInterval(runAutoActions, 60 * 1000);
 // Also run once on startup after 10 seconds
 setTimeout(runAutoActions, 10 * 1000);
+
+
+app.get("/check-auto-actioned/:code/:order_id", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const data = await redisCommand("GET", k(code, `auto_actioned:${req.params.order_id}`));
+  res.json({ auto_actioned: !!data.result, value: data.result });
+});
