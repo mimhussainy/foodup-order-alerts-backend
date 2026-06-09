@@ -879,6 +879,16 @@ app.post("/accepted-time", async (req, res) => {
   res.json({ success: true });
 });
 
+app.post("/rejected-time", async (req, res) => {
+  const { restaurant_code, order_id, secret } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  if (secret !== 'foodup2026') return res.json({ success: false, message: 'Unauthorized' });
+  await redisCommand("SET", k(code, `rejected_time:${order_id}`), new Date().toISOString());
+  await redisCommand("EXPIRE", k(code, `rejected_time:${order_id}`), 86400);
+  res.json({ success: true });
+});
+
 app.get("/accepted-time/:code/:id", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const data = await redisCommand("GET", k(code, `accepted_time:${req.params.id}`));
@@ -2218,22 +2228,41 @@ async function runAutoActions() {
         for (const order of orders) {
           try {
             // Only process processing orders
-            if (order.status === 'cancelled' || order.status === 'completed') continue;
+            if (order.status === 'cancelled' || order.status === 'completed') {
+              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: status=${order.status}`);
+              continue;
+            }
 
-            // Check if already accepted
+            // Check if already accepted or rejected manually
             const acceptedData = await redisCommand("GET", k(code, `accepted_time:${order.order_id}`));
-            if (acceptedData.result) continue;
+            const rejectedData = await redisCommand("GET", k(code, `rejected_time:${order.order_id}`));
+            if (acceptedData.result || rejectedData.result) {
+              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: already ${acceptedData.result ? 'accepted' : 'rejected'} manually`);
+              continue;
+            }
 
             // Check if already auto-actioned
             const autoActioned = await redisCommand("GET", k(code, `auto_actioned:${order.order_id}`));
-            if (autoActioned.result) continue;
+            if (autoActioned.result) {
+              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: auto_actioned already set`);
+              continue;
+            }
 
             // Check order age
             const orderDate = order.date_created ? new Date(order.date_created.replace(' ', 'T')).getTime() : null;
-            if (!orderDate || isNaN(orderDate)) continue;
+            if (!orderDate || isNaN(orderDate)) {
+              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: invalid date_created="${order.date_created}"`);
+              continue;
+            }
             const age = Date.now() - orderDate;
-            if (age < waitMs) continue;
-            if (age > 2 * 60 * 60 * 1000) continue; // skip orders older than 2 hours
+            if (age < waitMs) {
+              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: too young age=${Math.floor(age/1000)}s waitMs=${waitMs/1000}s`);
+              continue;
+            }
+            if (age > 2 * 60 * 60 * 1000) {
+              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: too old age=${Math.floor(age/60000)}min`);
+              continue;
+            }
 
             // Mark as auto-actioned to prevent duplicate processing
             await redisCommand("SET", k(code, `auto_actioned:${order.order_id}`), 'yes');
