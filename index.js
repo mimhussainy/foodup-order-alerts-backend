@@ -38,12 +38,14 @@ async function getTokens(code) {
   return result.result || [];
 }
 
-async function saveToken(code, token) {
+async function saveToken(code, token, channelId = 'foodup_default') {
   await redisCommand("SADD", k(code, "device_tokens"), token);
+  await redisCommand("SET", k(code, `token_channel:${token}`), channelId);
 }
 
 async function removeToken(code, token) {
   await redisCommand("SREM", k(code, "device_tokens"), token);
+  await redisCommand("DEL", k(code, `token_channel:${token}`));
 }
 
 // -------------------------------------------------------
@@ -137,11 +139,11 @@ app.post("/verify-restaurant", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/register-token", async (req, res) => {
-  const { token, restaurant_code } = req.body;
+  const { token, restaurant_code, channel_id } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
-  console.log("Registering token for:", code);
-  await saveToken(code, token);
+  console.log("Registering token for:", code, "channel:", channel_id || 'foodup_default');
+  await saveToken(code, token, channel_id || 'foodup_default');
   res.json({ success: true });
 });
 
@@ -187,11 +189,18 @@ app.post("/new-order", async (req, res) => {
     console.log("Items parse error:", e.message);
   }
 
+ const tokenChannels = {};
+  await Promise.all(deviceTokens.map(async token => {
+    const ch = await redisCommand("GET", k(code, `token_channel:${token}`));
+    tokenChannels[token] = ch.result || 'foodup_default';
+  }));
+
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: order.sound === false ? null : "default",
     title: `🛒 New Order #${order.order_id}`,
     body: `${order.customer_name} - ${order.currency} ${order.total}`,
+    channelId: order.sound === false ? 'foodup_default' : (tokenChannels[token] || 'foodup_default'),
     data: {
       restaurant_code: code,
       order_id: String(order.order_id || ''),
