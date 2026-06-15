@@ -1569,18 +1569,24 @@ function login() {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
-      const todayOrdersList = orders.filter(o => {
-        if (!o.date_created) return false;
-        return new Date(o.date_created.replace(' ', 'T')) >= today;
-      }).sort((a,b) => new Date(b.date_created.replace(' ','T')) - new Date(a.date_created.replace(' ','T')));
+const todayOrdersList = orders.filter(o => {
+        const ts = o.received_at || o.date_created;
+        if (!ts) return false;
+        return new Date(ts.replace(' ', 'T')) >= today;
+      }).sort((a,b) => {
+        const ta = new Date((a.received_at || a.date_created).replace(' ','T'));
+        const tb = new Date((b.received_at || b.date_created).replace(' ','T'));
+        return tb - ta;
+      });
 
       const ordersToday = todayOrdersList.length;
       const revenueToday = todayOrdersList.reduce((sum, o) => sum + parseFloat(o.total || 0), 0);
 
-      let lastOrderTime = null;
+let lastOrderTime = null;
       for (const o of orders) {
-        if (!o.date_created) continue;
-        const t = new Date(o.date_created.replace(' ', 'T'));
+        const ts = o.received_at || o.date_created;
+        if (!ts) continue;
+        const t = new Date(ts.replace(' ', 'T'));
         if (!lastOrderTime || t > lastOrderTime) lastOrderTime = t;
       }
 
