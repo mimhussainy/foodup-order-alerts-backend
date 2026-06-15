@@ -614,6 +614,7 @@ app.post("/mark-delivered", async (req, res) => {
   await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
     order_id, delivery_name, delivered_at: deliveredAt, ...(order_data || {}),
   }));
+  await redisCommand("SREM", k(code, "active_claims"), String(order_id));
 
   const courierKey = k(code, `courier_delivered:${delivery_name}`);
   const stored = await redisCommand("GET", courierKey);
@@ -711,6 +712,7 @@ app.post("/claim-order", async (req, res) => {
   await redisCommand("SET", k(code, `claimed:${order_id}`), JSON.stringify({
     order_id, delivery_name, claimed_at: new Date().toISOString(), delivery_status: delivery_status || 'in_bag',
   }));
+  await redisCommand("SADD", k(code, "active_claims"), String(order_id));
   res.json({ success: true });
 });
 
@@ -729,6 +731,7 @@ app.post("/release-claim", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
   await redisCommand("DEL", k(code, `claimed:${order_id}`));
+  await redisCommand("SREM", k(code, "active_claims"), String(order_id));
   res.json({ success: true });
 });
 
@@ -795,20 +798,21 @@ app.get("/claims/:code", async (req, res) => {
     }));
 
     // Get active claims second — only add if not already delivered
-    const claimKeys = await redisCommand("KEYS", k(code, "claimed:*"));
-    if (claimKeys.result && claimKeys.result.length > 0) {
-      await Promise.all(claimKeys.result.map(async (key) => {
-        const data = await redisCommand("GET", key);
-        if (data.result) {
-          const claim = JSON.parse(data.result);
-          const orderId = String(claim.order_id);
-          // Don't overwrite delivered status with active claim
-          if (!claims[orderId] || claims[orderId].status !== 'delivered') {
-            claims[orderId] = { name: claim.delivery_name, status: claim.delivery_status || 'in_bag' };
-          }
+    const claimMembers = await redisCommand("SMEMBERS", k(code, "active_claims"));
+    const claimIds = claimMembers.result || [];
+    await Promise.all(claimIds.map(async (orderId) => {
+      const data = await redisCommand("GET", k(code, `claimed:${orderId}`));
+      if (data.result) {
+        const claim = JSON.parse(data.result);
+        const oid = String(claim.order_id);
+        if (!claims[oid] || claims[oid].status !== 'delivered') {
+          claims[oid] = { name: claim.delivery_name, status: claim.delivery_status || 'in_bag' };
         }
-      }));
-    }
+      } else {
+        // Stale entry cleanup
+        await redisCommand("SREM", k(code, "active_claims"), orderId);
+      }
+    }));
 
     res.json({ success: true, claims });
   } catch(e) {
@@ -1008,10 +1012,6 @@ app.post("/store-status", async (req, res) => {
 });
 
 
-app.get("/debug-smembers", async (req, res) => {
-  const result = await redisCommand("SMEMBERS", "restaurants");
-  res.json({ raw: result });
-});
 
 // -------------------------------------------------------
 // HEALTH CHECK ENDPOINT
@@ -2182,11 +2182,6 @@ async function checkAndSendAlerts() {
 
 // Run alert checker every 5 minutes
 setInterval(checkAndSendAlerts, 5 * 60 * 1000);
-
-app.get("/debug-redis-url", async (req, res) => {
-  const url = process.env.UPSTASH_REDIS_REST_URL || 'NOT SET';
-  res.json({ url: url.substring(0, 50) });
-});
 
 // -------------------------------------------------------
 // HEALTH CHECK
