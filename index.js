@@ -1007,6 +1007,12 @@ app.post("/store-status", async (req, res) => {
   res.json({ success: true, is_open });
 });
 
+
+app.get("/debug-smembers", async (req, res) => {
+  const result = await redisCommand("SMEMBERS", "restaurants");
+  res.json({ raw: result });
+});
+
 // -------------------------------------------------------
 // HEALTH CHECK ENDPOINT
 // -------------------------------------------------------
