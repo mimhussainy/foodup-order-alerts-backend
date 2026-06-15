@@ -2177,6 +2177,11 @@ async function checkAndSendAlerts() {
 // Run alert checker every 5 minutes
 setInterval(checkAndSendAlerts, 5 * 60 * 1000);
 
+app.get("/debug-redis-url", async (req, res) => {
+  const url = process.env.UPSTASH_REDIS_REST_URL || 'NOT SET';
+  res.json({ url: url.substring(0, 50) });
+});
+
 // -------------------------------------------------------
 // HEALTH CHECK
 // -------------------------------------------------------
