@@ -259,7 +259,7 @@ console.log("Full order data:", JSON.stringify(order));
 
   // Update order status in orders list
   try {
-    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 19);
     const orders = (listData.result || []).map((o) => JSON.parse(o));
     const index = orders.findIndex((o) => String(o.order_id) === String(order.order_id));
     if (index !== -1) {
