@@ -53,6 +53,7 @@ async function removeToken(code, token) {
 // -------------------------------------------------------
 
 const rateLimitStore = {};
+const autoSettingsCache = {};
 
 function rateLimit(ip, action, maxAttempts = 5, windowMs = 15 * 60 * 1000) {
   const key = `${action}:${ip}`;
@@ -259,7 +260,7 @@ console.log("Full order data:", JSON.stringify(order));
 
   // Update order status in orders list
   try {
-    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 19);
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
     const orders = (listData.result || []).map((o) => JSON.parse(o));
     const index = orders.findIndex((o) => String(o.order_id) === String(order.order_id));
     if (index !== -1) {
@@ -787,7 +788,7 @@ app.get("/claims/:code", async (req, res) => {
     const claims = {};
 
 // Get delivered status first
-    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 19);
     const orders = (listData.result || []).map((o) => JSON.parse(o));
     await Promise.all(orders.map(async (order) => {
       const deliveredData = await redisCommand("GET", k(code, `delivered:${order.order_id}`));
@@ -1289,6 +1290,7 @@ app.post("/auto-settings", async (req, res) => {
     reject_reason: reject_reason || 'Zu beschäftigt',
   }));
 
+  delete autoSettingsCache[code];
   res.json({ success: true });
 });
 
@@ -2218,10 +2220,13 @@ async function runAutoActions() {
 
     for (const code of restaurants) {
       try {
-        // Get auto settings
-        const autoSettingsData = await redisCommand("GET", k(code, "auto_settings"));
-        if (!autoSettingsData.result) continue;
-        const autoSettings = JSON.parse(autoSettingsData.result);
+        // Get auto settings (memory cache, invalidated on POST /auto-settings)
+        if (!autoSettingsCache[code]) {
+          const autoSettingsData = await redisCommand("GET", k(code, "auto_settings"));
+          if (!autoSettingsData.result) continue;
+          autoSettingsCache[code] = JSON.parse(autoSettingsData.result);
+        }
+        const autoSettings = autoSettingsCache[code];
         if (autoSettings.auto_action === 'disabled') continue;
 
         const waitMs = (autoSettings.wait_minutes || 5) * 60 * 1000;
