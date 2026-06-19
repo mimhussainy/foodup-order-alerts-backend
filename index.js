@@ -1876,7 +1876,7 @@ ALERTBANNER_PLACEHOLDER
   </div>
   <div id="restaurant-list">CARDS_PLACEHOLDER</div>
   <div id="empty-state" class="empty-state" style="display:none;"><div style="font-size:40px;">?</div><p>No restaurants found</p></div>
-  <div class="last-updated">Last updated: LASTUPDATED_PLACEHOLDER - Auto-refresh in <span id="countdown">60</span>s</div>
+  <div class="last-updated">Last updated: LASTUPDATED_PLACEHOLDER - Auto-refresh in <span id="countdown">600</span>s</div>
 </div>
 <div class="modal-overlay" id="order-modal">
   <div class="modal">
@@ -1921,7 +1921,7 @@ function updateTime() {
 updateTime();
 setInterval(updateTime, 1000);
 
-var countdown = 60;
+var countdown = 600;
 setInterval(function() {
   countdown--;
   var el = document.getElementById('countdown');
