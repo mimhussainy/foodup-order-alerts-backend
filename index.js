@@ -142,8 +142,28 @@ app.post("/verify-restaurant", async (req, res) => {
 app.post("/register-token", async (req, res) => {
   const { token, restaurant_code, channel_id } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
+
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  if (!token) return res.json({ success: false, message: "Token required" });
+
   console.log("Registering token for:", code, "channel:", channel_id || 'foodup_default');
+
+  // Remove this token from all other restaurants first
+  try {
+    const allRestaurants = await redisCommand("SMEMBERS", "restaurants");
+    const others = (allRestaurants.result || []).filter(function(r) { return r !== code; });
+
+    await Promise.all(others.map(async function(otherCode) {
+      const members = await redisCommand("SMEMBERS", k(otherCode, "device_tokens"));
+      if (members.result && members.result.includes(token)) {
+        await removeToken(otherCode, token);
+        console.log("Removed duplicate token from " + otherCode);
+      }
+    }));
+  } catch (e) {
+    console.log("Error cleaning duplicate tokens:", e);
+  }
+
   await saveToken(code, token, channel_id || 'foodup_default');
   res.json({ success: true });
 });
@@ -151,7 +171,10 @@ app.post("/register-token", async (req, res) => {
 app.post("/unregister-token", async (req, res) => {
   const { token, restaurant_code } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
+
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  if (!token) return res.json({ success: false, message: "Token required" });
+
   await removeToken(code, token);
   console.log("Unregistered token for:", code);
   res.json({ success: true });
