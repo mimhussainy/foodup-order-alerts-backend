@@ -2267,12 +2267,37 @@ async function runAutoActions() {
         const baseUrl = website ? (website.startsWith('http') ? website : `https://${website}`) : null;
 
         for (const order of orders) {
-          try {
-            // Only process processing orders
-            if (order.status === 'cancelled' || order.status === 'completed') {
-              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: status=${order.status}`);
-              continue;
-            }
+  try {
+    // Skip terminal statuses immediately
+    if (
+      order.status === 'cancelled' ||
+      order.status === 'completed' ||
+      order.status === 'refunded' ||
+      order.status === 'failed'
+    ) {
+      continue;
+    }
+
+    // Detect pre-order/scheduled order
+    const ordTime = String(order.orderable_order_time || '').toLowerCase().trim();
+    const ordDate = String(order.orderable_order_date || '').trim();
+
+    const isAsap =
+      ordTime.includes('as soon as possible') ||
+      ordTime.includes('asap');
+
+    const isPreOrder = Boolean((ordDate || ordTime) && !isAsap);
+
+    // For ASAP orders, skip if older than 3 hours
+    // Pre-orders stay eligible even if created earlier
+    if (!isPreOrder) {
+      const ageSrc = order.received_at || order.sent_at || order.date_created;
+      const orderDate = ageSrc ? new Date(String(ageSrc).replace(' ', 'T')).getTime() : null;
+
+      if (orderDate && !isNaN(orderDate) && (Date.now() - orderDate) > 3 * 60 * 60 * 1000) {
+        continue;
+      }
+    }
 
             // Check if already accepted or rejected manually
             const acceptedData = await redisCommand("GET", k(code, `accepted_time:${order.order_id}`));
@@ -2300,9 +2325,7 @@ async function runAutoActions() {
             if (age < waitMs) {
               console.log(`runAutoActions SKIP ${code} order ${order.order_id}: too young age=${Math.floor(age/1000)}s waitMs=${waitMs/1000}s`);
               continue;
-            }
-            if (age > 2 * 60 * 60 * 1000) {
-              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: too old age=${Math.floor(age/60000)}min`);
+            }if (!isPreOrder && age > 3 * 60 * 60 * 1000) {
               continue;
             }
 
