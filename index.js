@@ -1372,6 +1372,7 @@ app.post("/auto-accepted-notify", async (req, res) => {
 // -------------------------------------------------------
 
 const { createAlertService } = require('./alertService');
+require('./pos')(app, redisCommand, k);
 const { startWebsiteMonitor } = require('./websiteMonitor');
 const { createMonitoringRoutes } = require('./monitoring');
 
