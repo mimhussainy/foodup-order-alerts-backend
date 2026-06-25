@@ -635,9 +635,10 @@ app.post("/mark-delivered", async (req, res) => {
 
   const deliveredAt = new Date().toISOString();
 
-  await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
+await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
     order_id, delivery_name, delivered_at: deliveredAt, ...(order_data || {}),
   }));
+  await redisCommand("SADD", k(code, "delivered_orders"), String(order_id));
   await redisCommand("SREM", k(code, "active_claims"), String(order_id));
   await redisCommand("DEL", k(code, `claimed:${order_id}`));
 
@@ -811,31 +812,37 @@ app.get("/claims/:code", async (req, res) => {
   try {
     const claims = {};
 
-// Get delivered status first
-    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 49);
-    const orders = (listData.result || []).map((o) => JSON.parse(o));
-    await Promise.all(orders.map(async (order) => {
-      const deliveredData = await redisCommand("GET", k(code, `delivered:${order.order_id}`));
+    // Get delivered status from Set — not limited to orders list position
+    const deliveredIdsResult = await redisCommand("SMEMBERS", k(code, "delivered_orders"));
+    const deliveredIds = deliveredIdsResult.result || [];
+    await Promise.all(deliveredIds.map(async (orderId) => {
+      const deliveredData = await redisCommand("GET", k(code, `delivered:${orderId}`));
       if (deliveredData.result) {
         const delivered = JSON.parse(deliveredData.result);
-        claims[String(delivered.order_id)] = { name: delivered.delivery_name, status: 'delivered' };
+        claims[String(delivered.order_id || orderId)] = {
+          name: delivered.delivery_name,
+          status: 'delivered',
+          delivered_at: delivered.delivered_at || '',
+        };
+      } else {
+        // Stale Set entry — clean up
+        await redisCommand("SREM", k(code, "delivered_orders"), String(orderId));
       }
     }));
 
-    // Get active claims second — only add if not already delivered
+    // Get active claims second — never override delivered
     const claimMembers = await redisCommand("SMEMBERS", k(code, "active_claims"));
     const claimIds = claimMembers.result || [];
     await Promise.all(claimIds.map(async (orderId) => {
       const data = await redisCommand("GET", k(code, `claimed:${orderId}`));
       if (data.result) {
         const claim = JSON.parse(data.result);
-        const oid = String(claim.order_id);
+        const oid = String(claim.order_id || orderId);
         if (!claims[oid] || claims[oid].status !== 'delivered') {
           claims[oid] = { name: claim.delivery_name, status: claim.delivery_status || 'in_bag' };
         }
       } else {
-        // Stale entry cleanup
-        await redisCommand("SREM", k(code, "active_claims"), orderId);
+        await redisCommand("SREM", k(code, "active_claims"), String(orderId));
       }
     }));
 
