@@ -809,12 +809,21 @@ app.get("/orders/:code", async (req, res) => {
 
 app.get("/claims/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
+  const debug = req.query.debug === '1';
   try {
     const claims = {};
+    const debugInfo = {
+      deliveredSetCount: 0,
+      couriers: [],
+      courierHistoryCounts: {},
+      layer2Added: [],
+      activeClaimIds: [],
+    };
 
-    // Get delivered status from Set — not limited to orders list position
+    // Layer 1: delivered_orders Set (post-patch deliveries)
     const deliveredIdsResult = await redisCommand("SMEMBERS", k(code, "delivered_orders"));
     const deliveredIds = deliveredIdsResult.result || [];
+    debugInfo.deliveredSetCount = deliveredIds.length;
     await Promise.all(deliveredIds.map(async (orderId) => {
       const deliveredData = await redisCommand("GET", k(code, `delivered:${orderId}`));
       if (deliveredData.result) {
@@ -825,14 +834,64 @@ app.get("/claims/:code", async (req, res) => {
           delivered_at: delivered.delivered_at || '',
         };
       } else {
-        // Stale Set entry — clean up
         await redisCommand("SREM", k(code, "delivered_orders"), String(orderId));
       }
     }));
 
-    // Get active claims second — never override delivered
+    // Layer 2: courier delivered history fallback (pre-patch deliveries)
+    const accountsResult = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
+    const couriers = accountsResult.result || [];
+    debugInfo.couriers = couriers;
+    await Promise.all(couriers.map(async (name) => {
+      let stored = await redisCommand("GET", k(code, `courier_delivered:${name}`));
+      if (!stored.result) {
+        const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+        stored = await redisCommand("GET", k(code, `courier_delivered:${capitalized}`));
+      }
+      const history = stored.result ? JSON.parse(stored.result) : [];
+      const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+      debugInfo.courierHistoryCounts[displayName] = history.length;
+      await Promise.all(history.map(async (entry) => {
+        const oid = String(entry.order_id);
+        const courierName = entry.delivery_name || displayName;
+        if (!claims[oid] || claims[oid].name === 'Owner') {
+          claims[oid] = {
+            name: courierName,
+            status: 'delivered',
+            delivered_at: entry.delivered_at || '',
+          };
+          debugInfo.layer2Added.push(oid);
+        }
+        await redisCommand("SADD", k(code, "delivered_orders"), oid);
+        const deliveredData = await redisCommand("GET", k(code, `delivered:${oid}`));
+        let shouldUpdateDeliveredKey = false;
+        if (!deliveredData.result) {
+          shouldUpdateDeliveredKey = true;
+        } else {
+          try {
+            const existing = JSON.parse(deliveredData.result);
+            if (!existing.delivery_name || existing.delivery_name === 'Owner') {
+              shouldUpdateDeliveredKey = true;
+            }
+          } catch(e) {
+            shouldUpdateDeliveredKey = true;
+          }
+        }
+        if (shouldUpdateDeliveredKey) {
+          await redisCommand("SET", k(code, `delivered:${oid}`), JSON.stringify({
+            ...entry,
+            order_id: oid,
+            delivery_name: courierName,
+            delivered_at: entry.delivered_at || new Date().toISOString(),
+          }));
+        }
+      }));
+    }));
+
+    // Layer 3: active claims — never override delivered
     const claimMembers = await redisCommand("SMEMBERS", k(code, "active_claims"));
     const claimIds = claimMembers.result || [];
+    debugInfo.activeClaimIds = claimIds;
     await Promise.all(claimIds.map(async (orderId) => {
       const data = await redisCommand("GET", k(code, `claimed:${orderId}`));
       if (data.result) {
@@ -846,9 +905,13 @@ app.get("/claims/:code", async (req, res) => {
       }
     }));
 
-    res.json({ success: true, claims });
+    res.json(debug ? { success: true, claims, debug: debugInfo } : { success: true, claims });
   } catch(e) {
-    res.json({ success: true, claims: {} });
+    console.log("Claims error:", e.message);
+    res.json(debug
+      ? { success: false, claims: {}, debug: { error: e.message } }
+      : { success: true, claims: {} }
+    );
   }
 });
 
