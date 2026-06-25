@@ -639,6 +639,7 @@ app.post("/mark-delivered", async (req, res) => {
     order_id, delivery_name, delivered_at: deliveredAt, ...(order_data || {}),
   }));
   await redisCommand("SREM", k(code, "active_claims"), String(order_id));
+  await redisCommand("DEL", k(code, `claimed:${order_id}`));
 
   const courierKey = k(code, `courier_delivered:${delivery_name}`);
   const stored = await redisCommand("GET", courierKey);
@@ -811,7 +812,7 @@ app.get("/claims/:code", async (req, res) => {
     const claims = {};
 
 // Get delivered status first
-    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 19);
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 49);
     const orders = (listData.result || []).map((o) => JSON.parse(o));
     await Promise.all(orders.map(async (order) => {
       const deliveredData = await redisCommand("GET", k(code, `delivered:${order.order_id}`));
