@@ -27,6 +27,39 @@ async function redisCommand(...args) {
 
 const k = (code, key) => `${code}:${key}`;
 
+async function upsertOrderInList(code, order) {
+  try {
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+    const orders = (listData.result || []).map(o => {
+      try { return JSON.parse(o); } catch(e) { return null; }
+    }).filter(Boolean);
+
+    // Remove all existing entries for this order_id
+    const filtered = orders.filter(o => String(o.order_id) !== String(order.order_id));
+
+    // Merge: prefer incoming fields but preserve received_at if already set
+    const existing = orders.find(o => String(o.order_id) === String(order.order_id));
+    const merged = {
+      ...(existing || {}),
+      ...order,
+      received_at: existing?.received_at || order.received_at || new Date().toISOString(),
+    };
+
+    // Put merged order at top, keep max 100 unique
+    const updated = [merged, ...filtered].slice(0, 100);
+
+    // Rebuild list sequentially — RPUSH in order so newest is at index 0 via LRANGE
+    await redisCommand("DEL", k(code, "orders"));
+    for (const o of updated) {
+      await redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o));
+    }
+
+    console.log(`upsertOrderInList: order ${order.order_id} upserted for ${code}, list size ${updated.length}`);
+  } catch(e) {
+    console.log(`upsertOrderInList error for ${code} order ${order.order_id}:`, e.message);
+  }
+}
+
 async function isValidOwnerOrIosPin(code, pin) {
   const storedPin = await redisCommand("GET", k(code, "pin"));
   const storedIosPin = await redisCommand("GET", k(code, "ios_pin"));
@@ -190,9 +223,8 @@ app.post("/new-order", async (req, res) => {
     order.date_created = new Date().toISOString();
   }
   order.received_at = new Date().toISOString();
-  await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
-  await redisCommand("LPUSH", k(code, "orders"), JSON.stringify(order));
-  await redisCommand("LTRIM", k(code, "orders"), 0, 99);
+await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
+  await upsertOrderInList(code, order);
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) {
     return res.json({ success: false, message: "No device tokens registered" });
@@ -281,17 +313,8 @@ app.post("/status-update", async (req, res) => {
   console.log("Status update for:", code, order.order_id, order.status);
 console.log("Full order data:", JSON.stringify(order));
 
-  // Update order status in orders list
-  try {
-    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
-    const orders = (listData.result || []).map((o) => JSON.parse(o));
-    const index = orders.findIndex((o) => String(o.order_id) === String(order.order_id));
-    if (index !== -1) {
-      orders[index].status = order.status;
-      await redisCommand("DEL", k(code, "orders"));
-      await Promise.all(orders.reverse().map((o) => redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o))));
-    }
-  } catch(e) {}
+// Update order status in orders list
+  await upsertOrderInList(code, order);
 
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) return res.json({ success: false });
@@ -789,6 +812,44 @@ app.get("/order/:code/:id", async (req, res) => {
 });
 
 // -------------------------------------------------------
+// ONE-TIME DEDUP CLEANUP
+// -------------------------------------------------------
+
+app.get("/dedup-orders/:code", async (req, res) => {
+  const { secret } = req.query;
+  const adminSecret = process.env.ADMIN_SECRET || 'foodup2026';
+  if (secret !== adminSecret) return res.json({ success: false, message: 'Unauthorized' });
+  const code = req.params.code.toLowerCase().trim();
+  try {
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+    const orders = (listData.result || []).map(o => {
+      try { return JSON.parse(o); } catch(e) { return null; }
+    }).filter(Boolean);
+
+    const seen = new Set();
+    const deduped = [];
+    for (const order of orders) {
+      const id = String(order.order_id);
+      if (!seen.has(id)) {
+        seen.add(id);
+        deduped.push(order);
+      }
+    }
+
+    // Rebuild list sequentially — preserves order, newest first
+    await redisCommand("DEL", k(code, "orders"));
+    for (const o of deduped) {
+      await redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o));
+    }
+
+    console.log(`dedup-orders: ${code} before=${orders.length} after=${deduped.length}`);
+    res.json({ success: true, before: orders.length, after: deduped.length, freed: orders.length - deduped.length });
+  } catch(e) {
+    res.json({ success: false, message: e.message });
+  }
+});
+
+// -------------------------------------------------------
 // ORDERS LIST
 // -------------------------------------------------------
 
@@ -1263,8 +1324,7 @@ app.post("/wc-webhook", async (req, res) => {
     console.log("WC Webhook order:", orderId, "Scheduled:", orderableDate, orderableTime);
 
     await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
-    await redisCommand("LPUSH", k(code, "orders"), JSON.stringify(order));
-    await redisCommand("LTRIM", k(code, "orders"), 0, 99);
+    await upsertOrderInList(code, order);
 
     const deviceTokens = await getTokens(code);
     if (deviceTokens.length === 0) return res.json({ success: true, message: "No tokens" });
