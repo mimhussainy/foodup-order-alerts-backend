@@ -448,6 +448,7 @@ app.get("/pos/orders/:code", async (req, res) => {
         return res.json({
           success: true,
           restaurant_name: wpResult.restaurant_name,
+          logo_url: wpResult.logo_url || '',
           website,
         });
       }
