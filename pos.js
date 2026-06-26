@@ -442,6 +442,8 @@ app.get("/pos/orders/:code", async (req, res) => {
           success: true,
           restaurant_name: wpResult.restaurant_name,
           logo_url: wpResult.logo_url || '',
+          printer_ip: wpResult.printer_ip || '',
+          printer_port: wpResult.printer_port || '9100',
           website,
         });
       }
