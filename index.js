@@ -29,6 +29,11 @@ const k = (code, key) => `${code}:${key}`;
 
 async function upsertOrderInList(code, order) {
   try {
+    if (!order || !order.order_id) {
+      console.log("upsertOrderInList skipped: missing order_id");
+      return;
+    }
+
     const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
     const orders = (listData.result || []).map(o => {
       try { return JSON.parse(o); } catch(e) { return null; }
@@ -48,7 +53,7 @@ async function upsertOrderInList(code, order) {
     // Put merged order at top, keep max 100 unique
     const updated = [merged, ...filtered].slice(0, 100);
 
-    // Rebuild list sequentially — RPUSH in order so newest is at index 0 via LRANGE
+    // Rebuild list sequentially — newest first, no Promise.all, no reverse
     await redisCommand("DEL", k(code, "orders"));
     for (const o of updated) {
       await redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o));
@@ -836,14 +841,19 @@ app.get("/dedup-orders/:code", async (req, res) => {
       }
     }
 
-    // Rebuild list sequentially — preserves order, newest first
+    // Rebuild list sequentially — preserves order, no Promise.all, no reverse
     await redisCommand("DEL", k(code, "orders"));
     for (const o of deduped) {
       await redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o));
     }
 
     console.log(`dedup-orders: ${code} before=${orders.length} after=${deduped.length}`);
-    res.json({ success: true, before: orders.length, after: deduped.length, freed: orders.length - deduped.length });
+    res.json({
+      success: true,
+      before: orders.length,
+      after: deduped.length,
+      freed: orders.length - deduped.length,
+    });
   } catch(e) {
     res.json({ success: false, message: e.message });
   }
