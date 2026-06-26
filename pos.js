@@ -366,6 +366,54 @@ module.exports = function(app, redisCommand, k) {
         success: false,
         error: e.message,
       });
+
+
+    });
+
+  // -------------------------------------------------------
+  // PLACE ORDER
+  // -------------------------------------------------------
+  app.post("/pos/orders/:code", async (req, res) => {
+    try {
+      const code = req.params.code.toLowerCase().trim();
+      const order = req.body;
+
+      const counterKey = k(code, "pos_order_counter");
+      const counterData = await redisCommand("INCR", counterKey);
+      const orderNumber = `POS-${String(counterData.result).padStart(3, '0')}`;
+      const orderId = `pos_${Date.now()}`;
+
+      const fullOrder = {
+        ...order,
+        id: orderId,
+        order_number: orderNumber,
+        restaurant_code: code,
+        source: 'pos',
+        created_at: new Date().toISOString(),
+      };
+
+      await redisCommand("LPUSH", k(code, "pos_orders"), JSON.stringify(fullOrder));
+      await redisCommand("LTRIM", k(code, "pos_orders"), 0, 199);
+
+      res.json({ success: true, order_id: orderNumber });
+    } catch (e) {
+      console.log("POS place order error:", e.message);
+      res.json({ success: false, error: e.message });
+    }
+  });
+
+  // -------------------------------------------------------
+  // GET ORDERS
+  // -------------------------------------------------------
+  app.get("/pos/orders/:code", async (req, res) => {
+    try {
+      const code = req.params.code.toLowerCase().trim();
+      const data = await redisCommand("LRANGE", k(code, "pos_orders"), 0, 99);
+      const orders = (data.result || []).map(o => JSON.parse(o));
+      res.json({ success: true, orders });
+    } catch (e) {
+      console.log("POS get orders error:", e.message);
+      res.json({ success: false, error: e.message });
     }
   });
 
