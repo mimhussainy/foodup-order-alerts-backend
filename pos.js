@@ -346,29 +346,24 @@ module.exports = function(app, redisCommand, k) {
     try {
       const code = req.params.code.toLowerCase().trim();
       const { tables } = req.body;
-
       if (!Array.isArray(tables)) {
         return res.json({
           success: false,
           error: "Tables must be an array",
         });
       }
-
       await redisCommand("SET", k(code, "pos_tables"), JSON.stringify(tables));
-
       res.json({
         success: true,
       });
-
     } catch (e) {
       console.log("POS save tables error:", e.message);
       res.json({
         success: false,
         error: e.message,
       });
-
-
-    });
+    }
+  });
 
   // -------------------------------------------------------
   // PLACE ORDER
@@ -377,12 +372,10 @@ module.exports = function(app, redisCommand, k) {
     try {
       const code = req.params.code.toLowerCase().trim();
       const order = req.body;
-
       const counterKey = k(code, "pos_order_counter");
       const counterData = await redisCommand("INCR", counterKey);
       const orderNumber = `POS-${String(counterData.result).padStart(3, '0')}`;
       const orderId = `pos_${Date.now()}`;
-
       const fullOrder = {
         ...order,
         id: orderId,
@@ -391,10 +384,8 @@ module.exports = function(app, redisCommand, k) {
         source: 'pos',
         created_at: new Date().toISOString(),
       };
-
       await redisCommand("LPUSH", k(code, "pos_orders"), JSON.stringify(fullOrder));
       await redisCommand("LTRIM", k(code, "pos_orders"), 0, 199);
-
       res.json({ success: true, order_id: orderNumber });
     } catch (e) {
       console.log("POS place order error:", e.message);
