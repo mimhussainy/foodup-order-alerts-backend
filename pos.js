@@ -27,20 +27,22 @@ module.exports = function(app, redisCommand, k) {
   // Helper: get restaurant website/base URL
   // -------------------------------------------------------
   async function getRestaurantBaseUrl(code) {
+    // Try main restaurant profile first
     const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
-
-    if (!profileData.result) {
-      throw new Error("Restaurant not found");
+    if (profileData.result) {
+      const profile = JSON.parse(profileData.result);
+      if (profile.website) {
+        return profile.website.startsWith("http") ? profile.website : `https://${profile.website}`;
+      }
     }
 
-    const profile = JSON.parse(profileData.result);
-    const website = profile.website;
-
-    if (!website) {
-      throw new Error("No website configured for this restaurant");
+    // Fall back to WordPress-only registration
+    const wpWebsite = await redisCommand("GET", k(code, "pos_wordpress_website"));
+    if (wpWebsite.result) {
+      return wpWebsite.result;
     }
 
-    return website.startsWith("http") ? website : `https://${website}`;
+    throw new Error("Restaurant not found");
   }
 
   // -------------------------------------------------------
