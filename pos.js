@@ -396,7 +396,7 @@ module.exports = function(app, redisCommand, k) {
   // -------------------------------------------------------
   // GET ORDERS
   // -------------------------------------------------------
-  app.get("/pos/orders/:code", async (req, res) => {
+app.get("/pos/orders/:code", async (req, res) => {
     try {
       const code = req.params.code.toLowerCase().trim();
       const data = await redisCommand("LRANGE", k(code, "pos_orders"), 0, 99);
@@ -404,6 +404,53 @@ module.exports = function(app, redisCommand, k) {
       res.json({ success: true, orders });
     } catch (e) {
       console.log("POS get orders error:", e.message);
+      res.json({ success: false, error: e.message });
+    }
+  });
+
+  app.post("/pos/register-wordpress", async (req, res) => {
+    try {
+      const { restaurant_code, restaurant_name, website, secret } = req.body;
+      if (secret !== 'foodup_pos_2026') {
+        return res.json({ success: false, error: 'Invalid secret' });
+      }
+      if (!restaurant_code || !website) {
+        return res.json({ success: false, error: 'Missing fields' });
+      }
+      await redisCommand("SET", k(restaurant_code, "pos_wordpress_website"), website);
+      await redisCommand("SET", k(restaurant_code, "pos_wordpress_name"), restaurant_name || restaurant_code);
+      res.json({ success: true });
+    } catch (e) {
+      res.json({ success: false, error: e.message });
+    }
+  });
+
+  app.post("/pos/verify-wordpress-pin", async (req, res) => {
+    try {
+      const { restaurant_code, pin } = req.body;
+      if (!restaurant_code || !pin) {
+        return res.json({ success: false, error: 'Missing fields' });
+      }
+      const websiteData = await redisCommand("GET", k(restaurant_code, "pos_wordpress_website"));
+      if (!websiteData.result) {
+        return res.json({ success: false, error: 'Restaurant not found' });
+      }
+      const website = websiteData.result;
+      const wpRes = await fetch(`${website}/wp-json/foodup-pos/v1/verify-pin?secret=foodup_pos_2026`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin }),
+      });
+      const wpResult = await wpRes.json();
+      if (wpResult.success) {
+        return res.json({
+          success: true,
+          restaurant_name: wpResult.restaurant_name,
+          website,
+        });
+      }
+      res.json({ success: false, error: 'Invalid PIN' });
+    } catch (e) {
       res.json({ success: false, error: e.message });
     }
   });
