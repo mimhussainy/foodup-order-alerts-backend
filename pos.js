@@ -220,9 +220,13 @@ const groupsCacheKey = k(code, "pos_addon_groups");
 
       const product = products.find(p => Number(p.id) === Number(productId));
 
-      const categoryIds = product && Array.isArray(product.categories)
+const categoryIds = product && Array.isArray(product.categories)
         ? product.categories.map(c => Number(c.id))
         : [];
+
+      console.log('Product ID:', productId, 'Category IDs:', categoryIds);
+      console.log('Addon groups count:', addonGroups.length);
+      if (addonGroups.length > 0) console.log('First group conditions:', JSON.stringify(addonGroups[0].conditions));
 
       // ---------------------------------------------------
       // Determine applicable addon group IDs dynamically
