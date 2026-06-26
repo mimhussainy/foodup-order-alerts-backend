@@ -189,10 +189,6 @@ const groupsCacheKey = k(code, "pos_addon_groups");
         addonGroups = await fetchAndCacheAddonGroups(code);
       }
 
-      console.log('Product ID:', productId, 'Category IDs:', categoryIds);
-      console.log('Addon groups count:', addonGroups.length);
-      if (addonGroups.length > 0) console.log('First group conditions:', JSON.stringify(addonGroups[0].conditions));
-
       if (!Array.isArray(addonGroups)) {
         addonGroups = [];
       }
