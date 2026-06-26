@@ -2,24 +2,6 @@
 // POS — PRODUCT CATALOG
 // -------------------------------------------------------
 
-// Category ID → addon group post ID mapping
-const CATEGORY_ADDON_MAP = {
-  36: [2015],        // Pizza 32cm
-  52: [2674],        // Pizza 50cm
-  40: [2027, 3908],  // Kebab
-  55: [2027, 3908],  // Box
-  42: [2028],        // Burger
-  44: [2029],        // Salate
-  56: [3906],        // Cordon Bleu
-};
-
-// Specific product → addon group mapping
-const PRODUCT_ADDON_MAP = {
-  1907: [2027, 3908], 1908: [2027, 3908], 1909: [2027, 3908],
-  1910: [2027, 3908], 1911: [2027, 3908], 1912: [2027, 3908],
-  1915: [2027, 3908], 1916: [2027, 3908], 1917: [2027, 3908],
-  1918: [2027, 3908], 1919: [2027, 3908], 1920: [2027, 3908],
-};
 
 module.exports = function(app, redisCommand, k) {
 
@@ -239,20 +221,27 @@ module.exports = function(app, redisCommand, k) {
         : [];
 
       // ---------------------------------------------------
-      // Determine applicable addon group IDs
+      // Determine applicable addon group IDs dynamically
+      // using conditions from WordPress addon groups
       // ---------------------------------------------------
       const applicableGroupIds = new Set();
 
-      // Product-specific addon groups
-      if (PRODUCT_ADDON_MAP[productId]) {
-        PRODUCT_ADDON_MAP[productId].forEach(id => applicableGroupIds.add(Number(id)));
-      }
-
-      // Category-based addon groups
-      categoryIds.forEach(catId => {
-        if (CATEGORY_ADDON_MAP[catId]) {
-          CATEGORY_ADDON_MAP[catId].forEach(id => applicableGroupIds.add(Number(id)));
-        }
+      addonGroups.forEach(group => {
+        if (!Array.isArray(group.conditions)) return;
+        const matchesAny = group.conditions.some(orGroup => {
+          if (!Array.isArray(orGroup)) return false;
+          return orGroup.every(condition => {
+            if (!condition || !condition.objectType) return false;
+            if (condition.objectType === 'product_category') {
+              return categoryIds.includes(Number(condition.objects?.code));
+            }
+            if (condition.objectType === 'product') {
+              return Number(condition.objects?.code) === Number(productId);
+            }
+            return false;
+          });
+        });
+        if (matchesAny) applicableGroupIds.add(Number(group.id));
       });
 
       // ---------------------------------------------------
