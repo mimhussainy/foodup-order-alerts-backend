@@ -388,6 +388,21 @@ const categoryIds = product && Array.isArray(product.categories)
     }
   });
 
+app.post("/pos/orders/:code/clear", async (req, res) => {
+    try {
+      const code = req.params.code.toLowerCase().trim();
+      const { secret } = req.body;
+      if (secret !== 'foodup_pos_2026') {
+        return res.json({ success: false, error: 'Invalid secret' });
+      }
+      await redisCommand("DEL", k(code, "pos_orders"));
+      await redisCommand("DEL", k(code, "pos_order_counter"));
+      res.json({ success: true });
+    } catch (e) {
+      res.json({ success: false, error: e.message });
+    }
+  });
+  
   // -------------------------------------------------------
   // GET ORDERS
   // -------------------------------------------------------
