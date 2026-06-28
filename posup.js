@@ -52,6 +52,7 @@ router.post('/import/:code', async (req, res) => {
         printer_port:     profile.printer_port || '9100',
         currency:         profile.currency || 'CHF',
         currency_symbol:  profile.currency_symbol || 'CHF',
+        pin:              profile.pin || '1234',
         active:           true,
       }, { onConflict: 'code' })
       .select()
@@ -578,6 +579,25 @@ router.get('/restaurants', async (req, res) => {
       .order('name');
     if (error) throw new Error(error.message);
     res.json({ success: true, restaurants: data || [] });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /posup/login — validate restaurant code and PIN
+router.post('/login', async (req, res) => {
+  const { code, pin } = req.body;
+  try {
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('id, name, logo_url, pin')
+      .eq('code', code)
+      .single();
+
+    if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+    if (restaurant.pin && restaurant.pin !== pin) return res.status(401).json({ success: false, error: 'Incorrect PIN' });
+
+    res.json({ success: true, name: restaurant.name, logo_url: restaurant.logo_url });
   } catch(err) {
     res.status(500).json({ success: false, error: err.message });
   }
