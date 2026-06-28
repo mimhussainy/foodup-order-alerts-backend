@@ -521,17 +521,34 @@ router.post('/reimport/:code', async (req, res) => {
       if (!insertedGroup) continue;
       addonsImported++;
 
-      // Insert options
-      for (const opt of (group.options || [])) {
-        await supabase.from('addon_options').insert({
-          addon_group_id: insertedGroup.id,
-          wc_option_id: opt.id,
-          name: opt.label,
-          price: parseFloat(opt.price) || 0,
-          type: opt.type || 'checkbox',
-          required: opt.required || false,
-          sort_order: opt.sort_order || 0,
-        });
+      // Insert options — handle both flat and nested option structures
+      let sortOrder = 0;
+      for (const optOrGroup of (group.options || [])) {
+        // Nested structure: optOrGroup.options contains actual options
+        if (optOrGroup.options && Array.isArray(optOrGroup.options)) {
+          for (const opt of optOrGroup.options) {
+            await supabase.from('addon_options').insert({
+              addon_group_id: insertedGroup.id,
+              wc_option_id: opt.id,
+              name: opt.name || opt.label,
+              price: parseFloat(opt.price) || 0,
+              type: optOrGroup.type || 'checkbox',
+              required: optOrGroup.required || false,
+              sort_order: sortOrder++,
+            });
+          }
+        } else {
+          // Flat structure
+          await supabase.from('addon_options').insert({
+            addon_group_id: insertedGroup.id,
+            wc_option_id: optOrGroup.id,
+            name: optOrGroup.name || optOrGroup.label,
+            price: parseFloat(optOrGroup.price) || 0,
+            type: optOrGroup.type || 'checkbox',
+            required: optOrGroup.required || false,
+            sort_order: sortOrder++,
+          });
+        }
       }
 
       // Category assignments
