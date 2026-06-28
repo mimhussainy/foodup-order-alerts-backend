@@ -294,20 +294,21 @@ router.get('/products/:code', async (req, res) => {
       .eq('restaurant_id', restaurantId)
       .eq('active', true);
 
-    // Format products
+// Format products
     const formattedProducts = (products || []).map(p => ({
-      id:            p.id,
-      wc_id:         p.wc_id,
-      name:          p.name,
-      description:   p.description,
-      type:          p.type,
-      price:         p.price,
-      regular_price: p.regular_price,
-      image_url:     p.image_url,
-      sort_order:    p.sort_order,
-      active:        p.active,
-      category_ids:  (p.product_categories || []).map(pc => pc.category_id),
-      variations:    (p.variations || []).map(v => ({
+      id:              p.id,
+      wc_id:           p.wc_id,
+      name:            p.name,
+      description:     p.description,
+      type:            p.type,
+      price:           p.price,
+      price_overridden: p.price_overridden,
+      regular_price:   p.regular_price,
+      image_url:       p.image_url,
+      sort_order:      p.sort_order,
+      active:          p.active,
+      category_ids:    (p.product_categories || []).map(pc => pc.category_id),
+      variations:      (p.variations || []).map(v => ({
         id:         v.id,
         wc_id:      v.wc_id,
         name:       v.name,
