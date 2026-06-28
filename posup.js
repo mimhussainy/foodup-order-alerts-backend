@@ -453,4 +453,30 @@ router.get('/orders/:code', async (req, res) => {
   }
 });
 
+// POST /posup/reimport/:code — re-import using stored credentials
+router.post('/reimport/:code', async (req, res) => {
+  const { code } = req.params;
+  try {
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('wp_site_url, secret_key')
+      .eq('code', code)
+      .single();
+
+    if (!restaurant || !restaurant.wp_site_url) {
+      return res.status(404).json({ success: false, error: 'Restaurant not found. Import it first from the Import tab.' });
+    }
+
+    const importRes = await fetch(`https://foodup-order-alerts-backend.onrender.com/posup/import/${code}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wp_site_url: restaurant.wp_site_url, secret_key: restaurant.secret_key })
+    });
+    const importData = await importRes.json();
+    res.json(importData);
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
