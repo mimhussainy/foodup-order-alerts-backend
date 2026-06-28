@@ -12,6 +12,20 @@ const supabase = createClient(
 // Triggers a full product import from WordPress into Supabase
 // Body: { wp_site_url, secret_key }
 // ─────────────────────────────────────────
+
+router.get('/debug-supabase', async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('restaurants').select('count');
+    res.json({ 
+      url: process.env.SUPABASE_URL,
+      key_prefix: process.env.SUPABASE_SERVICE_KEY?.substring(0, 20),
+      data, 
+      error 
+    });
+  } catch(err) {
+    res.json({ caught: err.message });
+  }
+});
 router.post('/import/:code', async (req, res) => {
   const { code } = req.params;
   const { wp_site_url, secret_key } = req.body;
