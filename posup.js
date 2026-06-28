@@ -82,8 +82,7 @@ router.post('/import/:code', async (req, res) => {
       'product_id',
       (await supabase.from('products').select('id').eq('restaurant_id', restaurantId)).data?.map(r => r.id) || []
     );
-    await supabase.from('products').delete().eq('restaurant_id', restaurantId);
-    await supabase.from('categories').delete().eq('restaurant_id', restaurantId);
+await supabase.from('categories').delete().eq('restaurant_id', restaurantId);
 
     // 5. Insert categories
     const categoryWcIdToUuid = {};
@@ -107,31 +106,43 @@ router.post('/import/:code', async (req, res) => {
       categoryWcIdToUuid[cat.wc_id] = inserted.id;
     }
 
-    // 6. Insert products + variations + category mappings
+// 6. Upsert products + variations + category mappings
     const productWcIdToUuid = {};
     for (const product of wpData.products) {
+      // Check if product exists and has price_overridden
+      const { data: existing } = await supabase
+        .from('products')
+        .select('id, price, price_overridden')
+        .eq('restaurant_id', restaurantId)
+        .eq('wc_id', product.wc_id)
+        .single();
+
+      const priceOverridden = existing?.price_overridden === true;
+      const finalPrice = priceOverridden ? existing.price : (product.price || 0);
+
       const { data: inserted, error } = await supabase
         .from('products')
-        .insert({
-          restaurant_id: restaurantId,
-          wc_id:         product.wc_id,
-          name:          product.name,
-          description:   product.description || '',
-          type:          product.type || 'simple',
-          price:         product.price || 0,
-          regular_price: product.regular_price || 0,
-          image_url:     product.image_url || '',
-          sort_order:    product.sort_order || 0,
-          active:        true,
-        })
+        .upsert({
+          restaurant_id:  restaurantId,
+          wc_id:          product.wc_id,
+          name:           product.name,
+          description:    product.description || '',
+          type:           product.type || 'simple',
+          price:          finalPrice,
+          regular_price:  product.regular_price || 0,
+          image_url:      product.image_url || '',
+          sort_order:     product.sort_order || 0,
+          active:         true,
+        }, { onConflict: 'restaurant_id,wc_id' })
         .select()
         .single();
-      if (error) throw new Error(`Product insert failed (${product.name}): ${error.message}`);
+      if (error) throw new Error(`Product upsert failed (${product.name}): ${error.message}`);
 
       const productId = inserted.id;
       productWcIdToUuid[product.wc_id] = productId;
 
-      // Category mappings
+      // Clear and re-insert category mappings
+      await supabase.from('product_categories').delete().eq('product_id', productId);
       for (const catWcId of product.category_ids) {
         const catUuid = categoryWcIdToUuid[catWcId];
         if (!catUuid) continue;
@@ -141,7 +152,8 @@ router.post('/import/:code', async (req, res) => {
         });
       }
 
-      // Variations
+      // Clear and re-insert variations
+      await supabase.from('variations').delete().eq('product_id', productId);
       for (const variation of product.variations || []) {
         await supabase.from('variations').insert({
           product_id: productId,
@@ -153,6 +165,13 @@ router.post('/import/:code', async (req, res) => {
         });
       }
     }
+
+    // Delete products that no longer exist in WP
+    const wpWcIds = wpData.products.map(p => p.wc_id);
+    await supabase.from('products')
+      .delete()
+      .eq('restaurant_id', restaurantId)
+      .not('wc_id', 'in', `(${wpWcIds.join(',')})`);
 
     // 7. Insert addon groups + options + assignments
     for (const addon of wpData.addons) {
@@ -341,11 +360,10 @@ router.get('/profile/:code', async (req, res) => {
 router.patch('/product/:id', async (req, res) => {
   const { id } = req.params;
   const { name, description, price, active, image_url } = req.body;
-
   const updates = {};
   if (name !== undefined) updates.name = name;
   if (description !== undefined) updates.description = description;
-  if (price !== undefined) updates.price = price;
+  if (price !== undefined) { updates.price = price; updates.price_overridden = true; }
   if (active !== undefined) updates.active = active;
   if (image_url !== undefined) updates.image_url = image_url;
 
