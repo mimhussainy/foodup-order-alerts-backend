@@ -380,4 +380,82 @@ router.post('/product', async (req, res) => {
   res.json({ success: true, product: data });
 });
 
+// POST /posup/orders/:code — save a new POS order
+router.post('/orders/:code', async (req, res) => {
+  const { code } = req.params;
+  const order = req.body;
+
+  try {
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('id')
+      .eq('code', code)
+      .single();
+
+    if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+    // Generate order number
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const { count } = await supabase
+      .from('pos_orders')
+      .select('*', { count: 'exact', head: true })
+      .eq('restaurant_id', restaurant.id);
+
+    const orderNumber = `POS-${today}-${String((count || 0) + 1).padStart(3, '0')}`;
+
+    const { data, error } = await supabase
+      .from('pos_orders')
+      .insert({
+        restaurant_id: restaurant.id,
+        order_number: orderNumber,
+        items: order.items,
+        subtotal: parseFloat(order.subtotal),
+        discount: parseFloat(order.discount || '0'),
+        discount_type: order.discount_type || 'fixed',
+        discount_value: order.discount_value || '0',
+        total: parseFloat(order.total),
+        currency: order.currency || 'CHF',
+        payment_method: order.payment_method,
+        note: order.note || '',
+        source: order.source || 'posup',
+        created_at: order.created_at || new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    res.json({ success: true, order_id: orderNumber, order: data });
+  } catch (err: any) {
+    console.error('POSUP order error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /posup/orders/:code — fetch all orders for a restaurant
+router.get('/orders/:code', async (req, res) => {
+  const { code } = req.params;
+
+  try {
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('id')
+      .eq('code', code)
+      .single();
+
+    if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+    const { data, error } = await supabase
+      .from('pos_orders')
+      .select('*')
+      .eq('restaurant_id', restaurant.id)
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (error) throw new Error(error.message);
+    res.json({ success: true, orders: data || [] });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
