@@ -401,7 +401,7 @@ router.post('/orders/:code', async (req, res) => {
       .select('*', { count: 'exact', head: true })
       .eq('restaurant_id', restaurant.id);
 
-    const orderNumber = `POS-${today}-${String((count || 0) + 1).padStart(3, '0')}`;
+    const orderNumber = `POS-${String((count || 0) + 1).padStart(3, '0')}`;
 
     const { data, error } = await supabase
       .from('pos_orders')
