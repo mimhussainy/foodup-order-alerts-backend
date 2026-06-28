@@ -569,5 +569,18 @@ router.post('/reimport/:code', async (req, res) => {
   }
 });
 
+// GET /posup/restaurants — list all registered restaurants
+router.get('/restaurants', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('restaurants')
+      .select('code, name, active')
+      .order('name');
+    if (error) throw new Error(error.message);
+    res.json({ success: true, restaurants: data || [] });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 module.exports = router;
