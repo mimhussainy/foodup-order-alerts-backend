@@ -453,13 +453,13 @@ router.get('/orders/:code', async (req, res) => {
   }
 });
 
-// POST /posup/reimport/:code — re-import using stored credentials
+// POST /posup/reimport/:code — re-import ADDONS ONLY using stored credentials
 router.post('/reimport/:code', async (req, res) => {
   const { code } = req.params;
   try {
     const { data: restaurant } = await supabase
       .from('restaurants')
-      .select('wp_site_url, secret_key')
+      .select('id, wp_site_url, secret_key')
       .eq('code', code)
       .single();
 
@@ -467,16 +467,73 @@ router.post('/reimport/:code', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Restaurant not found. Import it first from the Import tab.' });
     }
 
-    const importRes = await fetch(`https://foodup-order-alerts-backend.onrender.com/posup/import/${code}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ wp_site_url: restaurant.wp_site_url, secret_key: restaurant.secret_key })
+    // Fetch from WordPress
+    const wpRes = await fetch(`${restaurant.wp_site_url}/wp-json/posup/v1/products-full`, {
+      headers: { 'X-POSUP-Key': restaurant.secret_key }
     });
-    const importData = await importRes.json();
-    res.json(importData);
+
+    if (!wpRes.ok) return res.status(400).json({ success: false, error: `WordPress returned ${wpRes.status}` });
+
+    const wpData = await wpRes.json();
+    if (!wpData.success) return res.status(400).json({ success: false, error: 'WordPress plugin error' });
+
+    const addonGroups = wpData.addon_groups || [];
+
+    // Delete existing addons for this restaurant
+    const { data: existingGroups } = await supabase
+      .from('addon_groups')
+      .select('id')
+      .eq('restaurant_id', restaurant.id);
+
+    if (existingGroups?.length > 0) {
+      const groupIds = existingGroups.map(g => g.id);
+      await supabase.from('addon_options').delete().in('addon_group_id', groupIds);
+      await supabase.from('addon_category_assignments').delete().in('addon_group_id', groupIds);
+      await supabase.from('addon_product_assignments').delete().in('addon_group_id', groupIds);
+      await supabase.from('addon_groups').delete().eq('restaurant_id', restaurant.id);
+    }
+
+    // Re-insert addon groups
+    let addonsImported = 0;
+    for (const group of addonGroups) {
+      const { data: insertedGroup } = await supabase
+        .from('addon_groups')
+        .insert({ restaurant_id: restaurant.id, wc_id: group.id, name: group.name, active: true })
+        .select().single();
+
+      if (!insertedGroup) continue;
+      addonsImported++;
+
+      // Insert options
+      for (const opt of (group.options || [])) {
+        await supabase.from('addon_options').insert({
+          addon_group_id: insertedGroup.id,
+          wc_option_id: opt.id,
+          name: opt.label,
+          price: parseFloat(opt.price) || 0,
+          type: opt.type || 'checkbox',
+          required: opt.required || false,
+          sort_order: opt.sort_order || 0,
+        });
+      }
+
+      // Category assignments
+      for (const catId of (group.assigned_category_ids || [])) {
+        const { data: cat } = await supabase
+          .from('categories')
+          .select('id')
+          .eq('restaurant_id', restaurant.id)
+          .eq('wc_id', catId)
+          .single();
+        if (cat) await supabase.from('addon_category_assignments').insert({ addon_group_id: insertedGroup.id, category_id: cat.id });
+      }
+    }
+
+    res.json({ success: true, imported: { addons: addonsImported }, message: 'Addons imported successfully. Products and prices unchanged.' });
   } catch(err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
 
 module.exports = router;
