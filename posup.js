@@ -425,35 +425,30 @@ router.post('/orders/:code', async (req, res) => {
 
     if (error) throw new Error(error.message);
     res.json({ success: true, order_id: orderNumber, order: data });
-  } catch (err: any) {
+  } catch (err) {
     console.error('POSUP order error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
 // GET /posup/orders/:code — fetch all orders for a restaurant
 router.get('/orders/:code', async (req, res) => {
   const { code } = req.params;
-
   try {
     const { data: restaurant } = await supabase
       .from('restaurants')
       .select('id')
       .eq('code', code)
       .single();
-
     if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
-
     const { data, error } = await supabase
       .from('pos_orders')
       .select('*')
       .eq('restaurant_id', restaurant.id)
       .order('created_at', { ascending: false })
       .limit(500);
-
     if (error) throw new Error(error.message);
     res.json({ success: true, orders: data || [] });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
