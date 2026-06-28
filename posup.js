@@ -494,9 +494,7 @@ router.post('/reimport/:code', async (req, res) => {
     if (!wpRes.ok) return res.status(400).json({ success: false, error: `WordPress returned ${wpRes.status}` });
 
     const wpData = await wpRes.json();
-    if (!wpData.success) return res.status(400).json({ success: false, error: 'WordPress plugin error' });
-
-    const addonGroups = wpData.addon_groups || [];
+    const addonGroups = wpData.addons || wpData.addon_groups || [];
 
     // Delete existing addons for this restaurant
     const { data: existingGroups } = await supabase
