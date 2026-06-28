@@ -337,4 +337,47 @@ router.get('/profile/:code', async (req, res) => {
   res.json(data);
 });
 
+// PATCH /posup/product/:id — update product fields
+router.patch('/product/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, description, price, active, image_url } = req.body;
+
+  const updates = {};
+  if (name !== undefined) updates.name = name;
+  if (description !== undefined) updates.description = description;
+  if (price !== undefined) updates.price = price;
+  if (active !== undefined) updates.active = active;
+  if (image_url !== undefined) updates.image_url = image_url;
+
+  const { error } = await supabase
+    .from('products')
+    .update(updates)
+    .eq('id', id);
+
+  if (error) return res.status(500).json({ success: false, error: error.message });
+  res.json({ success: true });
+});
+
+// POST /posup/product — add new product
+router.post('/product', async (req, res) => {
+  const { name, description, price, active, image_url, restaurant_code } = req.body;
+
+  const { data: restaurant } = await supabase
+    .from('restaurants')
+    .select('id')
+    .eq('code', restaurant_code)
+    .single();
+
+  if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+  const { data, error } = await supabase
+    .from('products')
+    .insert({ restaurant_id: restaurant.id, name, description, price, active, image_url, type: 'simple', wc_id: 0 })
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ success: false, error: error.message });
+  res.json({ success: true, product: data });
+});
+
 module.exports = router;
