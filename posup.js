@@ -349,16 +349,60 @@ router.get('/products/:code', async (req, res) => {
 // ─────────────────────────────────────────
 router.get('/profile/:code', async (req, res) => {
   const { code } = req.params;
-  const { data, error } = await supabase
-    .from('restaurants')
-    .select('name, logo_url, printer_ip, printer_port, printer_model, currency, currency_symbol')
-    .eq('code', code)
-    .single();
+  try {
+    const { data: restaurant, error } = await supabase
+      .from('restaurants')
+      .select('name, logo_url, printer_ip, printer_port, printer_model, currency, currency_symbol, wp_site_url, secret_key')
+      .eq('code', code)
+      .single();
 
-  if (error || !data) return res.status(404).json({ error: 'Restaurant not found' });
-  res.json(data);
+    if (error || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
+
+    // Try to fetch live printer settings from WordPress
+    if (restaurant.wp_site_url && restaurant.secret_key) {
+      try {
+        const wpRes = await fetch(`${restaurant.wp_site_url}/wp-json/posup/v1/profile`, {
+          headers: { 'X-POSUP-Key': restaurant.secret_key },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (wpRes.ok) {
+          const wpProfile = await wpRes.json();
+          // Update Supabase with latest printer settings
+          await supabase.from('restaurants').update({
+            printer_ip:    wpProfile.printer_ip || restaurant.printer_ip,
+            printer_port:  wpProfile.printer_port || restaurant.printer_port,
+            printer_model: wpProfile.printer_model || restaurant.printer_model,
+          }).eq('code', code);
+
+          return res.json({
+            name:             restaurant.name,
+            logo_url:         restaurant.logo_url,
+            printer_ip:       wpProfile.printer_ip || restaurant.printer_ip,
+            printer_port:     wpProfile.printer_port || restaurant.printer_port,
+            printer_model:    wpProfile.printer_model || restaurant.printer_model,
+            currency:         restaurant.currency,
+            currency_symbol:  restaurant.currency_symbol,
+          });
+        }
+      } catch (wpErr) {
+        console.log('WordPress profile fetch failed, using cached data:', wpErr.message);
+      }
+    }
+
+    // Fallback to Supabase cached data
+    res.json({
+      name:            restaurant.name,
+      logo_url:        restaurant.logo_url,
+      printer_ip:      restaurant.printer_ip,
+      printer_port:    restaurant.printer_port,
+      printer_model:   restaurant.printer_model,
+      currency:        restaurant.currency,
+      currency_symbol: restaurant.currency_symbol,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
-
 // PATCH /posup/product/:id — update product fields
 router.patch('/product/:id', async (req, res) => {
   const { id } = req.params;
