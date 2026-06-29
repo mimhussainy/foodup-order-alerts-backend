@@ -50,6 +50,7 @@ router.post('/import/:code', async (req, res) => {
         logo_url:         profile.logo_url || '',
         printer_ip:       profile.printer_ip || '',
         printer_port:     profile.printer_port || '9100',
+        printer_model:    profile.printer_model || '',
         currency:         profile.currency || 'CHF',
         currency_symbol:  profile.currency_symbol || 'CHF',
         pin:              profile.pin || '1234',
@@ -255,7 +256,7 @@ router.get('/products/:code', async (req, res) => {
     // Get restaurant
     const { data: restaurant, error: restErr } = await supabase
       .from('restaurants')
-      .select('id, name, logo_url, printer_ip, printer_port, currency, currency_symbol')
+      .select('id, name, logo_url, printer_ip, printer_port, printer_model, currency, currency_symbol')
       .eq('code', code)
       .single();
 
@@ -350,7 +351,7 @@ router.get('/profile/:code', async (req, res) => {
   const { code } = req.params;
   const { data, error } = await supabase
     .from('restaurants')
-    .select('name, logo_url, printer_ip, printer_port, currency, currency_symbol')
+    .select('name, logo_url, printer_ip, printer_port, printer_model, currency, currency_symbol')
     .eq('code', code)
     .single();
 
