@@ -423,6 +423,30 @@ router.patch('/product/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+// POST /posup/category — add new category
+router.post('/category', async (req, res) => {
+  const { name, restaurant_code } = req.body;
+  if (!name || !restaurant_code) return res.status(400).json({ success: false, error: 'Missing fields' });
+
+  const { data: restaurant } = await supabase
+    .from('restaurants')
+    .select('id')
+    .eq('code', restaurant_code)
+    .single();
+
+  if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+  const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+  const { data, error } = await supabase
+    .from('categories')
+    .insert({ restaurant_id: restaurant.id, name, slug, active: true, sort_order: 0 })
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ success: false, error: error.message });
+  res.json({ success: true, category: { ...data, category_ids: [] } });
+});
+
 // POST /posup/product — add new product
 router.post('/product', async (req, res) => {
   const { name, description, price, active, image_url, restaurant_code } = req.body;
