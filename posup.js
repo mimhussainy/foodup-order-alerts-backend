@@ -435,14 +435,23 @@ router.post('/product', async (req, res) => {
 
   if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
 
-  const { data, error } = await supabase
+  const { data: product, error } = await supabase
     .from('products')
     .insert({ restaurant_id: restaurant.id, name, description, price, active, image_url, type: 'simple', wc_id: 0 })
     .select()
     .single();
 
   if (error) return res.status(500).json({ success: false, error: error.message });
-  res.json({ success: true, product: data });
+
+  // Assign category if provided
+  if (req.body.category_id && product) {
+    await supabase.from('product_categories').insert({
+      product_id: product.id,
+      category_id: req.body.category_id,
+    });
+  }
+
+  res.json({ success: true, product });
 });
 
 // POST /posup/orders/:code — save a new POS order
