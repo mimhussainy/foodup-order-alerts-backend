@@ -461,7 +461,7 @@ router.post('/product', async (req, res) => {
 
   const { data: product, error } = await supabase
     .from('products')
-    .insert({ restaurant_id: restaurant.id, name, description, price, active, image_url, type: 'simple', wc_id: 0 })
+    .insert({ restaurant_id: restaurant.id, name, description, price, active, image_url, type: 'simple', wc_id: -(Date.now() % 1000000) })
     .select()
     .single();
 
