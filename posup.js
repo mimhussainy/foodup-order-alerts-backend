@@ -358,7 +358,7 @@ router.get('/profile/:code', async (req, res) => {
 
     if (error || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
-    // Try to fetch live printer settings from WordPress
+    // Try to fetch live printer + pin settings from WordPress
     if (restaurant.wp_site_url && restaurant.secret_key) {
       try {
         const wpRes = await fetch(`${restaurant.wp_site_url}/wp-json/posup/v1/profile`, {
@@ -367,11 +367,12 @@ router.get('/profile/:code', async (req, res) => {
         });
         if (wpRes.ok) {
           const wpProfile = await wpRes.json();
-          // Update Supabase with latest printer settings
+          // Update Supabase with latest printer + pin settings
           await supabase.from('restaurants').update({
             printer_ip:    wpProfile.printer_ip || restaurant.printer_ip,
             printer_port:  wpProfile.printer_port || restaurant.printer_port,
             printer_model: wpProfile.printer_model || restaurant.printer_model,
+            pin:           wpProfile.pin || restaurant.pin,
           }).eq('code', code);
 
           return res.json({
@@ -668,17 +669,40 @@ router.post('/login', async (req, res) => {
   try {
     const { data: restaurant } = await supabase
       .from('restaurants')
-      .select('id, name, logo_url, pin')
+      .select('id, name, logo_url, pin, wp_site_url, secret_key')
       .eq('code', code)
       .single();
 
     if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
-    if (restaurant.pin && restaurant.pin !== pin) return res.status(401).json({ success: false, error: 'Incorrect PIN' });
+
+    let currentPin = restaurant.pin;
+
+    // Try to fetch live PIN from WordPress before validating
+    if (restaurant.wp_site_url && restaurant.secret_key) {
+      try {
+        const wpRes = await fetch(`${restaurant.wp_site_url}/wp-json/posup/v1/profile`, {
+          headers: { 'X-POSUP-Key': restaurant.secret_key },
+          signal: AbortSignal.timeout(4000),
+        });
+        if (wpRes.ok) {
+          const wpProfile = await wpRes.json();
+          if (wpProfile.pin) {
+            currentPin = wpProfile.pin;
+            if (currentPin !== restaurant.pin) {
+              await supabase.from('restaurants').update({ pin: currentPin }).eq('code', code);
+            }
+          }
+        }
+      } catch (wpErr) {
+        console.log('WordPress PIN fetch failed, using cached PIN:', wpErr.message);
+      }
+    }
+
+    if (currentPin && currentPin !== pin) return res.status(401).json({ success: false, error: 'Incorrect PIN' });
 
     res.json({ success: true, name: restaurant.name, logo_url: restaurant.logo_url });
   } catch(err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
 module.exports = router;
