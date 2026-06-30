@@ -251,50 +251,49 @@ await supabase.from('categories').delete().eq('restaurant_id', restaurantId);
 // ─────────────────────────────────────────
 router.get('/products/:code', async (req, res) => {
   const { code } = req.params;
-
   try {
-    // Get restaurant
+    // Get restaurant first (needed for restaurantId)
     const { data: restaurant, error: restErr } = await supabase
       .from('restaurants')
       .select('id, name, logo_url, printer_ip, printer_port, printer_model, currency, currency_symbol')
       .eq('code', code)
       .single();
-
     if (restErr || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
-
     const restaurantId = restaurant.id;
 
-    // Get categories
-    const { data: categories } = await supabase
-      .from('categories')
-      .select('*')
-      .eq('restaurant_id', restaurantId)
-      .eq('active', true)
-      .order('name');
+    // Run categories, products, and addons queries in parallel
+    const [categoriesRes, productsRes, addonGroupsRes] = await Promise.all([
+      supabase
+        .from('categories')
+        .select('*')
+        .eq('restaurant_id', restaurantId)
+        .eq('active', true)
+        .order('name'),
+      supabase
+        .from('products')
+        .select(`
+          *,
+          product_categories(category_id),
+          variations(*)
+        `)
+        .eq('restaurant_id', restaurantId)
+        .eq('active', true)
+        .order('name'),
+      supabase
+        .from('addon_groups')
+        .select(`
+          *,
+          addon_options(*),
+          addon_category_assignments(category_id),
+          addon_product_assignments(product_id)
+        `)
+        .eq('restaurant_id', restaurantId)
+        .eq('active', true)
+    ]);
 
-    // Get products with their category IDs
-    const { data: products } = await supabase
-      .from('products')
-      .select(`
-        *,
-        product_categories(category_id),
-        variations(*)
-      `)
-      .eq('restaurant_id', restaurantId)
-      .eq('active', true)
-      .order('name');
-
-    // Get addon groups with options and assignments
-    const { data: addonGroups } = await supabase
-      .from('addon_groups')
-      .select(`
-        *,
-        addon_options(*),
-        addon_category_assignments(category_id),
-        addon_product_assignments(product_id)
-      `)
-      .eq('restaurant_id', restaurantId)
-      .eq('active', true);
+    const categories = categoriesRes.data;
+    const products = productsRes.data;
+    const addonGroups = addonGroupsRes.data;
 
 // Format products
     const formattedProducts = (products || []).map(p => ({
