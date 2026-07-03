@@ -114,13 +114,14 @@ await supabase.from('categories').delete().eq('restaurant_id', restaurantId);
       // Check if product exists and has price_overridden
       const { data: existing } = await supabase
         .from('products')
-        .select('id, price, price_overridden')
+        .select('id, price, price_overridden, is_alcohol')
         .eq('restaurant_id', restaurantId)
         .eq('wc_id', product.wc_id)
         .single();
 
-      const priceOverridden = existing?.price_overridden === true;
+            const priceOverridden = existing?.price_overridden === true;
       const finalPrice = priceOverridden ? existing.price : (product.price || 0);
+      const isAlcohol = existing?.is_alcohol === true;
 
       const { data: inserted, error } = await supabase
         .from('products')
@@ -135,6 +136,7 @@ await supabase.from('categories').delete().eq('restaurant_id', restaurantId);
           image_url:      product.image_url || '',
           sort_order:     product.sort_order || 0,
           active:         true,
+          is_alcohol:     isAlcohol,
         }, { onConflict: 'restaurant_id,wc_id' })
         .select()
         .single();
@@ -308,6 +310,7 @@ router.get('/products/:code', async (req, res) => {
       image_url:       p.image_url,
       sort_order:      p.sort_order,
       active:          p.active,
+      is_alcohol:      p.is_alcohol === true,
       category_ids:    (p.product_categories || []).map(pc => pc.category_id),
       variations:      (p.variations || []).map(v => ({
         id:         v.id,
@@ -406,13 +409,14 @@ router.get('/profile/:code', async (req, res) => {
 // PATCH /posup/product/:id — update product fields
 router.patch('/product/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, description, price, active, image_url } = req.body;
+  const { name, description, price, active, image_url, is_alcohol } = req.body;
   const updates = {};
   if (name !== undefined) updates.name = name;
   if (description !== undefined) updates.description = description;
   if (price !== undefined) { updates.price = price; updates.price_overridden = true; }
   if (active !== undefined) updates.active = active;
   if (image_url !== undefined) updates.image_url = image_url;
+  if (is_alcohol !== undefined) updates.is_alcohol = is_alcohol === true;
 
   const { error } = await supabase
     .from('products')
@@ -449,7 +453,7 @@ router.post('/category', async (req, res) => {
 
 // POST /posup/product — add new product
 router.post('/product', async (req, res) => {
-  const { name, description, price, active, image_url, restaurant_code } = req.body;
+  const { name, description, price, active, image_url, restaurant_code, is_alcohol } = req.body;
 
   const { data: restaurant } = await supabase
     .from('restaurants')
@@ -461,7 +465,17 @@ router.post('/product', async (req, res) => {
 
   const { data: product, error } = await supabase
     .from('products')
-    .insert({ restaurant_id: restaurant.id, name, description, price, active, image_url, type: 'simple', wc_id: -(Date.now() % 1000000) })
+    .insert({
+      restaurant_id: restaurant.id,
+      name,
+      description,
+      price,
+      active,
+      image_url,
+      is_alcohol: is_alcohol === true,
+      type: 'simple',
+      wc_id: -(Date.now() % 1000000),
+    })
     .select()
     .single();
 
