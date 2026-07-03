@@ -492,6 +492,118 @@ router.post('/product', async (req, res) => {
   res.json({ success: true, product });
 });
 
+// ─────────────────────────────────────────
+// GET /posup/customers/:code?q=
+// Search POSUP address book by phone, first name, last name, or street
+// ─────────────────────────────────────────
+router.get('/customers/:code', async (req, res) => {
+  const { code } = req.params;
+  const q = String(req.query.q || '').trim();
+
+  try {
+    let query = supabase
+      .from('posup_customers')
+      .select('*')
+      .eq('restaurant_code', code)
+      .order('last_order_at', { ascending: false, nullsFirst: false })
+      .order('updated_at', { ascending: false })
+      .limit(30);
+
+    if (q) {
+      const safeQ = q.replace(/[%_]/g, '');
+      query = query.or(
+        `phone.ilike.%${safeQ}%,first_name.ilike.%${safeQ}%,last_name.ilike.%${safeQ}%,street.ilike.%${safeQ}%`
+      );
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw new Error(error.message);
+
+    res.json({
+      success: true,
+      customers: data || [],
+    });
+  } catch (err) {
+    console.error('POSUP customers search error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// POST /posup/customers/:code
+// Create/update customer by restaurant_code + phone
+// ─────────────────────────────────────────
+router.post('/customers/:code', async (req, res) => {
+  const { code } = req.params;
+
+  const first_name = String(req.body.first_name || '').trim();
+  const last_name = String(req.body.last_name || '').trim();
+  const phone = String(req.body.phone || '').trim();
+  const street = String(req.body.street || '').trim();
+  const zip = String(req.body.zip || '').trim();
+  const city = String(req.body.city || '').trim();
+
+  if (!phone) {
+    return res.status(400).json({
+      success: false,
+      error: 'Phone is required',
+    });
+  }
+
+  try {
+    const { data: existing } = await supabase
+      .from('posup_customers')
+      .select('id, order_count')
+      .eq('restaurant_code', code)
+      .eq('phone', phone)
+      .maybeSingle();
+
+    const payload = {
+      restaurant_code: code,
+      first_name,
+      last_name,
+      phone,
+      street,
+      zip,
+      city,
+      order_count: existing ? (existing.order_count || 0) + 1 : 1,
+      last_order_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    let result;
+
+    if (existing) {
+      result = await supabase
+        .from('posup_customers')
+        .update(payload)
+        .eq('id', existing.id)
+        .select()
+        .single();
+    } else {
+      result = await supabase
+        .from('posup_customers')
+        .insert({
+          ...payload,
+          created_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+    }
+
+    if (result.error) throw new Error(result.error.message);
+
+    res.json({
+      success: true,
+      customer: result.data,
+    });
+  } catch (err) {
+    console.error('POSUP customer save error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // POST /posup/orders/:code — save a new POS order
 router.post('/orders/:code', async (req, res) => {
   const { code } = req.params;
