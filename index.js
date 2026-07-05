@@ -222,6 +222,18 @@ app.post("/new-order", async (req, res) => {
   const order = req.body;
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
+
+  // Idempotency guard: if a new_order push was already sent for this order_id in the
+  // last 60 seconds, suppress this call. Protects against duplicate webhook calls no
+  // matter what causes them (checkout hook races, retries, etc.) — the backend no
+  // longer blindly trusts WordPress to only call this once.
+  const dedupeKey = k(code, `new_order_sent:${order.order_id}`);
+  const claimed = await redisCommand("SET", dedupeKey, "1", "NX", "EX", 60);
+  if (!claimed.result) {
+    console.log(`Duplicate /new-order suppressed for ${code} order ${order.order_id}`);
+    return res.json({ success: true, duplicate: true });
+  }
+
   console.log("New order received for:", code, order.order_id);
   console.log("Order date:", order.orderable_order_date, "Order time:", order.orderable_order_time);
   if (!order.date_created) {
