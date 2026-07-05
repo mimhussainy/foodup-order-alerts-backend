@@ -27,42 +27,72 @@ async function redisCommand(...args) {
 
 const k = (code, key) => `${code}:${key}`;
 
-async function upsertOrderInList(code, order) {
-  try {
-    if (!order || !order.order_id) {
-      console.log("upsertOrderInList skipped: missing order_id");
-      return;
-    }
+// -------------------------------------------------------
+// SIMPLE DISTRIBUTED LOCK (prevents concurrent list rewrites)
+// -------------------------------------------------------
 
-    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
-    const orders = (listData.result || []).map(o => {
-      try { return JSON.parse(o); } catch(e) { return null; }
-    }).filter(Boolean);
+async function withRedisLock(lockKey, fn, maxWaitMs = 5000) {
+  const lockValue = String(Date.now()) + Math.random().toString(36).slice(2);
+  const start = Date.now();
+  let acquired = false;
 
-    // Remove all existing entries for this order_id
-    const filtered = orders.filter(o => String(o.order_id) !== String(order.order_id));
-
-    // Merge: prefer incoming fields but preserve received_at if already set
-    const existing = orders.find(o => String(o.order_id) === String(order.order_id));
-    const merged = {
-      ...(existing || {}),
-      ...order,
-      received_at: existing?.received_at || order.received_at || new Date().toISOString(),
-    };
-
-    // Put merged order at top, keep max 100 unique
-    const updated = [merged, ...filtered].slice(0, 100);
-
-    // Rebuild list sequentially — newest first, no Promise.all, no reverse
-    await redisCommand("DEL", k(code, "orders"));
-    for (const o of updated) {
-      await redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o));
-    }
-
-    console.log(`upsertOrderInList: order ${order.order_id} upserted for ${code}, list size ${updated.length}`);
-  } catch(e) {
-    console.log(`upsertOrderInList error for ${code} order ${order.order_id}:`, e.message);
+  while (Date.now() - start < maxWaitMs) {
+    const result = await redisCommand("SET", lockKey, lockValue, "NX", "PX", 10000);
+    if (result.result === "OK") { acquired = true; break; }
+    await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
   }
+
+  if (!acquired) {
+    console.log(`withRedisLock: could not acquire ${lockKey} within ${maxWaitMs}ms, proceeding unlocked`);
+  }
+
+  try {
+    return await fn();
+  } finally {
+    if (acquired) {
+      await redisCommand("DEL", lockKey);
+    }
+  }
+}
+
+async function upsertOrderInList(code, order) {
+  if (!order || !order.order_id) {
+    console.log("upsertOrderInList skipped: missing order_id");
+    return;
+  }
+
+  await withRedisLock(k(code, "orders_lock"), async () => {
+    try {
+      const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+      const orders = (listData.result || []).map(o => {
+        try { return JSON.parse(o); } catch(e) { return null; }
+      }).filter(Boolean);
+
+      // Remove all existing entries for this order_id
+      const filtered = orders.filter(o => String(o.order_id) !== String(order.order_id));
+
+      // Merge: prefer incoming fields but preserve received_at if already set
+      const existing = orders.find(o => String(o.order_id) === String(order.order_id));
+      const merged = {
+        ...(existing || {}),
+        ...order,
+        received_at: existing?.received_at || order.received_at || new Date().toISOString(),
+      };
+
+      // Put merged order at top, keep max 100 unique
+      const updated = [merged, ...filtered].slice(0, 100);
+
+      // Rebuild list sequentially — newest first, no Promise.all, no reverse
+      await redisCommand("DEL", k(code, "orders"));
+      for (const o of updated) {
+        await redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o));
+      }
+
+      console.log(`upsertOrderInList: order ${order.order_id} upserted for ${code}, list size ${updated.length}`);
+    } catch(e) {
+      console.log(`upsertOrderInList error for ${code} order ${order.order_id}:`, e.message);
+    }
+  });
 }
 
 async function isValidOwnerOrIosPin(code, pin) {
