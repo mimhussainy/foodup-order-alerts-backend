@@ -444,7 +444,7 @@ router.post('/category', async (req, res) => {
   const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
   const { data, error } = await supabase
     .from('categories')
-    .insert({ restaurant_id: restaurant.id, name, slug, active: true, sort_order: 0 })
+    .insert({ restaurant_id: restaurant.id, wc_id: -(Date.now() % 1000000), name, slug, active: true, sort_order: 0 })
     .select()
     .single();
 
