@@ -354,7 +354,7 @@ router.get('/profile/:code', async (req, res) => {
   try {
     const { data: restaurant, error } = await supabase
       .from('restaurants')
-      .select('name, logo_url, printer_ip, printer_port, printer_model, currency, currency_symbol, wp_site_url, secret_key')
+.select('name, logo_url, printer_ip, printer_port, printer_model, currency, currency_symbol, staff_pin, wp_site_url, secret_key')
       .eq('code', code)
       .single();
 
@@ -375,6 +375,7 @@ router.get('/profile/:code', async (req, res) => {
             printer_port:  wpProfile.printer_port || restaurant.printer_port,
             printer_model: wpProfile.printer_model || restaurant.printer_model,
             pin:           wpProfile.pin || restaurant.pin,
+            staff_pin:     wpProfile.staff_pin || restaurant.staff_pin,
           }).eq('code', code);
 
           return res.json({
@@ -794,7 +795,7 @@ router.post('/login', async (req, res) => {
   try {
     const { data: restaurant } = await supabase
       .from('restaurants')
-      .select('id, name, logo_url, pin, wp_site_url, secret_key')
+.select('id, name, logo_url, pin, staff_pin, wp_site_url, secret_key')
       .eq('code', code)
       .single();
 
@@ -811,11 +812,14 @@ router.post('/login', async (req, res) => {
         });
         if (wpRes.ok) {
           const wpProfile = await wpRes.json();
-          if (wpProfile.pin) {
+if (wpProfile.pin) {
             currentPin = wpProfile.pin;
             if (currentPin !== restaurant.pin) {
               await supabase.from('restaurants').update({ pin: currentPin }).eq('code', code);
             }
+          }
+          if (wpProfile.staff_pin && wpProfile.staff_pin !== restaurant.staff_pin) {
+            await supabase.from('restaurants').update({ staff_pin: wpProfile.staff_pin }).eq('code', code);
           }
         }
       } catch (wpErr) {
@@ -830,4 +834,203 @@ router.post('/login', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// ─────────────────────────────────────────
+// Staff Hours — owner-only clock in/out + monthly report
+// ─────────────────────────────────────────
+
+// POST /posup/staff/verify-pin
+router.post('/staff/verify-pin', async (req, res) => {
+  const { code, staff_pin } = req.body;
+  try {
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('staff_pin')
+      .eq('code', code)
+      .single();
+
+    if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+    if (!restaurant.staff_pin) return res.status(400).json({ success: false, error: 'Staff PIN not configured' });
+    if (restaurant.staff_pin !== staff_pin) return res.status(401).json({ success: false, error: 'Incorrect staff PIN' });
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /posup/staff/employees/:code
+router.get('/staff/employees/:code', async (req, res) => {
+  const { code } = req.params;
+  try {
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('id')
+      .eq('code', code)
+      .single();
+    if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+    const { data: employees, error } = await supabase
+      .from('pos_employees')
+      .select('*')
+      .eq('restaurant_id', restaurant.id)
+      .eq('active', true)
+      .order('name');
+    if (error) throw new Error(error.message);
+
+    const { data: openEntries } = await supabase
+      .from('pos_time_entries')
+      .select('employee_id, clock_in')
+      .eq('restaurant_id', restaurant.id)
+      .is('clock_out', null);
+
+    const openMap = {};
+    (openEntries || []).forEach(e => { openMap[e.employee_id] = e.clock_in; });
+
+    const result = (employees || []).map(emp => ({
+      ...emp,
+      clocked_in: !!openMap[emp.id],
+      clock_in_time: openMap[emp.id] || null,
+    }));
+
+    res.json({ success: true, employees: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /posup/staff/employees/:code — add employee
+router.post('/staff/employees/:code', async (req, res) => {
+  const { code } = req.params;
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ success: false, error: 'Name is required' });
+
+  try {
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('id')
+      .eq('code', code)
+      .single();
+    if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+    const { data, error } = await supabase
+      .from('pos_employees')
+      .insert({ restaurant_id: restaurant.id, name: name.trim() })
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+
+    res.json({ success: true, employee: data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// PATCH /posup/staff/employees/:id/deactivate
+router.patch('/staff/employees/:id/deactivate', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { error } = await supabase
+      .from('pos_employees')
+      .update({ active: false })
+      .eq('id', id);
+    if (error) throw new Error(error.message);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /posup/staff/clock/:employeeId — toggle clock in/out
+router.post('/staff/clock/:employeeId', async (req, res) => {
+  const { employeeId } = req.params;
+  const { code } = req.body;
+  try {
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('id')
+      .eq('code', code)
+      .single();
+    if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+    const { data: open, error: findError } = await supabase
+      .from('pos_time_entries')
+      .select('*')
+      .eq('employee_id', employeeId)
+      .is('clock_out', null)
+      .maybeSingle();
+    if (findError) throw new Error(findError.message);
+
+    if (open) {
+      const { error: closeError } = await supabase
+        .from('pos_time_entries')
+        .update({ clock_out: new Date().toISOString() })
+        .eq('id', open.id);
+      if (closeError) throw new Error(closeError.message);
+      return res.json({ success: true, action: 'clocked_out' });
+    } else {
+      const { error: openError } = await supabase
+        .from('pos_time_entries')
+        .insert({ employee_id: employeeId, restaurant_id: restaurant.id, clock_in: new Date().toISOString() });
+      if (openError) throw new Error(openError.message);
+      return res.json({ success: true, action: 'clocked_in' });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /posup/staff/report/:code?month=YYYY-MM
+router.get('/staff/report/:code', async (req, res) => {
+  const { code } = req.params;
+  const { month } = req.query;
+  if (!month) return res.status(400).json({ success: false, error: 'month query param required, format YYYY-MM' });
+
+  try {
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('id')
+      .eq('code', code)
+      .single();
+    if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+    const start = new Date(`${month}-01T00:00:00Z`);
+    const end = new Date(start);
+    end.setUTCMonth(end.getUTCMonth() + 1);
+
+    const { data: employees, error: empError } = await supabase
+      .from('pos_employees')
+      .select('id, name')
+      .eq('restaurant_id', restaurant.id);
+    if (empError) throw new Error(empError.message);
+
+    const { data: entries, error: entriesError } = await supabase
+      .from('pos_time_entries')
+      .select('employee_id, clock_in, clock_out')
+      .eq('restaurant_id', restaurant.id)
+      .gte('clock_in', start.toISOString())
+      .lt('clock_in', end.toISOString());
+    if (entriesError) throw new Error(entriesError.message);
+
+    const report = (employees || []).map(emp => {
+      const empEntries = (entries || []).filter(e => e.employee_id === emp.id);
+      const totalMs = empEntries.reduce((sum, e) => {
+        const inTime = new Date(e.clock_in).getTime();
+        const outTime = e.clock_out ? new Date(e.clock_out).getTime() : Date.now();
+        return sum + Math.max(0, outTime - inTime);
+      }, 0);
+      return {
+        employee_id: emp.id,
+        name: emp.name,
+        total_hours: Math.round((totalMs / 3600000) * 100) / 100,
+        shifts: empEntries,
+      };
+    });
+
+    res.json({ success: true, month, report });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
