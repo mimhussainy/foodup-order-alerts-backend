@@ -839,8 +839,8 @@ if (wpProfile.pin) {
 // Staff Hours — owner-only clock in/out + monthly report
 // ─────────────────────────────────────────
 
-// POST /posup/staff/verify-pin
-router.post('/staff/verify-pin', async (req, res) => {
+// POST /posup/staff/verify-admin-pin
+router.post('/staff/verify-admin-pin', async (req, res) => {
   const { code, admin_pin } = req.body;
   try {
     const { data: restaurant } = await supabase
@@ -850,8 +850,8 @@ router.post('/staff/verify-pin', async (req, res) => {
       .single();
 
     if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
-    if (!restaurant.admin_pin) return res.status(400).json({ success: false, error: 'Staff PIN not configured' });
-    if (restaurant.admin_pin !== admin_pin) return res.status(401).json({ success: false, error: 'Incorrect staff PIN' });
+    if (!restaurant.admin_pin) return res.status(400).json({ success: false, error: 'Admin PIN not configured' });
+    if (restaurant.admin_pin !== admin_pin) return res.status(401).json({ success: false, error: 'Incorrect admin PIN' });
 
     res.json({ success: true });
   } catch (err) {
