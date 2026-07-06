@@ -1033,4 +1033,105 @@ router.get('/staff/report/:code', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────
+// POST /posup/restaurants — create a restaurant WITHOUT WordPress
+// Used by the dashboard's "no website" onboarding path
+// ─────────────────────────────────────────
+router.post('/restaurants', async (req, res) => {
+  const { code, name, pin, admin_pin } = req.body;
+
+  if (!code || !name) {
+    return res.status(400).json({ success: false, error: 'code and name are required' });
+  }
+
+  const { data: existing } = await supabase
+    .from('restaurants')
+    .select('id')
+    .eq('code', code)
+    .single();
+
+  if (existing) {
+    return res.status(409).json({ success: false, error: 'A restaurant with this code already exists' });
+  }
+
+  const { data, error } = await supabase
+    .from('restaurants')
+    .insert({
+      code,
+      name,
+      pin: pin || '1234',
+      admin_pin: admin_pin || null,
+      wp_site_url: null,
+      secret_key: null,
+      logo_url: '',
+      printer_ip: '',
+      printer_port: '9100',
+      printer_model: '',
+      currency: 'CHF',
+      currency_symbol: 'CHF',
+      active: true,
+    })
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ success: false, error: error.message });
+  res.json({ success: true, restaurant: data });
+});
+
+// ─────────────────────────────────────────
+// GET /posup/restaurants/:code/settings — full settings for the dashboard
+// (unlike /profile/:code, this exposes pin/admin_pin — dashboard is a trusted admin tool)
+// ─────────────────────────────────────────
+router.get('/restaurants/:code/settings', async (req, res) => {
+  const { code } = req.params;
+
+  const { data: restaurant, error } = await supabase
+    .from('restaurants')
+    .select('code, name, pin, admin_pin, printer_ip, printer_port, printer_model, logo_url, wp_site_url')
+    .eq('code', code)
+    .single();
+
+  if (error || !restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+  res.json({
+    success: true,
+    restaurant: {
+      ...restaurant,
+      wp_linked: !!restaurant.wp_site_url,
+    },
+  });
+});
+
+// ─────────────────────────────────────────
+// PATCH /posup/restaurants/:code — edit settings directly (no WordPress needed)
+// NOTE: for restaurants that ARE linked to WordPress (wp_site_url set), pin/printer
+// fields edited here will be overwritten the next time /login or /profile/:code
+// syncs from WP. This route is meant for WP-less restaurants.
+// ─────────────────────────────────────────
+router.patch('/restaurants/:code', async (req, res) => {
+  const { code } = req.params;
+  const { name, pin, admin_pin, printer_ip, printer_port, printer_model, logo_url } = req.body;
+
+  const updates = {};
+  if (name !== undefined) updates.name = name;
+  if (pin) updates.pin = pin;
+  if (admin_pin) updates.admin_pin = admin_pin;
+  if (printer_ip !== undefined) updates.printer_ip = printer_ip;
+  if (printer_port !== undefined) updates.printer_port = printer_port;
+  if (printer_model !== undefined) updates.printer_model = printer_model;
+  if (logo_url !== undefined) updates.logo_url = logo_url;
+
+  const { data, error } = await supabase
+    .from('restaurants')
+    .update(updates)
+    .eq('code', code)
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ success: false, error: error.message });
+  if (!data) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+  res.json({ success: true, restaurant: data });
+});
+
 module.exports = router;
