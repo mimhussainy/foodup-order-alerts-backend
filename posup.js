@@ -280,7 +280,8 @@ router.get('/products/:code', async (req, res) => {
         `)
         .eq('restaurant_id', restaurantId)
         .eq('active', true)
-        .order('name'),
+        .order('sort_order', { ascending: true })
+        .order('name', { ascending: true }),
       supabase
         .from('addon_groups')
         .select(`
@@ -410,7 +411,7 @@ router.get('/profile/:code', async (req, res) => {
 // PATCH /posup/product/:id — update product fields
 router.patch('/product/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, description, price, active, image_url, is_alcohol } = req.body;
+  const { name, description, price, active, image_url, is_alcohol, sort_order } = req.body;
   const updates = {};
   if (name !== undefined) updates.name = name;
   if (description !== undefined) updates.description = description;
@@ -418,6 +419,7 @@ router.patch('/product/:id', async (req, res) => {
   if (active !== undefined) updates.active = active;
   if (image_url !== undefined) updates.image_url = image_url;
   if (is_alcohol !== undefined) updates.is_alcohol = is_alcohol === true;
+  if (sort_order !== undefined) updates.sort_order = sort_order;
 
   const { error } = await supabase
     .from('products')
@@ -426,6 +428,20 @@ router.patch('/product/:id', async (req, res) => {
 
   if (error) return res.status(500).json({ success: false, error: error.message });
   res.json({ success: true });
+});
+
+// DELETE /posup/product/:id — permanently remove a product
+router.delete('/product/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await supabase.from('product_categories').delete().eq('product_id', id);
+    await supabase.from('variations').delete().eq('product_id', id);
+    const { error } = await supabase.from('products').delete().eq('id', id);
+    if (error) throw new Error(error.message);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // POST /posup/category — add new category
