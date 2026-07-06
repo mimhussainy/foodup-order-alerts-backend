@@ -354,7 +354,7 @@ router.get('/profile/:code', async (req, res) => {
   try {
     const { data: restaurant, error } = await supabase
       .from('restaurants')
-.select('name, logo_url, printer_ip, printer_port, printer_model, currency, currency_symbol, staff_pin, wp_site_url, secret_key')
+.select('name, logo_url, printer_ip, printer_port, printer_model, currency, currency_symbol, admin_pin, wp_site_url, secret_key')
       .eq('code', code)
       .single();
 
@@ -375,7 +375,7 @@ router.get('/profile/:code', async (req, res) => {
             printer_port:  wpProfile.printer_port || restaurant.printer_port,
             printer_model: wpProfile.printer_model || restaurant.printer_model,
             pin:           wpProfile.pin || restaurant.pin,
-            staff_pin:     wpProfile.staff_pin || restaurant.staff_pin,
+            admin_pin:     wpProfile.admin_pin || restaurant.admin_pin,
           }).eq('code', code);
 
           return res.json({
@@ -795,7 +795,7 @@ router.post('/login', async (req, res) => {
   try {
     const { data: restaurant } = await supabase
       .from('restaurants')
-.select('id, name, logo_url, pin, staff_pin, wp_site_url, secret_key')
+.select('id, name, logo_url, pin, admin_pin, wp_site_url, secret_key')
       .eq('code', code)
       .single();
 
@@ -818,8 +818,8 @@ if (wpProfile.pin) {
               await supabase.from('restaurants').update({ pin: currentPin }).eq('code', code);
             }
           }
-          if (wpProfile.staff_pin && wpProfile.staff_pin !== restaurant.staff_pin) {
-            await supabase.from('restaurants').update({ staff_pin: wpProfile.staff_pin }).eq('code', code);
+          if (wpProfile.admin_pin && wpProfile.admin_pin !== restaurant.admin_pin) {
+            await supabase.from('restaurants').update({ admin_pin: wpProfile.admin_pin }).eq('code', code);
           }
         }
       } catch (wpErr) {
@@ -841,17 +841,17 @@ if (wpProfile.pin) {
 
 // POST /posup/staff/verify-pin
 router.post('/staff/verify-pin', async (req, res) => {
-  const { code, staff_pin } = req.body;
+  const { code, admin_pin } = req.body;
   try {
     const { data: restaurant } = await supabase
       .from('restaurants')
-      .select('staff_pin')
+      .select('admin_pin')
       .eq('code', code)
       .single();
 
     if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
-    if (!restaurant.staff_pin) return res.status(400).json({ success: false, error: 'Staff PIN not configured' });
-    if (restaurant.staff_pin !== staff_pin) return res.status(401).json({ success: false, error: 'Incorrect staff PIN' });
+    if (!restaurant.admin_pin) return res.status(400).json({ success: false, error: 'Staff PIN not configured' });
+    if (restaurant.admin_pin !== admin_pin) return res.status(401).json({ success: false, error: 'Incorrect staff PIN' });
 
     res.json({ success: true });
   } catch (err) {
