@@ -434,7 +434,8 @@ router.patch('/product/:id', async (req, res) => {
 router.delete('/product/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    await supabase.from('product_categories').delete().eq('product_id', id);
+        await supabase.from('product_categories').delete().eq('product_id', id);
+    await supabase.from('addon_product_assignments').delete().eq('product_id', id);
     await supabase.from('variations').delete().eq('product_id', id);
     const { error } = await supabase.from('products').delete().eq('id', id);
     if (error) throw new Error(error.message);
@@ -443,6 +444,8 @@ router.delete('/product/:id', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+
 
 // POST /posup/category — add new category
 router.post('/category', async (req, res) => {
