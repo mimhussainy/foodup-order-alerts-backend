@@ -623,6 +623,67 @@ router.post('/customers/:code', async (req, res) => {
   }
 });
 
+async function updatePosupCustomerHistoryFromOrder(code, customer) {
+  if (!customer || !customer.phone) return null;
+
+  const now = new Date().toISOString();
+
+  const first_name = String(customer.first_name || '').trim();
+  const last_name = String(customer.last_name || '').trim();
+  const phone = String(customer.phone || '').trim();
+  const street = String(customer.street || '').trim();
+  const zip = String(customer.zip || '').trim();
+  const city = String(customer.city || '').trim();
+
+  if (!phone) return null;
+
+  const { data: existing, error: findError } = await supabase
+    .from('posup_customers')
+    .select('id, order_count, first_name, last_name, street, zip, city')
+    .eq('restaurant_code', code)
+    .eq('phone', phone)
+    .maybeSingle();
+
+  if (findError) throw new Error(findError.message);
+
+  const payload = {
+    restaurant_code: code,
+    first_name: first_name || existing?.first_name || '',
+    last_name: last_name || existing?.last_name || '',
+    phone,
+    street: street || existing?.street || '',
+    zip: zip || existing?.zip || '',
+    city: city || existing?.city || '',
+    order_count: existing ? (existing.order_count || 0) + 1 : 1,
+    last_order_at: now,
+    updated_at: now,
+  };
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from('posup_customers')
+      .update(payload)
+      .eq('id', existing.id)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from('posup_customers')
+    .insert({
+      ...payload,
+      created_at: now,
+    })
+    .select()
+    .single();
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 // POST /posup/orders/:code — save a new POS order
 router.post('/orders/:code', async (req, res) => {
   const { code } = req.params;
@@ -635,10 +696,13 @@ router.post('/orders/:code', async (req, res) => {
       .eq('code', code)
       .single();
 
-    if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+    if (!restaurant) {
+      return res.status(404).json({
+        success: false,
+        error: 'Restaurant not found',
+      });
+    }
 
-    // Generate order number
-    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const { count } = await supabase
       .from('pos_orders')
       .select('*', { count: 'exact', head: true })
@@ -667,7 +731,26 @@ router.post('/orders/:code', async (req, res) => {
       .single();
 
     if (error) throw new Error(error.message);
-    res.json({ success: true, order_id: orderNumber, order: data });
+
+    let customerHistory = null;
+    let customerHistoryError = null;
+
+    if (order.phone_order === true && order.customer?.phone) {
+      try {
+        customerHistory = await updatePosupCustomerHistoryFromOrder(code, order.customer);
+      } catch (customerErr) {
+        customerHistoryError = customerErr.message;
+        console.error('POSUP customer history update failed:', customerErr);
+      }
+    }
+
+    res.json({
+      success: true,
+      order_id: orderNumber,
+      order: data,
+      customer_history: customerHistory,
+      customer_history_error: customerHistoryError,
+    });
   } catch (err) {
     console.error('POSUP order error:', err);
     res.status(500).json({ success: false, error: err.message });
