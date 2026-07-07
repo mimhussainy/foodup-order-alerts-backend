@@ -370,13 +370,12 @@ router.get('/profile/:code', async (req, res) => {
         });
         if (wpRes.ok) {
           const wpProfile = await wpRes.json();
-          // Update Supabase with latest printer + pin settings
+                    // Update Supabase with latest printer settings only.
+          // PINs are managed by POSUP backend/app/dashboard, not WordPress.
           await supabase.from('restaurants').update({
             printer_ip:    wpProfile.printer_ip || restaurant.printer_ip,
             printer_port:  wpProfile.printer_port || restaurant.printer_port,
             printer_model: wpProfile.printer_model || restaurant.printer_model,
-            pin:           wpProfile.pin || restaurant.pin,
-            admin_pin:     wpProfile.admin_pin || restaurant.admin_pin,
           }).eq('code', code);
 
           return res.json({
@@ -808,6 +807,92 @@ router.get('/restaurants', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────
+// POST /posup/admin/reset-pin
+// POSUP owner/admin can reset a restaurant owner PIN and/or admin PIN
+// Body: { admin_key, restaurant_code, new_pin, new_admin_pin }
+// ─────────────────────────────────────────
+router.post('/admin/reset-pin', async (req, res) => {
+  const admin_key = String(req.body.admin_key || '').trim();
+  const restaurant_code = String(req.body.restaurant_code || '').trim();
+  const new_pin = String(req.body.new_pin || '').trim();
+  const new_admin_pin = String(req.body.new_admin_pin || '').trim();
+
+  if (!process.env.POSUP_ADMIN_RESET_KEY) {
+    return res.status(500).json({
+      success: false,
+      error: 'POSUP_ADMIN_RESET_KEY is not configured',
+    });
+  }
+
+  if (admin_key !== process.env.POSUP_ADMIN_RESET_KEY) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized',
+    });
+  }
+
+  if (!restaurant_code) {
+    return res.status(400).json({
+      success: false,
+      error: 'restaurant_code is required',
+    });
+  }
+
+  if (!new_pin && !new_admin_pin) {
+    return res.status(400).json({
+      success: false,
+      error: 'new_pin or new_admin_pin is required',
+    });
+  }
+
+  if (new_pin && new_pin.length < 4) {
+    return res.status(400).json({
+      success: false,
+      error: 'Owner PIN must be at least 4 characters',
+    });
+  }
+
+  if (new_admin_pin && new_admin_pin.length < 4) {
+    return res.status(400).json({
+      success: false,
+      error: 'Admin PIN must be at least 4 characters',
+    });
+  }
+
+  try {
+    const updates = {};
+    if (new_pin) updates.pin = new_pin;
+    if (new_admin_pin) updates.admin_pin = new_admin_pin;
+
+    const { data, error } = await supabase
+      .from('restaurants')
+      .update(updates)
+      .eq('code', restaurant_code)
+      .select('code, name')
+      .single();
+
+    if (error) throw new Error(error.message);
+
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        error: 'Restaurant not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      restaurant: data,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+
 // POST /posup/login — validate restaurant code and PIN
 router.post('/login', async (req, res) => {
   const { code, pin } = req.body;
@@ -820,37 +905,76 @@ router.post('/login', async (req, res) => {
 
     if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
 
-    let currentPin = restaurant.pin;
-
-    // Try to fetch live PIN from WordPress before validating
-    if (restaurant.wp_site_url && restaurant.secret_key) {
-      try {
-        const wpRes = await fetch(`${restaurant.wp_site_url}/wp-json/posup/v1/profile`, {
-          headers: { 'X-POSUP-Key': restaurant.secret_key },
-          signal: AbortSignal.timeout(4000),
-        });
-        if (wpRes.ok) {
-          const wpProfile = await wpRes.json();
-if (wpProfile.pin) {
-            currentPin = wpProfile.pin;
-            if (currentPin !== restaurant.pin) {
-              await supabase.from('restaurants').update({ pin: currentPin }).eq('code', code);
-            }
-          }
-          if (wpProfile.admin_pin && wpProfile.admin_pin !== restaurant.admin_pin) {
-            await supabase.from('restaurants').update({ admin_pin: wpProfile.admin_pin }).eq('code', code);
-          }
-        }
-      } catch (wpErr) {
-        console.log('WordPress PIN fetch failed, using cached PIN:', wpErr.message);
-      }
-    }
+    const currentPin = restaurant.pin;
 
     if (currentPin && currentPin !== pin) return res.status(401).json({ success: false, error: 'Incorrect PIN' });
 
     res.json({ success: true, name: restaurant.name, logo_url: restaurant.logo_url });
   } catch(err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// POST /posup/change-admin-pin
+// Owner can reset/change the Staff/Admin PIN from POSUP app
+// Body: { restaurant_code, owner_pin, new_admin_pin }
+// ─────────────────────────────────────────
+router.post('/change-admin-pin', async (req, res) => {
+  const restaurant_code = String(req.body.restaurant_code || '').trim();
+  const owner_pin = String(req.body.owner_pin || '').trim();
+  const new_admin_pin = String(req.body.new_admin_pin || '').trim();
+
+  if (!restaurant_code || !owner_pin || !new_admin_pin) {
+    return res.status(400).json({
+      success: false,
+      error: 'restaurant_code, owner_pin, and new_admin_pin are required',
+    });
+  }
+
+  if (new_admin_pin.length < 4) {
+    return res.status(400).json({
+      success: false,
+      error: 'Admin PIN must be at least 4 characters',
+    });
+  }
+
+  try {
+    const { data: restaurant, error: fetchError } = await supabase
+      .from('restaurants')
+      .select('pin')
+      .eq('code', restaurant_code)
+      .single();
+
+    if (fetchError || !restaurant) {
+      return res.status(404).json({
+        success: false,
+        error: 'Restaurant not found',
+      });
+    }
+
+    if (String(restaurant.pin || '') !== owner_pin) {
+      return res.status(401).json({
+        success: false,
+        error: 'Incorrect owner PIN',
+      });
+    }
+
+    const { error: updateError } = await supabase
+      .from('restaurants')
+      .update({ admin_pin: new_admin_pin })
+      .eq('code', restaurant_code);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
   }
 });
 
