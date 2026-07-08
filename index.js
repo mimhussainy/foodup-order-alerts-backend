@@ -569,6 +569,10 @@ app.post("/verify-delivery-account", async (req, res) => {
 
   const account = JSON.parse(data.result);
   if (account.password === password) {
+    // Reset courier login rate limit on successful login
+    const key = `verify-delivery:${code}:${username.toLowerCase()}:${ip}`;
+    delete rateLimitStore[key];
+
     res.json({ success: true, username: account.username });
   } else {
     res.json({
