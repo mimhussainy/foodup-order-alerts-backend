@@ -116,6 +116,20 @@ async function removeToken(code, token) {
   await redisCommand("DEL", k(code, `token_channel:${token}`));
 }
 
+async function getOrderAcceptanceState(code, orderId) {
+  const rejected = await redisCommand("GET", k(code, `rejected_time:${orderId}`));
+  if (rejected.result) {
+    return { accepted: false, rejected: true, message: "Order was rejected by restaurant owner" };
+  }
+
+  const accepted = await redisCommand("GET", k(code, `accepted_time:${orderId}`));
+  if (!accepted.result) {
+    return { accepted: false, rejected: false, message: "Order is waiting for restaurant confirmation" };
+  }
+
+  return { accepted: true, rejected: false, message: "Order accepted" };
+}
+
 // -------------------------------------------------------
 // RATE LIMITER
 // -------------------------------------------------------
@@ -703,6 +717,16 @@ app.post("/mark-delivered", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
 
+  const acceptance = await getOrderAcceptanceState(code, order_id);
+  if (!acceptance.accepted) {
+    return res.json({
+      success: false,
+      not_accepted: true,
+      rejected: acceptance.rejected,
+      message: acceptance.message,
+    });
+  }
+
   const deliveredAt = new Date().toISOString();
 
 await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
@@ -795,6 +819,16 @@ app.post("/claim-order", async (req, res) => {
   const { order_id, delivery_name, restaurant_code, delivery_status } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
+
+  const acceptance = await getOrderAcceptanceState(code, order_id);
+  if (!acceptance.accepted) {
+    return res.json({
+      success: false,
+      not_accepted: true,
+      rejected: acceptance.rejected,
+      message: acceptance.message,
+    });
+  }
 
   const existing = await redisCommand("GET", k(code, `claimed:${order_id}`));
   if (existing.result) {
@@ -1088,7 +1122,7 @@ app.post("/accepted-time", async (req, res) => {
     accepted_at: accepted_at || new Date().toISOString(),
   };
   await redisCommand("SET", k(code, `accepted_time:${order_id}`), JSON.stringify(data));
-  await redisCommand("EXPIRE", k(code, `accepted_time:${order_id}`), 86400);
+  await redisCommand("EXPIRE", k(code, `accepted_time:${order_id}`), 604800);
   res.json({ success: true });
 });
 
@@ -1098,7 +1132,7 @@ app.post("/rejected-time", async (req, res) => {
   if (!code) return res.json({ success: false });
   if (secret !== 'foodup2026') return res.json({ success: false, message: 'Unauthorized' });
   await redisCommand("SET", k(code, `rejected_time:${order_id}`), new Date().toISOString());
-  await redisCommand("EXPIRE", k(code, `rejected_time:${order_id}`), 86400);
+  await redisCommand("EXPIRE", k(code, `rejected_time:${order_id}`), 604800);
   res.json({ success: true });
 });
 
