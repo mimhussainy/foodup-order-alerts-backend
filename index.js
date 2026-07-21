@@ -295,6 +295,7 @@ await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
   try {
     const safeItems = (order.items || []).map(item => ({
       name: String(item.name || ''),
+      variation: String(item.variation || ''),
       quantity: Number(item.quantity || 0),
       total: Number(item.total || 0),
       addons: (item.addons || []).map(a => ({
@@ -384,6 +385,7 @@ console.log("Full order data:", JSON.stringify(order));
   try {
     const safeItems = (order.items || []).map(item => ({
       name: String(item.name || ''),
+      variation: String(item.variation || ''),
       quantity: Number(item.quantity || 0),
       total: Number(item.total || 0),
       addons: (item.addons || []).map(a => ({
