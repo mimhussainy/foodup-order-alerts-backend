@@ -84,8 +84,8 @@ async function upsertOrderInList(code, order) {
 
       // Rebuild list sequentially — newest first, no Promise.all, no reverse
       await redisCommand("DEL", k(code, "orders"));
-      for (const o of updated) {
-        await redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o));
+      if (updated.length > 0) {
+        await redisCommand("RPUSH", k(code, "orders"), ...updated.map(o => JSON.stringify(o)));
       }
 
       console.log(`upsertOrderInList: order ${order.order_id} upserted for ${code}, list size ${updated.length}`);
@@ -824,7 +824,7 @@ app.get("/check-delivered/:code/:id", async (req, res) => {
 app.post("/claim-order", async (req, res) => {
   const { order_id, delivery_name, restaurant_code, delivery_status } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
-  if (!code) return res.json({ success: false });
+  if (!code || !order_id || !delivery_name) return res.json({ success: false });
 
   const acceptance = await getOrderAcceptanceState(code, order_id);
   if (!acceptance.accepted) {
@@ -836,18 +836,41 @@ app.post("/claim-order", async (req, res) => {
     });
   }
 
-  const existing = await redisCommand("GET", k(code, `claimed:${order_id}`));
-  if (existing.result) {
+  const claimKey = k(code, `claimed:${order_id}`);
+  const now = new Date().toISOString();
+  const firstClaim = {
+    order_id,
+    delivery_name,
+    claimed_at: now,
+    delivery_status: delivery_status || 'in_bag',
+  };
+
+  // SET NX makes the first claim atomic. Two couriers pressing Add to Bag at
+  // the same moment can no longer both observe an empty claim.
+  const created = await redisCommand("SET", claimKey, JSON.stringify(firstClaim), "NX");
+
+  if (!created.result) {
+    const existing = await redisCommand("GET", claimKey);
+    if (!existing.result) {
+      return res.json({ success: false, message: "Could not claim order. Please try again." });
+    }
+
     const claim = JSON.parse(existing.result);
-    // Only reject if claimed by a DIFFERENT courier
     if (claim.delivery_name !== delivery_name) {
       return res.json({ success: false, message: `Already being delivered by ${claim.delivery_name}` });
     }
+
+    // The same courier may update in_bag -> delivering without losing the
+    // original claimed_at timestamp.
+    await redisCommand("SET", claimKey, JSON.stringify({
+      ...claim,
+      order_id,
+      delivery_name,
+      claimed_at: claim.claimed_at || now,
+      delivery_status: delivery_status || claim.delivery_status || 'in_bag',
+    }));
   }
-  console.log("Claiming order:", order_id, "delivery_status:", delivery_status);
-  await redisCommand("SET", k(code, `claimed:${order_id}`), JSON.stringify({
-    order_id, delivery_name, claimed_at: new Date().toISOString(), delivery_status: delivery_status || 'in_bag',
-  }));
+
   await redisCommand("SADD", k(code, "active_claims"), String(order_id));
   res.json({ success: true });
 });
@@ -925,8 +948,8 @@ app.get("/dedup-orders/:code", async (req, res) => {
 
     // Rebuild list sequentially — preserves order, no Promise.all, no reverse
     await redisCommand("DEL", k(code, "orders"));
-    for (const o of deduped) {
-      await redisCommand("RPUSH", k(code, "orders"), JSON.stringify(o));
+    if (deduped.length > 0) {
+      await redisCommand("RPUSH", k(code, "orders"), ...deduped.map(o => JSON.stringify(o)));
     }
 
     console.log(`dedup-orders: ${code} before=${orders.length} after=${deduped.length}`);
@@ -963,103 +986,65 @@ app.get("/orders/:code", async (req, res) => {
 app.get("/claims/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const debug = req.query.debug === '1';
+
   try {
     const claims = {};
-    const debugInfo = {
-      deliveredSetCount: 0,
-      couriers: [],
-      courierHistoryCounts: {},
-      layer2Added: [],
-      activeClaimIds: [],
-    };
 
-    // Layer 1: delivered_orders Set (post-patch deliveries)
+    // Delivered records are already normalized by /mark-delivered. This route
+    // is now read-only: it no longer repairs courier history on every GET.
     const deliveredIdsResult = await redisCommand("SMEMBERS", k(code, "delivered_orders"));
     const deliveredIds = deliveredIdsResult.result || [];
-    debugInfo.deliveredSetCount = deliveredIds.length;
-    await Promise.all(deliveredIds.map(async (orderId) => {
-      const deliveredData = await redisCommand("GET", k(code, `delivered:${orderId}`));
-      if (deliveredData.result) {
-        const delivered = JSON.parse(deliveredData.result);
-        claims[String(delivered.order_id || orderId)] = {
-          name: delivered.delivery_name,
-          status: 'delivered',
-          delivered_at: delivered.delivered_at || '',
-        };
-      } else {
-        await redisCommand("SREM", k(code, "delivered_orders"), String(orderId));
-      }
-    }));
-
-    // Layer 2: courier delivered history fallback (pre-patch deliveries)
-    const accountsResult = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
-    const couriers = accountsResult.result || [];
-    debugInfo.couriers = couriers;
-    await Promise.all(couriers.map(async (name) => {
-      let stored = await redisCommand("GET", k(code, `courier_delivered:${name}`));
-      if (!stored.result) {
-        const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
-        stored = await redisCommand("GET", k(code, `courier_delivered:${capitalized}`));
-      }
-      const history = stored.result ? JSON.parse(stored.result) : [];
-      const displayName = name.charAt(0).toUpperCase() + name.slice(1);
-      debugInfo.courierHistoryCounts[displayName] = history.length;
-      await Promise.all(history.map(async (entry) => {
-        const oid = String(entry.order_id);
-        const courierName = entry.delivery_name || displayName;
-        if (!claims[oid] || claims[oid].name === 'Owner') {
+    if (deliveredIds.length > 0) {
+      const deliveredValues = await redisCommand(
+        "MGET",
+        ...deliveredIds.map(orderId => k(code, `delivered:${orderId}`))
+      );
+      (deliveredValues.result || []).forEach((raw, index) => {
+        if (!raw) return;
+        try {
+          const delivered = JSON.parse(raw);
+          const oid = String(delivered.order_id || deliveredIds[index]);
           claims[oid] = {
-            name: courierName,
+            name: delivered.delivery_name,
             status: 'delivered',
-            delivered_at: entry.delivered_at || '',
+            delivered_at: delivered.delivered_at || '',
           };
-          debugInfo.layer2Added.push(oid);
-        }
-        await redisCommand("SADD", k(code, "delivered_orders"), oid);
-        const deliveredData = await redisCommand("GET", k(code, `delivered:${oid}`));
-        let shouldUpdateDeliveredKey = false;
-        if (!deliveredData.result) {
-          shouldUpdateDeliveredKey = true;
-        } else {
-          try {
-            const existing = JSON.parse(deliveredData.result);
-            if (!existing.delivery_name || existing.delivery_name === 'Owner') {
-              shouldUpdateDeliveredKey = true;
-            }
-          } catch(e) {
-            shouldUpdateDeliveredKey = true;
+        } catch (e) {}
+      });
+    }
+
+    const activeClaimIdsResult = await redisCommand("SMEMBERS", k(code, "active_claims"));
+    const activeClaimIds = activeClaimIdsResult.result || [];
+    if (activeClaimIds.length > 0) {
+      const activeValues = await redisCommand(
+        "MGET",
+        ...activeClaimIds.map(orderId => k(code, `claimed:${orderId}`))
+      );
+      (activeValues.result || []).forEach((raw, index) => {
+        if (!raw) return;
+        try {
+          const claim = JSON.parse(raw);
+          const oid = String(claim.order_id || activeClaimIds[index]);
+          if (!claims[oid] || claims[oid].status !== 'delivered') {
+            claims[oid] = {
+              name: claim.delivery_name,
+              status: claim.delivery_status || 'in_bag',
+            };
           }
-        }
-        if (shouldUpdateDeliveredKey) {
-          await redisCommand("SET", k(code, `delivered:${oid}`), JSON.stringify({
-            ...entry,
-            order_id: oid,
-            delivery_name: courierName,
-            delivered_at: entry.delivered_at || new Date().toISOString(),
-          }));
-        }
-      }));
-    }));
+        } catch (e) {}
+      });
+    }
 
-    // Layer 3: active claims — never override delivered
-    const claimMembers = await redisCommand("SMEMBERS", k(code, "active_claims"));
-    const claimIds = claimMembers.result || [];
-    debugInfo.activeClaimIds = claimIds;
-    await Promise.all(claimIds.map(async (orderId) => {
-      const data = await redisCommand("GET", k(code, `claimed:${orderId}`));
-      if (data.result) {
-        const claim = JSON.parse(data.result);
-        const oid = String(claim.order_id || orderId);
-        if (!claims[oid] || claims[oid].status !== 'delivered') {
-          claims[oid] = { name: claim.delivery_name, status: claim.delivery_status || 'in_bag' };
-        }
-      } else {
-        await redisCommand("SREM", k(code, "active_claims"), String(orderId));
-      }
-    }));
-
-    res.json(debug ? { success: true, claims, debug: debugInfo } : { success: true, claims });
-  } catch(e) {
+    res.json(debug ? {
+      success: true,
+      claims,
+      debug: {
+        deliveredSetCount: deliveredIds.length,
+        activeClaimIds,
+        readOnly: true,
+      },
+    } : { success: true, claims });
+  } catch (e) {
     console.log("Claims error:", e.message);
     res.json(debug
       ? { success: false, claims: {}, debug: { error: e.message } }
@@ -1499,6 +1484,34 @@ app.delete("/debug-logs/:code", async (req, res) => {
   res.json({ success: true });
 });
 
+
+// Batch accepted-time lookup used by Orders and Courier tab refreshes.
+app.post("/accepted-times/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const requested = Array.isArray(req.body?.order_ids) ? req.body.order_ids : [];
+  const orderIds = [...new Set(requested.map(id => String(id)).filter(Boolean))].slice(0, 100);
+
+  if (orderIds.length === 0) {
+    return res.json({ success: true, times: {} });
+  }
+
+  try {
+    const values = await redisCommand(
+      "MGET",
+      ...orderIds.map(orderId => k(code, `accepted_time:${orderId}`))
+    );
+    const times = {};
+    (values.result || []).forEach((raw, index) => {
+      if (!raw) return;
+      try {
+        times[orderIds[index]] = JSON.parse(raw);
+      } catch (e) {}
+    });
+    res.json({ success: true, times });
+  } catch (e) {
+    res.json({ success: false, times: {} });
+  }
+});
 
 // -------------------------------------------------------
 // AUTO SETTINGS
@@ -2127,7 +2140,7 @@ ALERTBANNER_PLACEHOLDER
   </div>
   <div id="restaurant-list">CARDS_PLACEHOLDER</div>
   <div id="empty-state" class="empty-state" style="display:none;"><div style="font-size:40px;">?</div><p>No restaurants found</p></div>
-  <div class="last-updated">Last updated: LASTUPDATED_PLACEHOLDER - Auto-refresh in <span id="countdown">600</span>s</div>
+  <div class="last-updated">Last updated: LASTUPDATED_PLACEHOLDER - Press Refresh to reload</div>
 </div>
 <div class="modal-overlay" id="order-modal">
   <div class="modal">
@@ -2171,14 +2184,6 @@ function updateTime() {
 }
 updateTime();
 setInterval(updateTime, 1000);
-
-var countdown = 600;
-setInterval(function() {
-  countdown--;
-  var el = document.getElementById('countdown');
-  if (el) el.textContent = countdown;
-  if (countdown <= 0) location.reload();
-}, 1000);
 
 function showOrder(orderId) {
   var o = orderData[orderId];
@@ -2462,7 +2467,12 @@ app.listen(PORT, () => {
 // AUTO ACCEPT / REJECT — SERVER SIDE
 // -------------------------------------------------------
 
+let autoActionsRunning = false;
+
 async function runAutoActions() {
+  if (autoActionsRunning) return;
+  autoActionsRunning = true;
+
   try {
     const restaurantsResult = await redisCommand("SMEMBERS", "restaurants");
     const restaurants = restaurantsResult.result || [];
@@ -2529,14 +2539,12 @@ async function runAutoActions() {
             const acceptedData = await redisCommand("GET", k(code, `accepted_time:${order.order_id}`));
             const rejectedData = await redisCommand("GET", k(code, `rejected_time:${order.order_id}`));
             if (acceptedData.result || rejectedData.result) {
-              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: already ${acceptedData.result ? 'accepted' : 'rejected'} manually`);
               continue;
             }
 
             // Check if already auto-actioned
             const autoActioned = await redisCommand("GET", k(code, `auto_actioned:${order.order_id}`));
             if (autoActioned.result) {
-              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: auto_actioned already set`);
               continue;
             }
 
@@ -2549,7 +2557,6 @@ async function runAutoActions() {
             }
             const age = Date.now() - orderDate;
             if (age < waitMs) {
-              console.log(`runAutoActions SKIP ${code} order ${order.order_id}: too young age=${Math.floor(age/1000)}s waitMs=${waitMs/1000}s`);
               continue;
             }if (!isPreOrder && age > 3 * 60 * 60 * 1000) {
               continue;
@@ -2686,6 +2693,8 @@ async function runAutoActions() {
     }
   } catch(err) {
     console.log('Auto action error:', err.message);
+  } finally {
+    autoActionsRunning = false;
   }
 }
 
