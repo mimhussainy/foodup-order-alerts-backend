@@ -1,16 +1,17 @@
-const CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const CHECK_INTERVAL_MS = 15 * 60 * 1000;
 
 async function checkWebsite(url) {
   const start = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
     const response = await fetch(url, {
       method: 'GET',
       signal: controller.signal,
       headers: { 'User-Agent': 'FoodUp-Monitor/1.0' },
     });
-    clearTimeout(timeout);
+
     const response_ms = Date.now() - start;
     return {
       status: response.ok ? 'online' : 'down',
@@ -27,23 +28,37 @@ async function checkWebsite(url) {
       checked_at: new Date().toISOString(),
       error: e.name === 'AbortError' ? 'Timeout after 10s' : e.message,
     };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
 function startWebsiteMonitor(redisCommand, k, alertService) {
+  let checksRunning = false;
+
   async function runChecks() {
+    if (checksRunning) {
+      console.log('[websiteMonitor] skipped overlapping run');
+      return;
+    }
+
+    checksRunning = true;
     try {
       const restaurantsResult = await redisCommand('SMEMBERS', 'restaurants');
       const restaurants = restaurantsResult.result || [];
+
       for (const code of restaurants) {
         try {
           const profileData = await redisCommand('GET', k(code, 'restaurant_profile'));
           if (!profileData.result) continue;
+
           const profile = JSON.parse(profileData.result);
           if (!profile.website) continue;
+
           const url = profile.website.startsWith('http')
             ? profile.website
             : `https://${profile.website}`;
+
           const result = await checkWebsite(url);
           await redisCommand('SET', k(code, 'website_health'), JSON.stringify(result));
           console.log(`[websiteMonitor] ${code} → ${result.status} (${result.response_ms}ms)`);
@@ -54,11 +69,14 @@ function startWebsiteMonitor(redisCommand, k, alertService) {
       }
     } catch (e) {
       console.log('[websiteMonitor] run error:', e.message);
+    } finally {
+      checksRunning = false;
     }
   }
 
   runChecks();
-  setInterval(runChecks, CHECK_INTERVAL_MS);
+  const interval = setInterval(runChecks, CHECK_INTERVAL_MS);
+  interval.unref?.();
 }
 
 module.exports = { startWebsiteMonitor, checkWebsite };
