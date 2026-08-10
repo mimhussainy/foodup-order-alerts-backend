@@ -1,5 +1,6 @@
 const express = require('express');
-const router = express.Router();
+const { installAsyncRouteSafety } = require('./asyncRouteSafety');
+const router = installAsyncRouteSafety(express.Router());
 
 function createMonitoringRoutes(redisCommand, k, dashPassword) {
   router.get('/website-health/:code', async (req, res) => {

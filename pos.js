@@ -46,8 +46,7 @@ module.exports = function(app, redisCommand, k) {
       throw new Error("Invalid products response from WordPress");
     }
 
-    await redisCommand("SET", k(code, "pos_products"), JSON.stringify(products));
-    await redisCommand("EXPIRE", k(code, "pos_products"), 600);
+    await redisCommand("SET", k(code, "pos_products"), JSON.stringify(products), "EX", 600);
 
     return products;
   }
@@ -71,8 +70,7 @@ module.exports = function(app, redisCommand, k) {
       throw new Error("Invalid addon groups response from WordPress");
     }
 
-    await redisCommand("SET", k(code, "pos_addon_groups"), JSON.stringify(addonGroups));
-    await redisCommand("EXPIRE", k(code, "pos_addon_groups"), 1800);
+    await redisCommand("SET", k(code, "pos_addon_groups"), JSON.stringify(addonGroups), "EX", 1800);
 
     return addonGroups;
   }
@@ -277,8 +275,7 @@ const categoryIds = product && Array.isArray(product.categories)
         }
       });
 
-      await redisCommand("SET", cacheKey, JSON.stringify(addons));
-      await redisCommand("EXPIRE", cacheKey, 1800);
+      await redisCommand("SET", cacheKey, JSON.stringify(addons), "EX", 1800);
 
       res.json({
         success: true,

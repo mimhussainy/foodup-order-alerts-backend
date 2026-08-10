@@ -1,5 +1,6 @@
 const express = require("express");
-const app = express();
+const { installAsyncRouteSafety } = require("./asyncRouteSafety");
+const app = installAsyncRouteSafety(express());
 app.use(express.json());
 
 app.use((req, res, next) => {
@@ -12,18 +13,108 @@ app.use((req, res, next) => {
 
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const REDIS_TIMEOUT_MS = Math.max(1000, Number(process.env.REDIS_TIMEOUT_MS || 4000));
+const REDIS_MAX_ATTEMPTS = Math.max(1, Number(process.env.REDIS_MAX_ATTEMPTS || 2));
+const REDIS_CIRCUIT_FAILURES = Math.max(2, Number(process.env.REDIS_CIRCUIT_FAILURES || 3));
+const REDIS_CIRCUIT_OPEN_MS = Math.max(1000, Number(process.env.REDIS_CIRCUIT_OPEN_MS || 10000));
+
+let redisConsecutiveFailures = 0;
+let redisCircuitOpenUntil = 0;
+
+class FoodUpRedisUnavailableError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = "FoodUpRedisUnavailableError";
+    this.code = "FOODUP_REDIS_UNAVAILABLE";
+    if (cause) this.cause = cause;
+  }
+}
+
+function foodupSleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function foodupIsTransientRedisError(err) {
+  if (!err) return false;
+  if (err.name === "AbortError" || err.name === "TimeoutError") return true;
+  if (err.status === 429 || (err.status >= 500 && err.status <= 599)) return true;
+  const code = err.code || err.cause?.code || "";
+  return [
+    "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+    "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH"
+  ].includes(code) || err instanceof TypeError;
+}
 
 async function redisCommand(...args) {
-  const response = await fetch(`${UPSTASH_URL}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${UPSTASH_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(args),
-  });
-  return response.json();
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+    throw new FoodUpRedisUnavailableError("Upstash Redis is not configured");
+  }
+
+  if (Date.now() < redisCircuitOpenUntil) {
+    throw new FoodUpRedisUnavailableError("Upstash Redis circuit is temporarily open");
+  }
+
+  const command = String(args[0] || "UNKNOWN").toUpperCase();
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= REDIS_MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REDIS_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(UPSTASH_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${UPSTASH_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(args),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const httpError = new Error(`Upstash HTTP ${response.status}`);
+        httpError.status = response.status;
+        throw httpError;
+      }
+
+      const payload = await response.json();
+      if (payload && payload.error) {
+        const redisError = new Error(`Upstash command error: ${payload.error}`);
+        redisError.status = 400;
+        throw redisError;
+      }
+
+      redisConsecutiveFailures = 0;
+      redisCircuitOpenUntil = 0;
+      return payload;
+    } catch (err) {
+      lastError = err;
+      const transient = foodupIsTransientRedisError(err);
+      if (!transient || attempt >= REDIS_MAX_ATTEMPTS) break;
+      await foodupSleep(200 * attempt + Math.floor(Math.random() * 150));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  redisConsecutiveFailures += 1;
+  if (redisConsecutiveFailures >= REDIS_CIRCUIT_FAILURES) {
+    redisCircuitOpenUntil = Date.now() + REDIS_CIRCUIT_OPEN_MS;
+  }
+
+  const causeCode = lastError?.cause?.code || lastError?.code || lastError?.name || "unknown";
+  console.error(`[redis] ${command} failed after ${REDIS_MAX_ATTEMPTS} attempt(s): ${causeCode}`);
+  throw new FoodUpRedisUnavailableError(`Upstash Redis unavailable during ${command}`, lastError);
 }
+
+// Last-resort safety net. Route handlers and background jobs are wrapped/caught
+// below, but a rejected promise from an overlooked non-critical callback must not
+// terminate the entire Orders service.
+process.on("unhandledRejection", (reason) => {
+  const message = reason && reason.stack ? reason.stack : String(reason);
+  console.error("[process] Unhandled promise rejection contained:", message);
+});
 
 const k = (code, key) => `${code}:${key}`;
 
@@ -50,7 +141,11 @@ async function withRedisLock(lockKey, fn, maxWaitMs = 5000) {
     return await fn();
   } finally {
     if (acquired) {
-      await redisCommand("DEL", lockKey);
+      try {
+        await redisCommand("DEL", lockKey);
+      } catch (releaseErr) {
+        console.log(`withRedisLock: release failed for ${lockKey}:`, releaseErr.message);
+      }
     }
   }
 }
@@ -96,9 +191,9 @@ async function upsertOrderInList(code, order) {
 }
 
 async function isValidOwnerOrIosPin(code, pin) {
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  const storedIosPin = await redisCommand("GET", k(code, "ios_pin"));
-  return storedPin.result === pin || storedIosPin.result === pin;
+  const stored = await redisCommand("MGET", k(code, "pin"), k(code, "ios_pin"));
+  const [ownerPin, iosPin] = stored.result || [];
+  return ownerPin === pin || iosPin === pin;
 }
 
 async function getTokens(code) {
@@ -117,16 +212,18 @@ async function removeToken(code, token) {
 }
 
 async function getOrderAcceptanceState(code, orderId) {
-  const rejected = await redisCommand("GET", k(code, `rejected_time:${orderId}`));
-  if (rejected.result) {
+  const state = await redisCommand(
+    "MGET",
+    k(code, `rejected_time:${orderId}`),
+    k(code, `accepted_time:${orderId}`)
+  );
+  const [rejectedRaw, acceptedRaw] = state.result || [];
+  if (rejectedRaw) {
     return { accepted: false, rejected: true, message: "Order was rejected by restaurant owner" };
   }
-
-  const accepted = await redisCommand("GET", k(code, `accepted_time:${orderId}`));
-  if (!accepted.result) {
+  if (!acceptedRaw) {
     return { accepted: false, rejected: false, message: "Order is waiting for restaurant confirmation" };
   }
-
   return { accepted: true, rejected: false, message: "Order accepted" };
 }
 
@@ -309,10 +406,15 @@ await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
   }
 
  const tokenChannels = {};
-  await Promise.all(deviceTokens.map(async token => {
-    const ch = await redisCommand("GET", k(code, `token_channel:${token}`));
-    tokenChannels[token] = ch.result || 'foodup_default';
-  }));
+  if (deviceTokens.length > 0) {
+    const channelData = await redisCommand(
+      "MGET",
+      ...deviceTokens.map(token => k(code, `token_channel:${token}`))
+    );
+    (channelData.result || []).forEach((channel, index) => {
+      tokenChannels[deviceTokens[index]] = channel || 'foodup_default';
+    });
+  }
 
   const messages = deviceTokens.map(token => ({
     to: token,
@@ -599,10 +701,13 @@ app.get("/delivery-accounts", async (req, res) => {
 
   const result = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
   const usernames = result.result || [];
-  const accounts = await Promise.all(usernames.map(async (u) => {
-    const data = await redisCommand("GET", k(code, `delivery_account:${u}`));
-    return data.result ? JSON.parse(data.result) : null;
-  }));
+  const values = usernames.length > 0
+    ? await redisCommand("MGET", ...usernames.map(u => k(code, `delivery_account:${u}`)))
+    : { result: [] };
+  const accounts = (values.result || []).map(raw => {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  });
   res.json({ success: true, accounts: accounts.filter(Boolean) });
 });
 
@@ -662,8 +767,7 @@ app.post("/cancel-auto-action", async (req, res) => {
     }
   }
   console.log(`Cancel auto-action for: ${code} order ${order_id}`);
-  await redisCommand("SET", k(code, `auto_actioned:${order_id}`), 'yes');
-  await redisCommand("EXPIRE", k(code, `auto_actioned:${order_id}`), 86400);
+  await redisCommand("SET", k(code, `auto_actioned:${order_id}`), 'yes', "EX", 86400);
   res.json({ success: true });
 });
 
@@ -707,10 +811,13 @@ app.get("/delivery-accounts-ios", async (req, res) => {
   }
   const result = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
   const usernames = result.result || [];
-  const accounts = await Promise.all(usernames.map(async (u) => {
-    const data = await redisCommand("GET", k(code, `delivery_account:${u}`));
-    return data.result ? JSON.parse(data.result) : null;
-  }));
+  const values = usernames.length > 0
+    ? await redisCommand("MGET", ...usernames.map(u => k(code, `delivery_account:${u}`)))
+    : { result: [] };
+  const accounts = (values.result || []).map(raw => {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  });
   res.json({ success: true, accounts: accounts.filter(Boolean) });
 });
 
@@ -1112,8 +1219,7 @@ app.post("/accepted-time", async (req, res) => {
     status,
     accepted_at: accepted_at || new Date().toISOString(),
   };
-  await redisCommand("SET", k(code, `accepted_time:${order_id}`), JSON.stringify(data));
-  await redisCommand("EXPIRE", k(code, `accepted_time:${order_id}`), 604800);
+  await redisCommand("SET", k(code, `accepted_time:${order_id}`), JSON.stringify(data), "EX", 604800);
   res.json({ success: true });
 });
 
@@ -1122,8 +1228,7 @@ app.post("/rejected-time", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
   if (secret !== 'foodup2026') return res.json({ success: false, message: 'Unauthorized' });
-  await redisCommand("SET", k(code, `rejected_time:${order_id}`), new Date().toISOString());
-  await redisCommand("EXPIRE", k(code, `rejected_time:${order_id}`), 604800);
+  await redisCommand("SET", k(code, `rejected_time:${order_id}`), new Date().toISOString(), "EX", 604800);
   res.json({ success: true });
 });
 
@@ -1157,21 +1262,22 @@ const stats = {};
     const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
     const startOfWeek = new Date(now); startOfWeek.setDate(now.getDate() - 7); startOfWeek.setHours(0, 0, 0, 0);
     
-    await Promise.all(orders.map(async (order) => {
-      const deliveredData = await redisCommand("GET", k(code, `delivered:${order.order_id}`));
-      if (deliveredData.result) {
-        const delivered = JSON.parse(deliveredData.result);
+    const deliveredBatch = orders.length > 0
+      ? await redisCommand("MGET", ...orders.map(order => k(code, `delivered:${order.order_id}`)))
+      : { result: [] };
+    (deliveredBatch.result || []).forEach(raw => {
+      if (!raw) return;
+      try {
+        const delivered = JSON.parse(raw);
         const name = delivered.delivery_name;
         if (!name) return;
-        
         if (!stats[name]) stats[name] = { today: 0, week: 0, total: 0 };
-        
         const deliveredAt = new Date(delivered.delivered_at);
         stats[name].total++;
         if (deliveredAt >= startOfWeek) stats[name].week++;
         if (deliveredAt >= startOfDay) stats[name].today++;
-      }
-    }));
+      } catch (e) {}
+    });
     
     res.json({ success: true, stats });
   } catch(e) {
@@ -1253,12 +1359,19 @@ app.post("/store-status", async (req, res) => {
 app.get("/health-check/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   try {
-const [profileData, tokensData, pinData, printerData] = await Promise.all([
-      redisCommand("GET", k(code, "restaurant_profile")),
+const [coreData, tokensData] = await Promise.all([
+      redisCommand(
+        "MGET",
+        k(code, "restaurant_profile"),
+        k(code, "pin"),
+        k(code, "printer_device_id")
+      ),
       redisCommand("SMEMBERS", k(code, "device_tokens")),
-      redisCommand("GET", k(code, "pin")),
-      redisCommand("GET", k(code, "printer_device_id")),
     ]);
+    const [profileRaw, pinRaw, printerRaw] = coreData.result || [];
+    const profileData = { result: profileRaw };
+    const pinData = { result: pinRaw };
+    const printerData = { result: printerRaw };
 
     const profile = profileData.result ? JSON.parse(profileData.result) : null;
     const tokens = tokensData.result || [];
@@ -1284,7 +1397,7 @@ app.delete("/clear-accepted-times/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const keys = await redisCommand("KEYS", k(code, "accepted_time:*"));
   if (keys.result && keys.result.length > 0) {
-    await Promise.all(keys.result.map(key => redisCommand("DEL", key)));
+    await redisCommand("DEL", ...keys.result);
   }
   res.json({ success: true, cleared: keys.result?.length || 0 });
 });
@@ -1638,8 +1751,7 @@ app.post("/heartbeat", async (req, res) => {
     app_version: app_version || '',
   };
 
-  await redisCommand("SET", k(code, "heartbeat"), JSON.stringify(heartbeat));
-  await redisCommand("EXPIRE", k(code, "heartbeat"), 86400);
+  await redisCommand("SET", k(code, "heartbeat"), JSON.stringify(heartbeat), "EX", 86400);
   res.json({ success: true });
 });
 
@@ -2416,16 +2528,26 @@ async function checkAndSendAlerts() {
     const alertSettings = JSON.parse(alertData.result);
     if (!alertSettings.offline_threshold_minutes) return;
 
+    const monitorKeys = [];
     for (const code of restaurants) {
+      monitorKeys.push(k(code, "heartbeat"), k(code, "restaurant_profile"));
+    }
+    const monitorData = monitorKeys.length > 0
+      ? await redisCommand("MGET", ...monitorKeys)
+      : { result: [] };
+    const monitorValues = monitorData.result || [];
+
+    for (let index = 0; index < restaurants.length; index++) {
+      const code = restaurants[index];
       try {
-        const heartbeatData = await redisCommand("GET", k(code, "heartbeat"));
-        const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
-        const profile = profileData.result ? JSON.parse(profileData.result) : null;
+        const heartbeatRaw = monitorValues[index * 2];
+        const profileRaw = monitorValues[index * 2 + 1];
+        const profile = profileRaw ? JSON.parse(profileRaw) : null;
         const name = (profile && profile.name) ? profile.name : code;
 
-        if (!heartbeatData.result) continue;
+        if (!heartbeatRaw) continue;
 
-        const heartbeat = JSON.parse(heartbeatData.result);
+        const heartbeat = JSON.parse(heartbeatRaw);
         const minutesOffline = Math.floor((Date.now() - new Date(heartbeat.last_seen).getTime()) / 60000);
 
         if (minutesOffline >= alertSettings.offline_threshold_minutes) {
@@ -2443,18 +2565,31 @@ async function checkAndSendAlerts() {
 }
 
 // Run alert checker every 5 minutes
-setInterval(checkAndSendAlerts, 5 * 60 * 1000);
+setInterval(() => {
+  checkAndSendAlerts().catch(err => console.log('Alert checker uncaught error:', err.message));
+}, 5 * 60 * 1000);
 
 // -------------------------------------------------------
 // HEALTH CHECK
 // -------------------------------------------------------
 
 app.get("/", async (req, res) => {
-  const restaurants = await redisCommand("SMEMBERS", "restaurants");
-  res.json({
-    status: "FoodUp Order Alerts backend is running!",
-    restaurants: restaurants.result || [],
-  });
+  try {
+    const restaurants = await redisCommand("SMEMBERS", "restaurants");
+    res.json({
+      status: "FoodUp Orders backend is running!",
+      redis: "online",
+      restaurants: restaurants.result || [],
+    });
+  } catch (err) {
+    // Keep the process health endpoint alive during a temporary Redis outage so
+    // Render does not treat a dependency timeout as an application crash.
+    res.status(200).json({
+      status: "FoodUp Orders backend is running with degraded storage",
+      redis: "degraded",
+      restaurants: [],
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
@@ -2496,11 +2631,17 @@ async function runAutoActions() {
         const ordersData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
         const orders = (ordersData.result || []).map(o => JSON.parse(o));
 
-        // Get restaurant profile for website URL
-        const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
-        const profile = profileData.result ? JSON.parse(profileData.result) : null;
-        const website = profile?.website;
-        const baseUrl = website ? (website.startsWith('http') ? website : `https://${website}`) : null;
+        // Restaurant profile is only needed if an order actually reaches an auto action.
+        // Avoid reading it every minute for restaurants with no actionable orders.
+        let baseUrl = undefined;
+        const getBaseUrl = async () => {
+          if (baseUrl !== undefined) return baseUrl;
+          const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
+          const profile = profileData.result ? JSON.parse(profileData.result) : null;
+          const website = profile?.website;
+          baseUrl = website ? (website.startsWith('http') ? website : `https://${website}`) : null;
+          return baseUrl;
+        };
 
         for (const order of orders) {
   try {
@@ -2535,16 +2676,15 @@ async function runAutoActions() {
       }
     }
 
-            // Check if already accepted or rejected manually
-            const acceptedData = await redisCommand("GET", k(code, `accepted_time:${order.order_id}`));
-            const rejectedData = await redisCommand("GET", k(code, `rejected_time:${order.order_id}`));
-            if (acceptedData.result || rejectedData.result) {
-              continue;
-            }
-
-            // Check if already auto-actioned
-            const autoActioned = await redisCommand("GET", k(code, `auto_actioned:${order.order_id}`));
-            if (autoActioned.result) {
+            // Read manual/automatic action markers in one Redis command.
+            const actionState = await redisCommand(
+              "MGET",
+              k(code, `accepted_time:${order.order_id}`),
+              k(code, `rejected_time:${order.order_id}`),
+              k(code, `auto_actioned:${order.order_id}`)
+            );
+            const [acceptedRaw, rejectedRaw, autoActionedRaw] = actionState.result || [];
+            if (acceptedRaw || rejectedRaw || autoActionedRaw) {
               continue;
             }
 
@@ -2562,12 +2702,13 @@ async function runAutoActions() {
               continue;
             }
 
-            // Mark as auto-actioned to prevent duplicate processing
-            await redisCommand("SET", k(code, `auto_actioned:${order.order_id}`), 'yes');
-            await redisCommand("EXPIRE", k(code, `auto_actioned:${order.order_id}`), 86400);
-            // Mark as auto-accepted for pill display
-            await redisCommand("SET", k(code, `auto_accepted:${order.order_id}`), 'yes');
-            await redisCommand("EXPIRE", k(code, `auto_accepted:${order.order_id}`), 86400);
+            // Mark as auto-actioned to prevent duplicate processing. Use SET ... EX
+            // so the value and TTL are written atomically in one Redis command.
+            await redisCommand("SET", k(code, `auto_actioned:${order.order_id}`), 'yes', "EX", 86400);
+            if (autoSettings.auto_action === 'accept') {
+              // Only accepted orders should get the auto_accepted pill marker.
+              await redisCommand("SET", k(code, `auto_accepted:${order.order_id}`), 'yes', "EX", 86400);
+            }
 
             console.log(`Auto ${autoSettings.auto_action} for restaurant ${code}, order ${order.order_id}`);
 
@@ -2592,12 +2733,12 @@ async function runAutoActions() {
                 accepted_time: effectiveAcceptTime,
                 accepted_at: new Date().toISOString(),
                 status: 'accepted',
-              }));
-              await redisCommand("EXPIRE", k(code, `accepted_time:${order.order_id}`), 86400);
+              }), "EX", 86400);
 
               // Call WordPress to update order status and send email
-              if (baseUrl) {
-                fetch(`${baseUrl}/wp-json/foodup/v1/order-accepted`, {
+              const resolvedBaseUrl = await getBaseUrl();
+              if (resolvedBaseUrl) {
+                fetch(`${resolvedBaseUrl}/wp-json/foodup/v1/order-accepted`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -2649,8 +2790,9 @@ async function runAutoActions() {
 
             } else if (autoSettings.auto_action === 'reject') {
               // Call WordPress to reject order and send email
-              if (baseUrl) {
-                fetch(`${baseUrl}/wp-json/foodup/v1/order-rejected`, {
+              const resolvedBaseUrl = await getBaseUrl();
+              if (resolvedBaseUrl) {
+                fetch(`${resolvedBaseUrl}/wp-json/foodup/v1/order-rejected`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -2699,13 +2841,45 @@ async function runAutoActions() {
 }
 
 // Run every minute
-setInterval(runAutoActions, 60 * 1000);
+setInterval(() => {
+  runAutoActions().catch(err => console.log('Auto action uncaught error:', err.message));
+}, 60 * 1000);
 // Also run once on startup after 10 seconds
-setTimeout(runAutoActions, 10 * 1000);
+setTimeout(() => {
+  runAutoActions().catch(err => console.log('Initial auto action uncaught error:', err.message));
+}, 10 * 1000);
 
 
 app.get("/check-auto-actioned/:code/:order_id", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const data = await redisCommand("GET", k(code, `auto_actioned:${req.params.order_id}`));
   res.json({ auto_actioned: !!data.result, value: data.result });
+});
+
+
+// -------------------------------------------------------
+// FINAL ERROR BOUNDARY
+// -------------------------------------------------------
+app.use((err, req, res, next) => {
+  const isRedisOutage = err && err.code === "FOODUP_REDIS_UNAVAILABLE";
+  console.error(
+    `[requestError] ${req.method} ${req.originalUrl}:`,
+    err && err.stack ? err.stack : err
+  );
+
+  if (res.headersSent) return next(err);
+
+  if (isRedisOutage) {
+    return res.status(503).json({
+      success: false,
+      code: "storage_temporarily_unavailable",
+      message: "FoodUp storage is temporarily unavailable. Please retry shortly.",
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    code: "internal_error",
+    message: "Internal server error",
+  });
 });

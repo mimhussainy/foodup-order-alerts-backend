@@ -46,13 +46,17 @@ function startWebsiteMonitor(redisCommand, k, alertService) {
     try {
       const restaurantsResult = await redisCommand('SMEMBERS', 'restaurants');
       const restaurants = restaurantsResult.result || [];
+      const profilesData = restaurants.length > 0
+        ? await redisCommand('MGET', ...restaurants.map(code => k(code, 'restaurant_profile')))
+        : { result: [] };
 
-      for (const code of restaurants) {
+      for (let index = 0; index < restaurants.length; index++) {
+        const code = restaurants[index];
         try {
-          const profileData = await redisCommand('GET', k(code, 'restaurant_profile'));
-          if (!profileData.result) continue;
+          const profileRaw = (profilesData.result || [])[index];
+          if (!profileRaw) continue;
 
-          const profile = JSON.parse(profileData.result);
+          const profile = JSON.parse(profileRaw);
           if (!profile.website) continue;
 
           const url = profile.website.startsWith('http')
@@ -74,8 +78,10 @@ function startWebsiteMonitor(redisCommand, k, alertService) {
     }
   }
 
-  runChecks();
-  const interval = setInterval(runChecks, CHECK_INTERVAL_MS);
+  runChecks().catch(err => console.log('[websiteMonitor] initial uncaught error:', err.message));
+  const interval = setInterval(() => {
+    runChecks().catch(err => console.log('[websiteMonitor] interval uncaught error:', err.message));
+  }, CHECK_INTERVAL_MS);
   interval.unref?.();
 }
 

@@ -1,5 +1,6 @@
 const express = require('express');
-const router = express.Router();
+const { installAsyncRouteSafety } = require('./asyncRouteSafety');
+const router = installAsyncRouteSafety(express.Router());
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(

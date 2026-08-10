@@ -19,9 +19,20 @@ async function sendEmail(to, subject, html) {
 }
 
 function createAlertService(redisCommand, k) {
+  let settingsCache = null;
+  let settingsCacheAt = 0;
+  const SETTINGS_CACHE_MS = 60 * 1000;
+
   async function getAlertSettings() {
+    if (settingsCache && Date.now() - settingsCacheAt < SETTINGS_CACHE_MS) {
+      return settingsCache;
+    }
     const data = await redisCommand('GET', 'alert_settings');
-    return data.result ? JSON.parse(data.result) : { alert_email: '', offline_threshold_minutes: 30 };
+    settingsCache = data.result
+      ? JSON.parse(data.result)
+      : { alert_email: '', offline_threshold_minutes: 30 };
+    settingsCacheAt = Date.now();
+    return settingsCache;
   }
 
   async function handleWebsiteAlert(code, healthResult, restaurantName) {
@@ -56,8 +67,7 @@ function createAlertService(redisCommand, k) {
               </div>`
             );
             // Only mark as sent if email actually succeeded
-            await redisCommand('SET', alertKey, 'down');
-            await redisCommand('EXPIRE', alertKey, 3600);
+            await redisCommand('SET', alertKey, 'down', 'EX', 3600);
             console.log(`[alertService] website ${code}: alert key set to 'down'`);
           } catch (emailErr) {
             console.log(`[alertService] website ${code}: email failed (${emailErr.message}) — key NOT set, will retry next check`);
@@ -136,8 +146,7 @@ function createAlertService(redisCommand, k) {
           </div>`
         );
         // Only mark as sent if email actually succeeded
-        await redisCommand('SET', alertKey, 'offline');
-        await redisCommand('EXPIRE', alertKey, 3600);
+        await redisCommand('SET', alertKey, 'offline', 'EX', 3600);
         console.log(`[alertService] app ${code}: alert key set to 'offline'`);
       } catch (emailErr) {
         console.log(`[alertService] app ${code}: email failed (${emailErr.message}) — key NOT set, will retry next check`);
