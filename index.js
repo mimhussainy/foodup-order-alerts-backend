@@ -1029,6 +1029,129 @@ app.get("/order/:code/:id", async (req, res) => {
 });
 
 // -------------------------------------------------------
+// CUSTOMER APP — CONSOLIDATED ORDER TRACKING
+// -------------------------------------------------------
+
+app.get("/customer-tracking/:code/:id", async (req, res) => {
+  const expectedSecret = String(
+    process.env.FOODUP_CUSTOMER_TRACKING_SECRET || ""
+  ).trim();
+  const suppliedSecret = String(
+    req.headers["x-foodup-tracking-secret"] || ""
+  ).trim();
+
+  if (!expectedSecret) {
+    return res.status(503).json({
+      success: false,
+      code: "tracking_not_configured",
+      message: "Customer tracking is not configured.",
+    });
+  }
+
+  if (!suppliedSecret || suppliedSecret !== expectedSecret) {
+    return res.status(401).json({
+      success: false,
+      code: "unauthorized",
+      message: "Unauthorized.",
+    });
+  }
+
+  const code = req.params.code.toLowerCase().trim();
+  const orderId = String(req.params.id || "").trim();
+
+  if (!code || !orderId) {
+    return res.status(400).json({
+      success: false,
+      code: "invalid_tracking_identity",
+      message: "Restaurant code and order ID are required.",
+    });
+  }
+
+  try {
+    // Two Redis commands total: one order-list read and one batched read for
+    // acceptance/courier state. This replaces the customer app's old
+    // accepted-time + order + all-claims polling fan-out.
+    const [ordersData, stateData] = await Promise.all([
+      redisCommand("LRANGE", k(code, "orders"), 0, 99),
+      redisCommand(
+        "MGET",
+        k(code, `accepted_time:${orderId}`),
+        k(code, `claimed:${orderId}`),
+        k(code, `delivered:${orderId}`)
+      ),
+    ]);
+
+    const orders = (ordersData.result || [])
+      .map(raw => {
+        try { return JSON.parse(raw); } catch (e) { return null; }
+      })
+      .filter(Boolean);
+
+    const order = orders.find(
+      item => String(item.order_id) === orderId
+    );
+
+    const [acceptedRaw, claimedRaw, deliveredRaw] = stateData.result || [];
+
+    let accepted = {};
+    if (acceptedRaw) {
+      try {
+        accepted = JSON.parse(acceptedRaw);
+      } catch (e) {
+        accepted = { accepted_time: String(acceptedRaw) };
+      }
+    }
+
+    let claim = null;
+    if (deliveredRaw) {
+      try {
+        const delivered = JSON.parse(deliveredRaw);
+        claim = {
+          status: "delivered",
+          deliveredAt: delivered.delivered_at || "",
+        };
+      } catch (e) {
+        claim = { status: "delivered" };
+      }
+    } else if (claimedRaw) {
+      try {
+        const claimed = JSON.parse(claimedRaw);
+        claim = {
+          status: claimed.delivery_status || "in_bag",
+        };
+      } catch (e) {}
+    }
+
+    return res.json({
+      success: true,
+      orderId,
+      orderStatus: order?.status || "",
+      acceptedTime: accepted.accepted_time || "",
+      acceptedAt: accepted.accepted_at || "",
+      claimStatus: claim?.status || "",
+      deliveredAt: claim?.deliveredAt || "",
+    });
+  } catch (error) {
+    const unavailable = error?.code === "FOODUP_REDIS_UNAVAILABLE";
+
+    console.log(
+      `Customer tracking failed for ${code}/${orderId}:`,
+      error.message,
+    );
+
+    return res.status(unavailable ? 503 : 500).json({
+      success: false,
+      code: unavailable
+        ? "redis_unavailable"
+        : "tracking_failed",
+      message: unavailable
+        ? "Order tracking is temporarily unavailable."
+        : "Order tracking could not be loaded.",
+    });
+  }
+});
+
+// -------------------------------------------------------
 // ONE-TIME DEDUP CLEANUP
 // -------------------------------------------------------
 
