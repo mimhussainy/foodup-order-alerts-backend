@@ -168,11 +168,18 @@ async function upsertOrderInList(code, order) {
 
       // Merge: prefer incoming fields but preserve received_at if already set
       const existing = orders.find(o => String(o.order_id) === String(order.order_id));
-      const merged = {
+      const mergedCandidate = {
         ...(existing || {}),
         ...order,
         received_at: existing?.received_at || order.received_at || new Date().toISOString(),
       };
+      const merged = foodupNormalizeOrderFulfillment(mergedCandidate);
+      if (
+        merged.fulfillment_type === "unknown"
+        && ["pickup", "delivery"].includes(foodupNormalizeText(existing?.fulfillment_type))
+      ) {
+        merged.fulfillment_type = foodupNormalizeText(existing.fulfillment_type);
+      }
 
       // Put merged order at top, keep max 100 unique
       const updated = [merged, ...filtered].slice(0, 100);
@@ -225,6 +232,184 @@ async function getOrderAcceptanceState(code, orderId) {
     return { accepted: false, rejected: false, message: "Order is waiting for restaurant confirmation" };
   }
   return { accepted: true, rejected: false, message: "Order accepted" };
+}
+
+
+function foodupNormalizeText(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function foodupCourierFulfillmentEnforcementEnabled() {
+  const mode = foodupNormalizeText(
+    process.env.FOODUP_COURIER_FULFILLMENT_ENFORCEMENT || "log_only"
+  );
+  return ["enforce", "enabled", "on", "true", "1"].includes(mode);
+}
+
+function foodupLogCourierEligibilityDecision(context, code, orderId, eligibility) {
+  if (!eligibility || eligibility.allowed) return;
+  const action = foodupCourierFulfillmentEnforcementEnabled()
+    ? "blocked"
+    : "would_block";
+  console.warn(
+    `[fulfillment] ${action} ${context} for ${code}/${orderId}: ${eligibility.fulfillment_type} (${eligibility.code})`
+  );
+}
+
+function foodupMetaValue(order, key) {
+  if (!order || typeof order !== "object") return "";
+
+  const direct = order[key];
+  if (direct !== undefined && direct !== null && String(direct).trim() !== "") {
+    return direct;
+  }
+
+  const fulfillmentMeta = order.fulfillment_meta;
+  if (
+    fulfillmentMeta
+    && typeof fulfillmentMeta === "object"
+    && fulfillmentMeta[key] !== undefined
+    && fulfillmentMeta[key] !== null
+    && String(fulfillmentMeta[key]).trim() !== ""
+  ) {
+    return fulfillmentMeta[key];
+  }
+
+  const metaData = Array.isArray(order.meta_data) ? order.meta_data : [];
+  const match = metaData.find(item => item && item.key === key);
+  return match ? match.value : "";
+}
+
+function foodupDeriveFulfillmentType(order) {
+  const canonical = foodupNormalizeText(
+    foodupMetaValue(order, "_foodup_fulfillment_type")
+  );
+  if (canonical === "pickup" || canonical === "delivery") return canonical;
+
+  for (const key of [
+    "_orderable_location_service_type",
+    "orderable_service_type",
+    "_orderable_service_type",
+  ]) {
+    const value = foodupNormalizeText(foodupMetaValue(order, key));
+    if (value === "pickup" || value === "delivery") return value;
+  }
+
+  const stored = foodupNormalizeText(order?.fulfillment_type);
+  if (stored === "pickup" || stored === "delivery") return stored;
+
+  const methodIds = [
+    order?.shipping?.method_id,
+    order?.shipping?.methodId,
+    order?.shipping_method_id,
+  ].map(foodupNormalizeText).filter(Boolean);
+
+  if (methodIds.some(value => ["local_pickup", "orderable_pickup", "pickup"].includes(value))) {
+    return "pickup";
+  }
+  if (methodIds.some(value => ["foodup_delivery", "orderable_delivery", "delivery", "flat_rate"].includes(value))) {
+    return "delivery";
+  }
+
+  const labels = [
+    order?.shipping?.method,
+    order?.shipping?.label,
+    order?.shipping_method,
+  ].map(foodupNormalizeText).filter(Boolean);
+
+  const pickupLabels = new Set([
+    "abholung",
+    "abholen",
+    "pickup",
+    "pick up",
+    "pick-up",
+    "local pickup",
+    "local_pickup",
+  ]);
+  const deliveryLabels = new Set([
+    "lieferung",
+    "delivery",
+    "deliver",
+    "foodup delivery",
+    "foodup_delivery",
+  ]);
+
+  if (labels.some(value => pickupLabels.has(value))) return "pickup";
+  if (labels.some(value => deliveryLabels.has(value))) return "delivery";
+
+  return "unknown";
+}
+
+function foodupNormalizeOrderFulfillment(order) {
+  const normalized = { ...(order || {}) };
+  normalized.fulfillment_type = foodupDeriveFulfillmentType(normalized);
+  if (normalized.fulfillment_type === "unknown") {
+    console.warn(
+      `[fulfillment] Could not classify order ${normalized.order_id || normalized.id || "unknown"}`,
+      {
+        shipping_method: normalized.shipping_method || normalized.shipping?.method || "",
+        shipping_method_id: normalized.shipping_method_id || normalized.shipping?.method_id || "",
+      }
+    );
+  }
+  return normalized;
+}
+
+async function foodupGetStoredOrderById(code, orderId) {
+  const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+  const orders = (listData.result || []).map(raw => {
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  }).filter(Boolean);
+
+  const found = orders.find(order => String(order.order_id) === String(orderId));
+  if (found) return foodupNormalizeOrderFulfillment(found);
+
+  const lastData = await redisCommand("GET", k(code, "last_order"));
+  if (lastData.result) {
+    try {
+      const lastOrder = JSON.parse(lastData.result);
+      if (String(lastOrder.order_id) === String(orderId)) {
+        return foodupNormalizeOrderFulfillment(lastOrder);
+      }
+    } catch (e) {}
+  }
+
+  return null;
+}
+
+async function foodupCheckCourierEligibleOrder(code, orderId) {
+  const order = await foodupGetStoredOrderById(code, orderId);
+  if (!order) {
+    return {
+      allowed: false,
+      fulfillment_type: "unknown",
+      code: "order_not_found",
+      message: "Order not found",
+    };
+  }
+
+  const fulfillmentType = foodupDeriveFulfillmentType(order);
+  if (fulfillmentType === "delivery") {
+    return { allowed: true, fulfillment_type: fulfillmentType, order };
+  }
+
+  if (fulfillmentType === "pickup") {
+    return {
+      allowed: false,
+      fulfillment_type: fulfillmentType,
+      code: "pickup_order",
+      message: "This is a pickup order and cannot be assigned to a courier.",
+      order,
+    };
+  }
+
+  return {
+    allowed: false,
+    fulfillment_type: "unknown",
+    code: "fulfillment_unknown",
+    message: "Order fulfillment type could not be verified. Courier assignment was blocked.",
+    order,
+  };
 }
 
 // -------------------------------------------------------
@@ -360,7 +545,7 @@ app.post("/unregister-token", async (req, res) => {
 });
 
 app.post("/new-order", async (req, res) => {
-  const order = req.body;
+  const order = foodupNormalizeOrderFulfillment(req.body);
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
@@ -434,7 +619,9 @@ await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
       items: itemsString,
       payment_method: String(order.payment_method || ''),
       note: String(order.note || ''),
+      fulfillment_type: String(order.fulfillment_type || 'unknown'),
       shipping_method: String(order.shipping && order.shipping.method ? order.shipping.method : ''),
+      shipping_method_id: String(order.shipping && order.shipping.method_id ? order.shipping.method_id : ''),
       shipping_address: String(order.shipping && order.shipping.address ? order.shipping.address : ''),
       event_type: String(order.event_type || 'new_order'),
       orderable_order_date: String(order.orderable_order_date || ''),
@@ -470,7 +657,7 @@ res.json({ success: true, result });
 });
 
 app.post("/status-update", async (req, res) => {
-  const order = req.body;
+  const order = foodupNormalizeOrderFulfillment(req.body);
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
 
@@ -515,7 +702,9 @@ console.log("Full order data:", JSON.stringify(order));
       items: itemsString,
       payment_method: String(order.payment_method || ''),
       note: String(order.note || ''),
+      fulfillment_type: String(order.fulfillment_type || 'unknown'),
       shipping_method: String(order.shipping && order.shipping.method ? order.shipping.method : ''),
+      shipping_method_id: String(order.shipping && order.shipping.method_id ? order.shipping.method_id : ''),
       shipping_address: String(order.shipping && order.shipping.address ? order.shipping.address : ''),
       event_type: 'status_update',
     },
@@ -943,6 +1132,19 @@ app.post("/claim-order", async (req, res) => {
     });
   }
 
+  const courierEligibility = await foodupCheckCourierEligibleOrder(code, order_id);
+  foodupLogCourierEligibilityDecision("claim-order", code, order_id, courierEligibility);
+  if (!courierEligibility.allowed && foodupCourierFulfillmentEnforcementEnabled()) {
+    return res.status(409).json({
+      success: false,
+      code: courierEligibility.code,
+      pickup_order: courierEligibility.fulfillment_type === "pickup",
+      fulfillment_unknown: courierEligibility.fulfillment_type === "unknown",
+      fulfillment_type: courierEligibility.fulfillment_type,
+      message: courierEligibility.message,
+    });
+  }
+
   const claimKey = k(code, `claimed:${order_id}`);
   const now = new Date().toISOString();
   const firstClaim = {
@@ -1012,15 +1214,15 @@ app.get("/order/:code/:id", async (req, res) => {
         const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
         const orders = (listData.result || []).map((o) => JSON.parse(o));
         const found = orders.find((o) => String(o.order_id) === String(orderId));
-        if (found) return res.json({ success: true, order: found });
-        return res.json({ success: true, order });
+        if (found) return res.json({ success: true, order: foodupNormalizeOrderFulfillment(found) });
+        return res.json({ success: true, order: foodupNormalizeOrderFulfillment(order) });
       }
     }
     const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
     const orders = (listData.result || []).map((o) => JSON.parse(o));
     const found = orders.find((o) => String(o.order_id) === String(orderId));
     if (found) {
-      return res.json({ success: true, order: found });
+      return res.json({ success: true, order: foodupNormalizeOrderFulfillment(found) });
     }
     res.json({ success: false, message: "Order not found" });
   } catch(e) {
@@ -1090,6 +1292,7 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
     const order = orders.find(
       item => String(item.order_id) === orderId
     );
+    const fulfillmentType = foodupDeriveFulfillmentType(order || {});
 
     const [acceptedRaw, claimedRaw, deliveredRaw] = stateData.result || [];
 
@@ -1103,7 +1306,7 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
     }
 
     let claim = null;
-    if (deliveredRaw) {
+    if (fulfillmentType === "delivery" && deliveredRaw) {
       try {
         const delivered = JSON.parse(deliveredRaw);
         claim = {
@@ -1113,7 +1316,7 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
       } catch (e) {
         claim = { status: "delivered" };
       }
-    } else if (claimedRaw) {
+    } else if (fulfillmentType === "delivery" && claimedRaw) {
       try {
         const claimed = JSON.parse(claimedRaw);
         claim = {
@@ -1126,6 +1329,7 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
       success: true,
       orderId,
       orderStatus: order?.status || "",
+      fulfillmentType,
       acceptedTime: accepted.accepted_time || "",
       acceptedAt: accepted.accepted_at || "",
       claimStatus: claim?.status || "",
@@ -1573,6 +1777,12 @@ app.post("/wc-webhook", async (req, res) => {
     const metaData = data.meta_data || [];
     const orderableDateMeta = metaData.find(m => m.key === 'orderable_order_date');
     const orderableTimeMeta = metaData.find(m => m.key === 'orderable_order_time');
+    const fulfillmentMeta = {
+      _foodup_fulfillment_type: (metaData.find(m => m.key === '_foodup_fulfillment_type') || {}).value || '',
+      _orderable_location_service_type: (metaData.find(m => m.key === '_orderable_location_service_type') || {}).value || '',
+      orderable_service_type: (metaData.find(m => m.key === 'orderable_service_type') || {}).value || '',
+      _orderable_service_type: (metaData.find(m => m.key === '_orderable_service_type') || {}).value || '',
+    };
     const orderableDate = data.orderable_order_date || (orderableDateMeta ? orderableDateMeta.value : '');
     const orderableTime = data.orderable_order_time || (orderableTimeMeta ? orderableTimeMeta.value : '');
 
@@ -1603,6 +1813,7 @@ app.post("/wc-webhook", async (req, res) => {
     // Get shipping method
     const shippingLines = data.shipping_lines || [];
     const shippingMethod = shippingLines.length > 0 ? shippingLines[0].method_title : '';
+    const shippingMethodId = shippingLines.length > 0 ? shippingLines[0].method_id : '';
 
     // Get payment method
     const paymentMethod = data.payment_method_title || '';
@@ -1611,7 +1822,7 @@ app.post("/wc-webhook", async (req, res) => {
     // We'll use the billing email domain or a fixed code
     const code = 'eatime'; // TODO: make dynamic if multiple restaurants
 
-    const order = {
+    const order = foodupNormalizeOrderFulfillment({
       restaurant_code: code,
       order_id: orderId,
       customer_name: `${billing.first_name || ''} ${billing.last_name || ''}`.trim(),
@@ -1627,12 +1838,15 @@ app.post("/wc-webhook", async (req, res) => {
       date_created: data.date_created || new Date().toISOString(),
       orderable_order_date: orderableDate,
       orderable_order_time: orderableTime,
+      fulfillment_meta: fulfillmentMeta,
+      meta_data: metaData,
       shipping: {
         method: shippingMethod,
+        method_id: shippingMethodId,
         address: shippingAddress,
       },
       sound: true,
-    };
+    });
 
     console.log("WC Webhook order:", orderId, "Scheduled:", orderableDate, orderableTime);
 
@@ -1660,7 +1874,9 @@ app.post("/wc-webhook", async (req, res) => {
         items: itemsString,
         payment_method: paymentMethod,
         note: order.note,
+        fulfillment_type: order.fulfillment_type,
         shipping_method: shippingMethod,
+        shipping_method_id: shippingMethodId,
         shipping_address: shippingAddress,
         event_type: 'new_order',
         orderable_order_date: orderableDate,
