@@ -468,35 +468,32 @@ setInterval(() => {
 // -------------------------------------------------------
 // RESTAURANT REGISTRATION
 // -------------------------------------------------------
-
 app.post("/register-restaurant", async (req, res) => {
-  const { restaurant_code, pin } = req.body;
-  if (!restaurant_code || !pin) {
-    return res.json({ success: false, message: "Restaurant code and PIN required" });
-  }
-  const code = restaurant_code.toLowerCase().trim();
-  const existing = await redisCommand("GET", k(code, "pin"));
-  if (existing.result) {
-    return res.json({ success: true, exists: true, message: "Restaurant already registered" });
-  }
-  await redisCommand("SET", k(code, "pin"), pin);
-  await redisCommand("SADD", "restaurants", code);
-  console.log("New restaurant registered:", code);
-  res.json({ success: true, exists: false, message: "Restaurant registered successfully" });
-});
-
-app.post("/verify-restaurant", async (req, res) => {
   const { restaurant_code } = req.body;
+  let { pin } = req.body;
   if (!restaurant_code) {
     return res.json({ success: false, message: "Restaurant code required" });
   }
   const code = restaurant_code.toLowerCase().trim();
   const existing = await redisCommand("GET", k(code, "pin"));
   if (existing.result) {
-    res.json({ success: true, message: "Restaurant found" });
-  } else {
-    res.json({ success: false, message: "Restaurant not found" });
+    return res.json({ success: true, exists: true, message: "Restaurant already registered" });
   }
+
+  // Default Android/owner PIN if none provided
+  if (!pin) pin = "123445";
+
+  await redisCommand("SET", k(code, "pin"), pin);
+
+  // Default iOS PIN — only set if not already present
+  const existingIosPin = await redisCommand("GET", k(code, "ios_pin"));
+  if (!existingIosPin.result) {
+    await redisCommand("SET", k(code, "ios_pin"), "1234");
+  }
+
+  await redisCommand("SADD", "restaurants", code);
+  console.log("New restaurant registered:", code);
+  res.json({ success: true, exists: false, message: "Restaurant registered successfully" });
 });
 
 // -------------------------------------------------------
