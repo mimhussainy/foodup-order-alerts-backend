@@ -1306,7 +1306,7 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
     }
 
     let claim = null;
-    if (fulfillmentType === "delivery" && deliveredRaw) {
+    if (deliveredRaw) {
       try {
         const delivered = JSON.parse(deliveredRaw);
         claim = {
