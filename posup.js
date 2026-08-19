@@ -880,6 +880,287 @@ router.post('/reimport/:code', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────
+// MANUAL ADDON CRUD
+// Only restaurants WITHOUT WordPress can use these routes.
+// The data is stored in the same addon_groups / addon_options / assignment
+// tables used by imported WordPress/Orderable addons, so the POS app does
+// not need a separate addon format.
+// ─────────────────────────────────────────
+function posupManualExternalId(offset = 0) {
+  // Manual WooCommerce-style IDs are negative so they can never collide
+  // with normal positive WooCommerce / Orderable IDs.
+  return -((Date.now() + Number(offset || 0)) % 2000000000);
+}
+
+async function getManualRestaurantByCode(code) {
+  const { data: restaurant, error } = await supabase
+    .from('restaurants')
+    .select('id, code, name, wp_site_url')
+    .eq('code', code)
+    .single();
+
+  if (error || !restaurant) {
+    const err = new Error('Restaurant not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (restaurant.wp_site_url) {
+    const err = new Error('This restaurant is linked to WordPress. Manage its addons in WordPress/Orderable and import them into POSUP.');
+    err.status = 409;
+    throw err;
+  }
+
+  return restaurant;
+}
+
+async function getManualAddonGroup(groupId) {
+  const { data: group, error: groupError } = await supabase
+    .from('addon_groups')
+    .select('id, restaurant_id, name, wc_id, active')
+    .eq('id', groupId)
+    .single();
+
+  if (groupError || !group) {
+    const err = new Error('Addon group not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const { data: restaurant, error: restaurantError } = await supabase
+    .from('restaurants')
+    .select('id, code, name, wp_site_url')
+    .eq('id', group.restaurant_id)
+    .single();
+
+  if (restaurantError || !restaurant) {
+    const err = new Error('Restaurant not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (restaurant.wp_site_url) {
+    const err = new Error('This restaurant is linked to WordPress. Manage its addons in WordPress/Orderable.');
+    err.status = 409;
+    throw err;
+  }
+
+  return { group, restaurant };
+}
+
+function normalizeManualAddonOptions(options) {
+  if (!Array.isArray(options)) return [];
+
+  return options
+    .map((option, index) => {
+      const name = String(option?.name || '').trim();
+      if (!name) return null;
+
+      const numericPrice = Number(option?.price);
+      const type = option?.type === 'radio' ? 'radio' : 'checkbox';
+
+      return {
+        name,
+        price: Number.isFinite(numericPrice) ? numericPrice : 0,
+        type,
+        required: option?.required === true,
+        sort_order: index,
+        active: option?.active !== false,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function validManualAssignmentIds(restaurantId, categoryIds, productIds) {
+  const cleanCategoryIds = Array.from(new Set(
+    (Array.isArray(categoryIds) ? categoryIds : []).map(String).filter(Boolean)
+  ));
+  const cleanProductIds = Array.from(new Set(
+    (Array.isArray(productIds) ? productIds : []).map(String).filter(Boolean)
+  ));
+
+  let validCategoryIds = [];
+  let validProductIds = [];
+
+  if (cleanCategoryIds.length > 0) {
+    const { data, error } = await supabase
+      .from('categories')
+      .select('id')
+      .eq('restaurant_id', restaurantId)
+      .in('id', cleanCategoryIds);
+    if (error) throw new Error(error.message);
+    validCategoryIds = (data || []).map(row => row.id);
+  }
+
+  if (cleanProductIds.length > 0) {
+    const { data, error } = await supabase
+      .from('products')
+      .select('id')
+      .eq('restaurant_id', restaurantId)
+      .in('id', cleanProductIds);
+    if (error) throw new Error(error.message);
+    validProductIds = (data || []).map(row => row.id);
+  }
+
+  return { validCategoryIds, validProductIds };
+}
+
+async function insertManualAddonChildren(groupId, restaurantId, payload) {
+  const options = normalizeManualAddonOptions(payload.options);
+  if (options.length === 0) {
+    const err = new Error('Add at least one addon option');
+    err.status = 400;
+    throw err;
+  }
+
+  const optionRows = options.map((option, index) => ({
+    addon_group_id: groupId,
+    wc_option_id: posupManualExternalId(index + 1),
+    name: option.name,
+    price: option.price,
+    type: option.type,
+    required: option.required,
+    sort_order: option.sort_order,
+    active: option.active,
+  }));
+
+  const { error: optionError } = await supabase
+    .from('addon_options')
+    .insert(optionRows);
+  if (optionError) throw new Error(optionError.message);
+
+  const { validCategoryIds, validProductIds } = await validManualAssignmentIds(
+    restaurantId,
+    payload.assigned_category_ids,
+    payload.assigned_product_ids
+  );
+
+  if (validCategoryIds.length > 0) {
+    const { error } = await supabase
+      .from('addon_category_assignments')
+      .insert(validCategoryIds.map(categoryId => ({
+        addon_group_id: groupId,
+        category_id: categoryId,
+      })));
+    if (error) throw new Error(error.message);
+  }
+
+  if (validProductIds.length > 0) {
+    const { error } = await supabase
+      .from('addon_product_assignments')
+      .insert(validProductIds.map(productId => ({
+        addon_group_id: groupId,
+        product_id: productId,
+      })));
+    if (error) throw new Error(error.message);
+  }
+}
+
+// POST /posup/addon-group — create a manual addon group
+router.post('/addon-group', async (req, res) => {
+  const restaurantCode = String(req.body.restaurant_code || '').trim();
+  const name = String(req.body.name || '').trim();
+
+  if (!restaurantCode || !name) {
+    return res.status(400).json({ success: false, error: 'restaurant_code and name are required' });
+  }
+
+  let insertedGroup = null;
+
+  try {
+    const restaurant = await getManualRestaurantByCode(restaurantCode);
+
+    const { data, error } = await supabase
+      .from('addon_groups')
+      .insert({
+        restaurant_id: restaurant.id,
+        wc_id: posupManualExternalId(),
+        name,
+        active: req.body.active !== false,
+      })
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    insertedGroup = data;
+
+    await insertManualAddonChildren(insertedGroup.id, restaurant.id, req.body);
+
+    return res.json({ success: true, addon_group: insertedGroup });
+  } catch (err) {
+    if (insertedGroup?.id) {
+      await supabase.from('addon_options').delete().eq('addon_group_id', insertedGroup.id);
+      await supabase.from('addon_category_assignments').delete().eq('addon_group_id', insertedGroup.id);
+      await supabase.from('addon_product_assignments').delete().eq('addon_group_id', insertedGroup.id);
+      await supabase.from('addon_groups').delete().eq('id', insertedGroup.id);
+    }
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+// PATCH /posup/addon-group/:id — replace a manual addon group + its options/assignments
+router.patch('/addon-group/:id', async (req, res) => {
+  const { id } = req.params;
+  const name = String(req.body.name || '').trim();
+
+  if (!name) {
+    return res.status(400).json({ success: false, error: 'name is required' });
+  }
+
+  try {
+    const { group, restaurant } = await getManualAddonGroup(id);
+    const options = normalizeManualAddonOptions(req.body.options);
+    if (options.length === 0) {
+      return res.status(400).json({ success: false, error: 'Add at least one addon option' });
+    }
+
+    const { error: updateError } = await supabase
+      .from('addon_groups')
+      .update({
+        name,
+        active: req.body.active !== false,
+      })
+      .eq('id', group.id);
+
+    if (updateError) throw new Error(updateError.message);
+
+    // Replace child rows. The dashboard sends the complete current group.
+    await supabase.from('addon_options').delete().eq('addon_group_id', group.id);
+    await supabase.from('addon_category_assignments').delete().eq('addon_group_id', group.id);
+    await supabase.from('addon_product_assignments').delete().eq('addon_group_id', group.id);
+
+    await insertManualAddonChildren(group.id, restaurant.id, req.body);
+
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /posup/addon-group/:id — permanently remove a manual addon group
+router.delete('/addon-group/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const { group } = await getManualAddonGroup(id);
+
+    await supabase.from('addon_options').delete().eq('addon_group_id', group.id);
+    await supabase.from('addon_category_assignments').delete().eq('addon_group_id', group.id);
+    await supabase.from('addon_product_assignments').delete().eq('addon_group_id', group.id);
+
+    const { error } = await supabase
+      .from('addon_groups')
+      .delete()
+      .eq('id', group.id);
+
+    if (error) throw new Error(error.message);
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
 // GET /posup/restaurants — list all registered restaurants
 router.get('/restaurants', async (req, res) => {
   try {
