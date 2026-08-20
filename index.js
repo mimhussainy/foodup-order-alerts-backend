@@ -418,6 +418,8 @@ async function foodupCheckCourierEligibleOrder(code, orderId) {
 
 const rateLimitStore = {};
 const autoSettingsCache = {};
+const statsResponseCache = new Map();
+const STATS_CACHE_TTL_MS = 10 * 1000;
 
 function rateLimit(ip, action, maxAttempts = 5, windowMs = 15 * 60 * 1000) {
   const key = `${action}:${ip}`;
@@ -1481,6 +1483,304 @@ app.get("/claims/:code", async (req, res) => {
       ? { success: false, claims: {}, debug: { error: e.message } }
       : { success: true, claims: {} }
     );
+  }
+});
+
+function statsParseRequiredTimestamp(value) {
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function statsParseTotal(value) {
+  const total = parseFloat(value || '0');
+  return Number.isFinite(total) ? total : 0;
+}
+
+function statsIsCashPayment(paymentMethod) {
+  const method = String(paymentMethod || '').toLowerCase();
+  return method.includes('bar') || method.includes('cash');
+}
+
+function statsOrderTimestamp(order) {
+  const raw = order?.received_at || order?.date_created;
+  if (!raw) return null;
+  const timestamp = new Date(raw).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function statsSafeJsonParse(raw, fallback = null) {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw);
+  } catch(e) {
+    return fallback;
+  }
+}
+
+function statsBuildPeriod(orders, start, end, inclusiveEnd = true) {
+  const filtered = orders.filter(order => {
+    const timestamp = statsOrderTimestamp(order);
+    if (timestamp === null) return false;
+    const inRange = inclusiveEnd
+      ? timestamp >= start && timestamp <= end
+      : timestamp >= start && timestamp < end;
+    return inRange && order.status !== 'cancelled';
+  });
+
+  const totals = filtered.reduce((acc, order) => {
+    const total = statsParseTotal(order.total);
+    if (statsIsCashPayment(order.payment_method)) {
+      acc.cash += total;
+    } else {
+      acc.online += total;
+    }
+
+    if (order.shipping?.method === 'Abholung') {
+      acc.pickups += 1;
+    } else {
+      acc.deliveries += 1;
+    }
+
+    return acc;
+  }, {
+    cash: 0,
+    online: 0,
+    deliveries: 0,
+    pickups: 0,
+  });
+
+  return {
+    totalOrders: filtered.length,
+    cash: totals.cash,
+    online: totals.online,
+    total: totals.cash + totals.online,
+    deliveries: totals.deliveries,
+    pickups: totals.pickups,
+  };
+}
+
+function statsDeliveredDayTimestamp(value) {
+  let date = new Date(value);
+
+  if (isNaN(date.getTime())) {
+    const parts = String(value || '').match(/(\d+)\/(\d+)\/(\d+)/);
+    if (parts) {
+      date = new Date(`${parts[3]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`);
+    }
+  }
+
+  if (isNaN(date.getTime())) return null;
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function statsCompactOrder(order) {
+  return {
+    order_id: Number.isFinite(Number(order.order_id)) ? Number(order.order_id) : order.order_id,
+    total: String(order.total || ''),
+  };
+}
+
+function statsPruneCache(now = Date.now()) {
+  for (const [key, entry] of statsResponseCache.entries()) {
+    if (!entry.promise && entry.expiresAt <= now) {
+      statsResponseCache.delete(key);
+    }
+  }
+}
+
+async function buildStatsResponse(code, bounds) {
+  const [ordersResult, courierAccountsResult, activeClaimIdsResult] = await Promise.all([
+    redisCommand("LRANGE", k(code, "orders"), 0, 99),
+    redisCommand("SMEMBERS", k(code, "delivery_accounts")),
+    redisCommand("SMEMBERS", k(code, "active_claims")),
+  ]);
+
+  const orders = (ordersResult.result || [])
+    .map(raw => statsSafeJsonParse(raw))
+    .filter(Boolean);
+  const ordersById = new Map(orders.map(order => [String(order.order_id), order]));
+  const currency = orders.find(order => order.currency)?.currency || 'CHF';
+
+  const periods = {
+    today: statsBuildPeriod(orders, bounds.today_start, bounds.now),
+    week: statsBuildPeriod(orders, bounds.week_start, bounds.now),
+    month: statsBuildPeriod(orders, bounds.month_start, bounds.now),
+    year: statsBuildPeriod(orders, bounds.year_start, bounds.now),
+    previousYear: statsBuildPeriod(orders, bounds.previous_year_start, bounds.year_start, false),
+  };
+
+  const couriers = new Map();
+  const ensureCourier = (name) => {
+    if (!couriers.has(name)) {
+      couriers.set(name, {
+        name,
+        deliveredOrders: [],
+        openOrders: [],
+      });
+    }
+    return couriers.get(name);
+  };
+
+  const courierNames = courierAccountsResult.result || [];
+  if (courierNames.length > 0) {
+    const primaryKeys = courierNames.map(name => k(code, `courier_delivered:${name}`));
+    const primaryValues = await redisCommand("MGET", ...primaryKeys);
+    const missing = [];
+
+    courierNames.forEach((name, index) => {
+      if (!primaryValues.result?.[index]) {
+        missing.push({ name, index });
+      }
+    });
+
+    let fallbackByOriginalIndex = new Map();
+    if (missing.length > 0) {
+      const fallbackKeys = missing.map(({ name }) => {
+        const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+        return k(code, `courier_delivered:${capitalized}`);
+      });
+      const fallbackValues = await redisCommand("MGET", ...fallbackKeys);
+      missing.forEach((missingItem, fallbackIndex) => {
+        fallbackByOriginalIndex.set(missingItem.index, fallbackValues.result?.[fallbackIndex] || null);
+      });
+    }
+
+    courierNames.forEach((name, index) => {
+      const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+      const raw = primaryValues.result?.[index] || fallbackByOriginalIndex.get(index);
+      const deliveredOrders = statsSafeJsonParse(raw, []);
+      ensureCourier(displayName).deliveredOrders = Array.isArray(deliveredOrders) ? deliveredOrders : [];
+    });
+  }
+
+  const activeClaimIds = activeClaimIdsResult.result || [];
+  if (activeClaimIds.length > 0) {
+    const activeValues = await redisCommand(
+      "MGET",
+      ...activeClaimIds.map(orderId => k(code, `claimed:${orderId}`))
+    );
+
+    (activeValues.result || []).forEach((raw, index) => {
+      const claim = statsSafeJsonParse(raw);
+      if (!claim) return;
+
+      const status = claim.delivery_status || 'in_bag';
+      if (status === 'delivered') return;
+
+      const name = claim.delivery_name;
+      if (!name) return;
+
+      const orderId = String(claim.order_id || activeClaimIds[index]);
+      const order = ordersById.get(orderId);
+      if (!order) return;
+
+      ensureCourier(name).openOrders.push({
+        order_id: Number.isFinite(Number(orderId)) ? Number(orderId) : orderId,
+        total: String(order.total || ''),
+        currency: order.currency || 'CHF',
+        payment_method: order.payment_method || '',
+      });
+    });
+  }
+
+  const compactCouriers = Array.from(couriers.values()).map(courier => {
+    const todayDeliveredCashOrders = courier.deliveredOrders.filter(order => {
+      if (!statsIsCashPayment(order.payment_method)) return false;
+      const deliveredTimestamp = statsDeliveredDayTimestamp(order.delivered_at);
+      return deliveredTimestamp !== null
+        && deliveredTimestamp >= bounds.today_start
+        && deliveredTimestamp <= bounds.now;
+    });
+    const openCashOrders = courier.openOrders.filter(order => statsIsCashPayment(order.payment_method));
+    const todayCashTotal = todayDeliveredCashOrders.reduce((sum, order) => sum + statsParseTotal(order.total), 0);
+    const inProgressCashTotal = openCashOrders.reduce((sum, order) => sum + statsParseTotal(order.total), 0);
+
+    return {
+      name: courier.name,
+      currency: courier.deliveredOrders[0]?.currency || openCashOrders[0]?.currency || 'CHF',
+      todayCashTotal,
+      inProgressCashTotal,
+      totalOwed: todayCashTotal + inProgressCashTotal,
+      openOrderCount: courier.openOrders.length,
+      openCashOrders: openCashOrders.map(statsCompactOrder),
+      todayDeliveredCashOrders: todayDeliveredCashOrders.map(statsCompactOrder),
+    };
+  }).sort((a, b) => b.totalOwed - a.totalOwed);
+
+  return {
+    success: true,
+    currency,
+    periods,
+    couriers: compactCouriers,
+  };
+}
+
+app.get("/stats/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const requiredTimestamps = [
+    'now',
+    'today_start',
+    'week_start',
+    'month_start',
+    'year_start',
+    'previous_year_start',
+  ];
+  const bounds = {};
+
+  for (const name of requiredTimestamps) {
+    const timestamp = statsParseRequiredTimestamp(req.query[name]);
+    if (timestamp === null) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid or missing ${name}`,
+      });
+    }
+    bounds[name] = timestamp;
+  }
+
+  const cacheKey = JSON.stringify([
+    code,
+    bounds.now,
+    bounds.today_start,
+    bounds.week_start,
+    bounds.month_start,
+    bounds.year_start,
+    bounds.previous_year_start,
+  ]);
+
+  try {
+    const now = Date.now();
+    statsPruneCache(now);
+
+    const cached = statsResponseCache.get(cacheKey);
+    if (cached?.value && cached.expiresAt > now) {
+      return res.json(cached.value);
+    }
+    if (cached?.promise) {
+      const response = await cached.promise;
+      return res.json(response);
+    }
+
+    const promise = buildStatsResponse(code, bounds)
+      .then(response => {
+        statsResponseCache.set(cacheKey, {
+          value: response,
+          expiresAt: Date.now() + STATS_CACHE_TTL_MS,
+        });
+        return response;
+      })
+      .catch(error => {
+        statsResponseCache.delete(cacheKey);
+        throw error;
+      });
+
+    statsResponseCache.set(cacheKey, { promise });
+    const response = await promise;
+    res.json(response);
+  } catch(e) {
+    console.log("Stats error:", e.message);
+    res.status(500).json({ success: false, message: "Error fetching stats" });
   }
 });
 
