@@ -1695,6 +1695,12 @@ async function buildStatsResponse(code, bounds) {
     const openCashOrders = courier.openOrders.filter(order => statsIsCashPayment(order.payment_method));
     const todayCashTotal = todayDeliveredCashOrders.reduce((sum, order) => sum + statsParseTotal(order.total), 0);
     const inProgressCashTotal = openCashOrders.reduce((sum, order) => sum + statsParseTotal(order.total), 0);
+    const deliveredCashTotal = courier.deliveredOrders.reduce((sum, order) => {
+      return statsIsCashPayment(order.payment_method)
+        ? sum + statsParseTotal(order.total)
+        : sum;
+    }, 0);
+    const legacySortTotal = deliveredCashTotal + inProgressCashTotal;
 
     return {
       name: courier.name,
@@ -1702,11 +1708,12 @@ async function buildStatsResponse(code, bounds) {
       todayCashTotal,
       inProgressCashTotal,
       totalOwed: todayCashTotal + inProgressCashTotal,
+      legacySortTotal,
       openOrderCount: courier.openOrders.length,
       openCashOrders: openCashOrders.map(statsCompactOrder),
       todayDeliveredCashOrders: todayDeliveredCashOrders.map(statsCompactOrder),
     };
-  }).sort((a, b) => b.totalOwed - a.totalOwed);
+  }).sort((a, b) => b.legacySortTotal - a.legacySortTotal);
 
   return {
     success: true,
