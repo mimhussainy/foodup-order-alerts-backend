@@ -498,6 +498,20 @@ app.post("/register-restaurant", async (req, res) => {
   res.json({ success: true, exists: false, message: "Restaurant registered successfully" });
 });
 
+app.post("/verify-restaurant", async (req, res) => {
+  const { restaurant_code } = req.body;
+  if (!restaurant_code) {
+    return res.json({ success: false, message: "Restaurant code required" });
+  }
+  const code = restaurant_code.toLowerCase().trim();
+  const existing = await redisCommand("GET", k(code, "pin"));
+  if (existing.result) {
+    res.json({ success: true, message: "Restaurant found" });
+  } else {
+    res.json({ success: false, message: "Restaurant not found" });
+  }
+});
+
 // -------------------------------------------------------
 // PUSH NOTIFICATIONS
 // -------------------------------------------------------
