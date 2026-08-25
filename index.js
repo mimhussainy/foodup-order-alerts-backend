@@ -3359,13 +3359,6 @@ async function runAutoActions() {
               continue;
             }
 
-            // Mark as auto-actioned to prevent duplicate processing. Use SET ... EX
-            // so the value and TTL are written atomically in one Redis command.
-            await redisCommand("SET", k(code, `auto_actioned:${order.order_id}`), 'yes', "EX", 86400);
-            if (autoSettings.auto_action === 'accept') {
-              // Only accepted orders should get the auto_accepted pill marker.
-              await redisCommand("SET", k(code, `auto_accepted:${order.order_id}`), 'yes', "EX", 86400);
-            }
 
             console.log(`Auto ${autoSettings.auto_action} for restaurant ${code}, order ${order.order_id}`);
 
@@ -3384,27 +3377,73 @@ async function runAutoActions() {
               }
             }
 
-            if (autoSettings.auto_action === 'accept') {
-              // Save accepted time to Redis
-              await redisCommand("SET", k(code, `accepted_time:${order.order_id}`), JSON.stringify({
-                accepted_time: effectiveAcceptTime,
-                accepted_at: new Date().toISOString(),
-                status: 'accepted',
-              }), "EX", 86400);
 
-              // Call WordPress to update order status and send email
+            if (autoSettings.auto_action === 'accept') {
+              // WooCommerce must confirm Completed before FoodUp records the auto-accept.
               const resolvedBaseUrl = await getBaseUrl();
-              if (resolvedBaseUrl) {
-                fetch(`${resolvedBaseUrl}/wp-json/foodup/v1/order-accepted`, {
+
+              if (!resolvedBaseUrl) {
+                throw new Error(
+                  `WordPress base URL missing for ${code}`
+                );
+              }
+
+              const wpResponse = await fetch(
+                `${resolvedBaseUrl}/wp-json/foodup/v1/order-accepted`,
+                {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
                   body: JSON.stringify({
                     secret: 'foodup2026',
                     order_id: order.order_id,
                     accepted_time: effectiveAcceptTime,
                   }),
-                }).catch(e => console.log(`WP accept error for ${code}:`, e.message));
+                }
+              );
+
+              const wpResult = await wpResponse
+                .json()
+                .catch(() => ({}));
+
+              if (
+                !wpResponse.ok ||
+                wpResult?.success !== true
+              ) {
+                throw new Error(
+                  `WP auto-accept failed for ${code}, order ${order.order_id}: HTTP ${wpResponse.status}`
+                );
               }
+
+              // WordPress confirmed Completed. Now commit the FoodUp auto-action.
+              await redisCommand(
+                "SET",
+                k(code, `auto_actioned:${order.order_id}`),
+                'yes',
+                "EX",
+                86400
+              );
+
+              await redisCommand(
+                "SET",
+                k(code, `auto_accepted:${order.order_id}`),
+                'yes',
+                "EX",
+                86400
+              );
+
+              await redisCommand(
+                "SET",
+                k(code, `accepted_time:${order.order_id}`),
+                JSON.stringify({
+                  accepted_time: effectiveAcceptTime,
+                  accepted_at: new Date().toISOString(),
+                  status: 'accepted',
+                }),
+                "EX",
+                86400
+              );
 
               // Send push notification for print button
               const deviceTokens = await getTokens(code);
@@ -3445,20 +3484,53 @@ async function runAutoActions() {
                 }).catch(() => {});
               }
 
+
             } else if (autoSettings.auto_action === 'reject') {
-              // Call WordPress to reject order and send email
+              // WooCommerce must confirm Cancelled before FoodUp records the auto-reject.
               const resolvedBaseUrl = await getBaseUrl();
-              if (resolvedBaseUrl) {
-                fetch(`${resolvedBaseUrl}/wp-json/foodup/v1/order-rejected`, {
+
+              if (!resolvedBaseUrl) {
+                throw new Error(
+                  `WordPress base URL missing for ${code}`
+                );
+              }
+
+              const wpResponse = await fetch(
+                `${resolvedBaseUrl}/wp-json/foodup/v1/order-rejected`,
+                {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
                   body: JSON.stringify({
                     secret: 'foodup2026',
                     order_id: order.order_id,
                     reason: rejectReason,
                   }),
-                }).catch(e => console.log(`WP reject error for ${code}:`, e.message));
+                }
+              );
+
+              const wpResult = await wpResponse
+                .json()
+                .catch(() => ({}));
+
+              if (
+                !wpResponse.ok ||
+                wpResult?.success !== true
+              ) {
+                throw new Error(
+                  `WP auto-reject failed for ${code}, order ${order.order_id}: HTTP ${wpResponse.status}`
+                );
               }
+
+              // WordPress confirmed Cancelled. Now commit the FoodUp auto-action.
+              await redisCommand(
+                "SET",
+                k(code, `auto_actioned:${order.order_id}`),
+                'yes',
+                "EX",
+                86400
+              );
 
               // Send status update push notification
               const deviceTokens = await getTokens(code);
