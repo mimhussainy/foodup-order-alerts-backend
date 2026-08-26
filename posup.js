@@ -7,6 +7,19 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+const POSUP_PAYMENT_TERMINAL_MODES = new Set(['manual', 'goodcom', 'cash_only']);
+const POSUP_PAYMENT_STATUSES = new Set(['created', 'processing', 'succeeded', 'failed', 'cancelled', 'completed']);
+
+function normalizePaymentTerminalMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return POSUP_PAYMENT_TERMINAL_MODES.has(mode) ? mode : 'manual';
+}
+
+function isMissingPaymentSchemaError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42703' || error?.code === '42P01' || message.includes('payment_terminal_mode') || message.includes('goodcom_terminal_id') || message.includes('posup_payment_transactions');
+}
+
 // ─────────────────────────────────────────
 // POST /posup/import/:code
 // Triggers a full product import from WordPress into Supabase
@@ -1718,10 +1731,26 @@ router.get('/restaurants/:code/settings', async (req, res) => {
 
   if (error || !restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
 
+  let paymentTerminalMode = 'manual';
+  let goodcomTerminalId = '';
+  const paymentSettings = await supabase
+    .from('restaurants')
+    .select('payment_terminal_mode, goodcom_terminal_id')
+    .eq('code', code)
+    .single();
+
+  if (!paymentSettings.error && paymentSettings.data) {
+    paymentTerminalMode = normalizePaymentTerminalMode(paymentSettings.data.payment_terminal_mode);
+    goodcomTerminalId = paymentSettings.data.goodcom_terminal_id || '';
+  }
+
   res.json({
     success: true,
     restaurant: {
       ...restaurant,
+      payment_terminal_mode: paymentTerminalMode,
+      goodcom_terminal_id: goodcomTerminalId,
+      payment_schema_ready: !paymentSettings.error,
       wp_linked: !!restaurant.wp_site_url,
     },
   });
@@ -1735,7 +1764,7 @@ router.get('/restaurants/:code/settings', async (req, res) => {
 // ─────────────────────────────────────────
 router.patch('/restaurants/:code', async (req, res) => {
   const { code } = req.params;
-  const { name, pin, admin_pin, printer_ip, printer_port, printer_model, logo_url } = req.body;
+  const { name, pin, admin_pin, printer_ip, printer_port, printer_model, logo_url, payment_terminal_mode, goodcom_terminal_id } = req.body;
 
   const updates = {};
   if (name !== undefined) updates.name = name;
@@ -1745,6 +1774,14 @@ router.patch('/restaurants/:code', async (req, res) => {
   if (printer_port !== undefined) updates.printer_port = printer_port;
   if (printer_model !== undefined) updates.printer_model = printer_model;
   if (logo_url !== undefined) updates.logo_url = logo_url;
+  if (payment_terminal_mode !== undefined) {
+    const normalizedMode = String(payment_terminal_mode || '').trim().toLowerCase();
+    if (!POSUP_PAYMENT_TERMINAL_MODES.has(normalizedMode)) {
+      return res.status(400).json({ success: false, error: 'Invalid payment terminal mode' });
+    }
+    updates.payment_terminal_mode = normalizedMode;
+  }
+  if (goodcom_terminal_id !== undefined) updates.goodcom_terminal_id = String(goodcom_terminal_id || '').trim() || null;
 
   const { data, error } = await supabase
     .from('restaurants')
@@ -1753,10 +1790,142 @@ router.patch('/restaurants/:code', async (req, res) => {
     .select()
     .single();
 
-  if (error) return res.status(500).json({ success: false, error: error.message });
+  if (error) {
+    if (isMissingPaymentSchemaError(error)) {
+      return res.status(503).json({
+        success: false,
+        error: 'Payment terminal database migration is required before this setting can be saved.',
+        code: 'payment_terminal_migration_required',
+      });
+    }
+    return res.status(500).json({ success: false, error: error.message });
+  }
   if (!data) return res.status(404).json({ success: false, error: 'Restaurant not found' });
 
   res.json({ success: true, restaurant: data });
+});
+
+// Public POS-safe payment configuration. Does not expose PINs/admin secrets.
+router.get('/payment-config/:code', async (req, res) => {
+  const { code } = req.params;
+
+  const result = await supabase
+    .from('restaurants')
+    .select('payment_terminal_mode')
+    .eq('code', code)
+    .single();
+
+  if (result.error) {
+    if (isMissingPaymentSchemaError(result.error)) {
+      return res.json({ success: true, payment_terminal_mode: 'manual', payment_schema_ready: false });
+    }
+    return res.status(404).json({ success: false, error: 'Restaurant not found' });
+  }
+
+  res.json({
+    success: true,
+    payment_terminal_mode: normalizePaymentTerminalMode(result.data?.payment_terminal_mode),
+    payment_schema_ready: true,
+  });
+});
+
+// Create a server-side trace before a Goodcom card attempt.
+router.post('/payment-transactions/:code', async (req, res) => {
+  const { code } = req.params;
+  const amount = Number(req.body?.amount);
+  const currency = String(req.body?.currency || 'CHF').trim().toUpperCase();
+  const clientReference = String(req.body?.client_reference || '').trim();
+
+  if (!Number.isFinite(amount) || amount <= 0 || !clientReference) {
+    return res.status(400).json({ success: false, error: 'Valid amount and client_reference are required' });
+  }
+
+  try {
+    const restaurantResult = await supabase
+      .from('restaurants')
+      .select('id, payment_terminal_mode')
+      .eq('code', code)
+      .single();
+
+    if (restaurantResult.error || !restaurantResult.data) {
+      if (isMissingPaymentSchemaError(restaurantResult.error)) {
+        return res.status(503).json({ success: false, code: 'payment_terminal_migration_required', error: 'Payment terminal database migration is required.' });
+      }
+      return res.status(404).json({ success: false, error: 'Restaurant not found' });
+    }
+
+    const terminalMode = normalizePaymentTerminalMode(restaurantResult.data.payment_terminal_mode);
+    if (terminalMode !== 'goodcom') {
+      return res.status(409).json({ success: false, error: 'This restaurant is not configured for Goodcom integrated payments' });
+    }
+
+    const insertResult = await supabase
+      .from('posup_payment_transactions')
+      .insert({
+        restaurant_id: restaurantResult.data.id,
+        client_reference: clientReference,
+        amount: Math.round(amount * 100) / 100,
+        currency,
+        terminal_mode: 'goodcom',
+        status: 'created',
+      })
+      .select('id, client_reference, amount, currency, terminal_mode, status, created_at')
+      .single();
+
+    if (insertResult.error) {
+      if (isMissingPaymentSchemaError(insertResult.error)) {
+        return res.status(503).json({ success: false, code: 'payment_terminal_migration_required', error: 'Payment transaction table is not installed yet.' });
+      }
+      throw new Error(insertResult.error.message);
+    }
+
+    res.json({ success: true, transaction: insertResult.data });
+  } catch (err) {
+    console.error('POSUP payment transaction start error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Update a Goodcom transaction as the device returns processing/result state.
+router.patch('/payment-transactions/:code/:id', async (req, res) => {
+  const { code, id } = req.params;
+  const updates = { updated_at: new Date().toISOString() };
+
+  if (req.body?.status !== undefined) {
+    const status = String(req.body.status || '').trim().toLowerCase();
+    if (!POSUP_PAYMENT_STATUSES.has(status)) {
+      return res.status(400).json({ success: false, error: 'Invalid payment status' });
+    }
+    updates.status = status;
+  }
+  if (req.body?.terminal_reference !== undefined) updates.terminal_reference = String(req.body.terminal_reference || '').trim() || null;
+  if (req.body?.order_number !== undefined) updates.order_number = String(req.body.order_number || '').trim() || null;
+  if (req.body?.error_message !== undefined) updates.error_message = String(req.body.error_message || '').trim() || null;
+
+  try {
+    const restaurant = await supabase.from('restaurants').select('id').eq('code', code).single();
+    if (restaurant.error || !restaurant.data) return res.status(404).json({ success: false, error: 'Restaurant not found' });
+
+    const result = await supabase
+      .from('posup_payment_transactions')
+      .update(updates)
+      .eq('id', id)
+      .eq('restaurant_id', restaurant.data.id)
+      .select('id, client_reference, amount, currency, terminal_mode, status, terminal_reference, order_number, error_message, created_at, updated_at')
+      .single();
+
+    if (result.error) {
+      if (isMissingPaymentSchemaError(result.error)) {
+        return res.status(503).json({ success: false, code: 'payment_terminal_migration_required', error: 'Payment transaction table is not installed yet.' });
+      }
+      throw new Error(result.error.message);
+    }
+
+    res.json({ success: true, transaction: result.data });
+  } catch (err) {
+    console.error('POSUP payment transaction update error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 module.exports = router;
