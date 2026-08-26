@@ -620,6 +620,8 @@ router.get('/excel-template', (req, res) => {
 router.post('/import-excel/:code', async (req, res) => {
   const code = String(req.params.code || '').trim();
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const mode = req.body?.mode === 'overwrite' ? 'overwrite' : 'update';
+  const overwriteStart = mode === 'overwrite' && req.body?.overwrite_start === true;
 
   if (!code) return res.status(400).json({ success: false, error: 'Restaurant code is required' });
   if (!rows.length) return res.status(400).json({ success: false, error: 'No Excel rows supplied' });
@@ -634,6 +636,19 @@ router.post('/import-excel/:code', async (req, res) => {
 
     if (restaurantError || !restaurant) {
       return res.status(404).json({ success: false, error: 'Restaurant not found' });
+    }
+
+    // Overwrite mode is intentionally non-destructive: on the first chunk,
+    // deactivate the current menu. Rows present in the Excel sheet are then
+    // reactivated/updated as they are processed. This preserves historical
+    // records and lets the restaurant reverse the import if needed.
+    if (overwriteStart) {
+      const [productsOff, categoriesOff] = await Promise.all([
+        supabase.from('products').update({ active: false }).eq('restaurant_id', restaurant.id),
+        supabase.from('categories').update({ active: false }).eq('restaurant_id', restaurant.id)
+      ]);
+      if (productsOff.error) throw new Error(`Could not deactivate existing products: ${productsOff.error.message}`);
+      if (categoriesOff.error) throw new Error(`Could not deactivate existing categories: ${categoriesOff.error.message}`);
     }
 
     const [categoryResult, productResult] = await Promise.all([
@@ -697,6 +712,14 @@ router.post('/import-excel/:code', async (req, res) => {
           categoryId = newCategory.id;
           categoryMap.set(categoryKey, categoryId);
           categoriesCreated++;
+        } else {
+          // Any category explicitly present in the Excel sheet should be active.
+          // This is especially important after an overwrite reset.
+          const { error: categoryEnableError } = await supabase
+            .from('categories')
+            .update({ active: true })
+            .eq('id', categoryId);
+          if (categoryEnableError) throw new Error(`Could not enable category "${categoryName}": ${categoryEnableError.message}`);
         }
 
         const productKey = name.toLowerCase();
@@ -770,6 +793,8 @@ router.post('/import-excel/:code', async (req, res) => {
 
     res.json({
       success: true,
+      mode,
+      overwrite_started: overwriteStart,
       created,
       updated,
       categories_created: categoriesCreated,
