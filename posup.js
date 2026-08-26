@@ -641,30 +641,57 @@ let prepared=null;
 function showStatus(message,type){status.textContent=message;status.className='status '+type;}
 
 cameraBtn.addEventListener('click',()=>input.click());
-input.addEventListener('change',async()=>{
-  const file=input.files&&input.files[0]; if(!file)return;
-  try{
-    prepared=await prepareImage(file);
-    media.innerHTML='<img class="preview" src="'+prepared.dataUrl+'" alt="Preview">';
-    uploadBtn.style.display='block';
-    status.className='status';
-  }catch(e){showStatus(e.message||'Foto konnte nicht verarbeitet werden','err');}
-});
-
-uploadBtn.addEventListener('click',async()=>{
+async function savePreparedImage(){
   if(!prepared)return;
-  uploadBtn.disabled=true; cameraBtn.disabled=true; uploadBtn.textContent='Wird gespeichert…';
+  uploadBtn.disabled=true;
+  cameraBtn.disabled=true;
+  uploadBtn.style.display='none';
+  cameraBtn.textContent='Wird gespeichertâ€¦';
+  showStatus('Foto wird automatisch gespeichertâ€¦','ok');
   try{
     const response=await fetch('/posup/product-image-upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,image_base64:prepared.base64,mime_type:prepared.mime})});
     const data=await response.json();
     if(!response.ok||!data.success)throw new Error(data.error||'Upload fehlgeschlagen');
     if(data.image_url) media.innerHTML='<img class="preview" src="'+data.image_url+'?v='+Date.now()+'" alt="Saved product image">';
-    showStatus('✓ Bild gespeichert. Sie können diese Seite jetzt schließen.','ok');
-    uploadBtn.style.display='none'; cameraBtn.textContent='Neues Foto aufnehmen';
-  }catch(e){showStatus(e.message||'Upload fehlgeschlagen','err');uploadBtn.textContent='Nochmals versuchen';}
-  finally{uploadBtn.disabled=false;cameraBtn.disabled=false;}
+    showStatus('âœ“ Bild gespeichert','ok');
+    prepared=null;
+    input.value='';
+    cameraBtn.textContent='Gespeichert âœ“';
+
+    // Best effort on iPhone Camera/Safari. iOS may refuse window.close() for
+    // pages that were not opened by JavaScript, so also try browser history.
+    setTimeout(()=>{
+      try{window.close();}catch(_){}
+      setTimeout(()=>{
+        try{if(window.history.length>1)window.history.back();}catch(_){}
+      },120);
+    },700);
+  }catch(e){
+    showStatus(e.message||'Upload fehlgeschlagen','err');
+    uploadBtn.style.display='block';
+    uploadBtn.textContent='Nochmals versuchen';
+    cameraBtn.textContent='Kamera Ã¶ffnen';
+  }finally{
+    uploadBtn.disabled=false;
+    cameraBtn.disabled=false;
+  }
+}
+
+input.addEventListener('change',async()=>{
+  const file=input.files&&input.files[0]; if(!file)return;
+  try{
+    prepared=await prepareImage(file);
+    media.innerHTML='<img class="preview" src="'+prepared.dataUrl+'" alt="Preview">';
+    status.className='status';
+    await savePreparedImage();
+  }catch(e){
+    showStatus(e.message||'Foto konnte nicht verarbeitet werden','err');
+    cameraBtn.textContent='Kamera Ã¶ffnen';
+  }
 });
 
+// Retry only appears if the automatic upload failed.
+uploadBtn.addEventListener('click',savePreparedImage);
 function prepareImage(file){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
