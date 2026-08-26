@@ -618,7 +618,7 @@ await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
     to: token,
     sound: order.sound === false ? null : "default",
     title: `🛒 New Order #${order.order_id}`,
-    body: `${order.customer_name} - ${order.currency} ${order.total}`,
+    body: `${order.customer_name} • ${order.currency} ${order.total}`,
     channelId: order.sound === false ? 'foodup_default' : (tokenChannels[token] || 'foodup_default'),
     data: {
       restaurant_code: code,
@@ -701,8 +701,7 @@ console.log("Full order data:", JSON.stringify(order));
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: null,
-    title: `Order #${order.order_id} updated`,
-    body: `Status: ${order.status}`,
+    ...getOrderStatusNotification(order.order_id, order.status),
     data: {
       restaurant_code: code,
       order_id: String(order.order_id || ''),
@@ -732,6 +731,121 @@ console.log("Full order data:", JSON.stringify(order));
   res.json({ success: true });
 });
 
+function readablePushStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+
+  const labels = {
+    processing: 'Accepted',
+    accepted: 'Accepted',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+    canceled: 'Cancelled',
+    refunded: 'Refunded',
+    pending: 'Pending',
+    'pending-payment': 'Pending payment',
+    'on-hold': 'On hold',
+    failed: 'Failed',
+    in_bag: 'Picked up',
+    delivering: 'On the way',
+    delivered: 'Delivered',
+  };
+
+  if (labels[normalized]) return labels[normalized];
+
+  return String(status || 'Updated')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function getOrderStatusNotification(orderId, status) {
+  const normalized = String(status || '').trim().toLowerCase();
+
+  switch (normalized) {
+    case 'processing':
+    case 'accepted':
+      return {
+        title: `✅ Order #${orderId} accepted`,
+        body: 'The order has been accepted.',
+      };
+
+    case 'completed':
+      return {
+        title: `✅ Order #${orderId} completed`,
+        body: 'The order has been completed.',
+      };
+
+    case 'cancelled':
+    case 'canceled':
+      return {
+        title: `❌ Order #${orderId} cancelled`,
+        body: 'The order has been cancelled.',
+      };
+
+    case 'refunded':
+      return {
+        title: `↩️ Order #${orderId} refunded`,
+        body: 'The order has been refunded.',
+      };
+
+    case 'failed':
+      return {
+        title: `⚠️ Order #${orderId} failed`,
+        body: 'The order could not be completed.',
+      };
+
+    case 'on-hold':
+      return {
+        title: `⏸️ Order #${orderId} on hold`,
+        body: 'The order is currently on hold.',
+      };
+
+    case 'pending':
+    case 'pending-payment':
+      return {
+        title: `⏳ Order #${orderId} pending`,
+        body: 'The order is awaiting confirmation.',
+      };
+
+    default:
+      return {
+        title: `Order #${orderId} updated`,
+        body: `Order status: ${readablePushStatus(status)}`,
+      };
+  }
+}
+
+function getCourierStatusNotification(orderId, status) {
+  const normalized = String(status || '').trim().toLowerCase();
+
+  switch (normalized) {
+    case 'in_bag':
+      return {
+        title: `🛍️ Order #${orderId} picked up`,
+        body: 'The courier has collected the order.',
+      };
+
+    case 'delivering':
+      return {
+        title: `🚗 Order #${orderId} on the way`,
+        body: 'The courier is delivering the order.',
+      };
+
+    case 'delivered':
+      return {
+        title: `✅ Order #${orderId} delivered`,
+        body: 'The order has been delivered.',
+      };
+
+    default:
+      return {
+        title: `Order #${orderId} delivery updated`,
+        body: `Delivery status: ${readablePushStatus(status)}`,
+      };
+  }
+}
+
 async function sendCourierStatusUpdate(code, orderId, status) {
   try {
     const deviceTokens = await getTokens(code);
@@ -743,8 +857,7 @@ async function sendCourierStatusUpdate(code, orderId, status) {
     const messages = deviceTokens.map(token => ({
       to: token,
       sound: null,
-      title: `Order #${orderId} delivery updated`,
-      body: `Status: ${status}`,
+      ...getCourierStatusNotification(orderId, status),
       data: {
         restaurant_code: code,
         order_id: String(orderId || ''),
@@ -1910,6 +2023,52 @@ app.get("/restaurant-profile/:code", async (req, res) => {
 // ACCEPTED TIME
 // -------------------------------------------------------
 
+async function sendOrderAcceptedUpdate(code, orderId, acceptedData) {
+  try {
+    const deviceTokens = await getTokens(code);
+
+    if (!deviceTokens || deviceTokens.length === 0) {
+      return;
+    }
+
+    const acceptedTime = String(acceptedData?.accepted_time || "");
+    const acceptedAt = String(acceptedData?.accepted_at || "");
+
+    const messages = deviceTokens.map(token => ({
+      to: token,
+      sound: null,
+      title: `✅ Order #${orderId} accepted`,
+      body: acceptedTime
+        ? `Preparation time: ${acceptedTime}`
+        : "The order has been accepted.",
+      data: {
+        restaurant_code: code,
+        order_id: String(orderId || ""),
+        accepted_time: acceptedTime,
+        accepted_at: acceptedAt,
+        status: "accepted",
+        event_type: "order_accepted_update",
+      },
+    }));
+
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(messages),
+    });
+  } catch (error) {
+    console.log(
+      "Accepted-order push failed:",
+      code,
+      orderId,
+      error?.message || error
+    );
+  }
+}
+
 app.post("/accepted-time", async (req, res) => {
   const { restaurant_code, order_id, accepted_time, status, accepted_at } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
@@ -1924,6 +2083,10 @@ app.post("/accepted-time", async (req, res) => {
     accepted_at: accepted_at || new Date().toISOString(),
   };
   await redisCommand("SET", k(code, `accepted_time:${order_id}`), JSON.stringify(data), "EX", 604800);
+
+  // Notify restaurant devices once after manual acceptance.
+  // No polling is introduced.
+  void sendOrderAcceptedUpdate(code, order_id, data);
   res.json({ success: true });
 });
 
@@ -2238,7 +2401,7 @@ app.post("/wc-webhook", async (req, res) => {
       to: token,
       sound: "default",
       title: `🛒 New Order #${orderId}`,
-      body: `${order.customer_name} - ${order.currency} ${order.total}`,
+      body: `${order.customer_name} • ${order.currency} ${order.total}`,
       data: {
         restaurant_code: code,
         order_id: String(orderId),
@@ -2400,8 +2563,8 @@ app.post("/auto-accepted-notify", async (req, res) => {
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: null,
-    title: `✓ Order #${order_id} auto-accepted`,
-    body: `${orderData.customer_name} - ${orderData.currency} ${orderData.total}`,
+    title: `✅ Order #${order_id} auto-accepted`,
+    body: `${orderData.customer_name} • ${orderData.currency} ${orderData.total}`,
     data: {
       event_type: 'auto_accepted',
       restaurant_code: code,
@@ -3513,8 +3676,8 @@ async function runAutoActions() {
                 const messages = deviceTokens.map(token => ({
                   to: token,
                   sound: null,
-                  title: `✓ Order #${order.order_id} auto-accepted`,
-                  body: `${order.customer_name} - ${order.currency} ${order.total}`,
+                  title: `✅ Order #${order.order_id} auto-accepted`,
+                  body: `${order.customer_name} • ${order.currency} ${order.total}`,
                   data: {
                     event_type: 'auto_accepted',
                     restaurant_code: code,
@@ -3597,7 +3760,7 @@ async function runAutoActions() {
                 const messages = deviceTokens.map(token => ({
                   to: token,
                   sound: null,
-                  title: `Order #${order.order_id} auto-rejected`,
+                  title: `❌ Order #${order.order_id} auto-rejected`,
                   body: rejectReason,
                   data: {
                     event_type: 'status_update',
