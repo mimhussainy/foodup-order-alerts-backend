@@ -1,6 +1,5 @@
 const express = require('express');
-const { installAsyncRouteSafety } = require('./asyncRouteSafety');
-const router = installAsyncRouteSafety(express.Router());
+const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
@@ -512,6 +511,310 @@ router.post('/product', async (req, res) => {
   res.json({ success: true, product });
 });
 
+
+// ─────────────────────────────────────────
+// POSUP Excel import + template
+// ─────────────────────────────────────────
+
+const POSUP_EXCEL_TEMPLATE_BASE64 = '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';
+
+function posupManualWcId() {
+  return -(Math.floor(Math.random() * 1900000000) + 1);
+}
+
+function posupExcelBool(value, fallback = false) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return fallback;
+  if (['yes', 'y', 'true', '1', 'ja', 'aktiv', 'active'].includes(text)) return true;
+  if (['no', 'n', 'false', '0', 'nein', 'inaktiv', 'inactive'].includes(text)) return false;
+  return fallback;
+}
+
+function posupSlug(value) {
+  const slug = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || `category-${Math.abs(posupManualWcId())}`;
+}
+
+router.get('/excel-template', (req, res) => {
+  const buffer = Buffer.from(POSUP_EXCEL_TEMPLATE_BASE64, 'base64');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="POSUP-Excel-Import-Template.xlsx"');
+  res.setHeader('Content-Length', buffer.length);
+  res.send(buffer);
+});
+
+router.post('/import-excel/:code', async (req, res) => {
+  const code = String(req.params.code || '').trim();
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+
+  if (!code) return res.status(400).json({ success: false, error: 'Restaurant code is required' });
+  if (!rows.length) return res.status(400).json({ success: false, error: 'No Excel rows supplied' });
+  if (rows.length > 100) return res.status(400).json({ success: false, error: 'Import chunks are limited to 100 rows' });
+
+  try {
+    const { data: restaurant, error: restaurantError } = await supabase
+      .from('restaurants')
+      .select('id')
+      .eq('code', code)
+      .single();
+
+    if (restaurantError || !restaurant) {
+      return res.status(404).json({ success: false, error: 'Restaurant not found' });
+    }
+
+    const [categoryResult, productResult] = await Promise.all([
+      supabase.from('categories').select('id, name').eq('restaurant_id', restaurant.id),
+      supabase.from('products').select('id, name').eq('restaurant_id', restaurant.id)
+    ]);
+
+    if (categoryResult.error) throw new Error(categoryResult.error.message);
+    if (productResult.error) throw new Error(productResult.error.message);
+
+    const categoryMap = new Map(
+      (categoryResult.data || []).map(c => [String(c.name || '').trim().toLowerCase(), c.id])
+    );
+    const productMap = new Map(
+      (productResult.data || []).map(p => [String(p.name || '').trim().toLowerCase(), p.id])
+    );
+
+    let created = 0;
+    let updated = 0;
+    let categoriesCreated = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index] || {};
+      const sourceRow = Number(row.source_row || index + 2);
+
+      try {
+        const name = String(row.name || '').trim();
+        const categoryName = String(row.category || '').trim();
+        const description = String(row.description || '').trim();
+        const imageUrl = String(row.image_url || '').trim();
+        const price = Number(row.price);
+
+        if (!name) throw new Error('Product Name is required');
+        if (!categoryName) throw new Error('Category is required');
+        if (!Number.isFinite(price) || price < 0) throw new Error('Price CHF must be a valid number');
+
+        const active = posupExcelBool(row.active, true);
+        const isAlcohol = posupExcelBool(row.is_alcohol, false);
+
+        const categoryKey = categoryName.toLowerCase();
+        let categoryId = categoryMap.get(categoryKey);
+
+        if (!categoryId) {
+          const { data: newCategory, error: categoryError } = await supabase
+            .from('categories')
+            .insert({
+              restaurant_id: restaurant.id,
+              wc_id: posupManualWcId(),
+              name: categoryName,
+              slug: posupSlug(categoryName),
+              active: true,
+              sort_order: 0
+            })
+            .select('id, name')
+            .single();
+
+          if (categoryError) throw new Error(`Could not create category "${categoryName}": ${categoryError.message}`);
+
+          categoryId = newCategory.id;
+          categoryMap.set(categoryKey, categoryId);
+          categoriesCreated++;
+        }
+
+        const productKey = name.toLowerCase();
+        let productId = productMap.get(productKey);
+
+        if (productId) {
+          const { error: updateError } = await supabase
+            .from('products')
+            .update({
+              description,
+              price,
+              active,
+              image_url: imageUrl,
+              is_alcohol: isAlcohol,
+              type: 'simple',
+              price_overridden: true
+            })
+            .eq('id', productId);
+
+          if (updateError) throw new Error(updateError.message);
+          updated++;
+        } else {
+          const { data: newProduct, error: productError } = await supabase
+            .from('products')
+            .insert({
+              restaurant_id: restaurant.id,
+              wc_id: posupManualWcId(),
+              name,
+              description,
+              type: 'simple',
+              price,
+              regular_price: price,
+              image_url: imageUrl,
+              sort_order: 0,
+              active,
+              is_alcohol: isAlcohol
+            })
+            .select('id, name')
+            .single();
+
+          if (productError) throw new Error(productError.message);
+
+          productId = newProduct.id;
+          productMap.set(productKey, productId);
+          created++;
+        }
+
+        const { error: deleteMappingError } = await supabase
+          .from('product_categories')
+          .delete()
+          .eq('product_id', productId);
+        if (deleteMappingError) throw new Error(deleteMappingError.message);
+
+        const { error: mappingError } = await supabase
+          .from('product_categories')
+          .insert({
+            product_id: productId,
+            category_id: categoryId
+          });
+        if (mappingError) throw new Error(mappingError.message);
+
+      } catch (rowError) {
+        failed++;
+        errors.push({
+          row: sourceRow,
+          name: String(row.name || '').trim(),
+          error: rowError.message
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      created,
+      updated,
+      categories_created: categoriesCreated,
+      failed,
+      errors
+    });
+  } catch (err) {
+    console.error('POSUP Excel import error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// POSUP logo upload (Supabase Storage)
+// ─────────────────────────────────────────
+
+const POSUP_ASSET_BUCKET = 'posup-assets';
+
+async function ensurePosupAssetBucket() {
+  const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+  if (listError) throw new Error(`Could not access storage buckets: ${listError.message}`);
+
+  const existingBucket = (buckets || []).find(bucket => bucket.name === POSUP_ASSET_BUCKET);
+  if (!existingBucket) {
+    const { error: createError } = await supabase.storage.createBucket(POSUP_ASSET_BUCKET, {
+      public: true,
+      fileSizeLimit: 1048576,
+      allowedMimeTypes: ['image/webp', 'image/png', 'image/jpeg']
+    });
+    if (createError) throw new Error(`Could not create POSUP asset bucket: ${createError.message}`);
+  } else if (existingBucket.public !== true) {
+    const { error: updateError } = await supabase.storage.updateBucket(POSUP_ASSET_BUCKET, {
+      public: true,
+      fileSizeLimit: 1048576,
+      allowedMimeTypes: ['image/webp', 'image/png', 'image/jpeg']
+    });
+    if (updateError) throw new Error(`Could not make POSUP asset bucket public: ${updateError.message}`);
+  }
+}
+
+router.post('/restaurants/:code/logo-upload', async (req, res) => {
+  const code = String(req.params.code || '').trim();
+  const dataUrl = String(req.body?.data_url || '');
+
+  if (!code) return res.status(400).json({ success: false, error: 'Restaurant code is required' });
+
+  const match = dataUrl.match(/^data:(image\/(?:webp|png|jpeg));base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) {
+    return res.status(400).json({ success: false, error: 'Invalid logo image. Use PNG, JPG or WEBP.' });
+  }
+
+  const contentType = match[1];
+  const buffer = Buffer.from(match[2], 'base64');
+
+  if (!buffer.length || buffer.length > 750000) {
+    return res.status(400).json({ success: false, error: 'Logo must be smaller than 750 KB after compression' });
+  }
+
+  try {
+    const { data: restaurant, error: restaurantError } = await supabase
+      .from('restaurants')
+      .select('id, wp_site_url')
+      .eq('code', code)
+      .single();
+
+    if (restaurantError || !restaurant) {
+      return res.status(404).json({ success: false, error: 'Restaurant not found' });
+    }
+
+    if (restaurant.wp_site_url) {
+      return res.status(400).json({ success: false, error: 'WordPress-linked logos must be changed in WordPress' });
+    }
+
+    await ensurePosupAssetBucket();
+
+    const ext = contentType === 'image/jpeg' ? 'jpg' : contentType.split('/')[1];
+    const safeCode = code.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    const filePath = `${safeCode}/posup-logo-${Date.now()}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(POSUP_ASSET_BUCKET)
+      .upload(filePath, buffer, {
+        contentType,
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (uploadError) throw new Error(`Logo upload failed: ${uploadError.message}`);
+
+    const { data: publicData } = supabase.storage
+      .from(POSUP_ASSET_BUCKET)
+      .getPublicUrl(filePath);
+
+    const logoUrl = publicData?.publicUrl;
+    if (!logoUrl) throw new Error('Could not create public logo URL');
+
+    const { data: updated, error: updateError } = await supabase
+      .from('restaurants')
+      .update({ logo_url: logoUrl })
+      .eq('code', code)
+      .select('code, name, logo_url')
+      .single();
+
+    if (updateError) throw new Error(updateError.message);
+
+    res.json({ success: true, logo_url: logoUrl, restaurant: updated });
+  } catch (err) {
+    console.error('POSUP logo upload error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────
 // POSUP customer helpers
 // ─────────────────────────────────────────
@@ -877,287 +1180,6 @@ router.post('/reimport/:code', async (req, res) => {
     res.json({ success: true, imported: { addons: addonsImported }, message: 'Addons imported successfully. Products and prices unchanged.' });
   } catch(err) {
     res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ─────────────────────────────────────────
-// MANUAL ADDON CRUD
-// Only restaurants WITHOUT WordPress can use these routes.
-// The data is stored in the same addon_groups / addon_options / assignment
-// tables used by imported WordPress/Orderable addons, so the POS app does
-// not need a separate addon format.
-// ─────────────────────────────────────────
-function posupManualExternalId(offset = 0) {
-  // Manual WooCommerce-style IDs are negative so they can never collide
-  // with normal positive WooCommerce / Orderable IDs.
-  return -((Date.now() + Number(offset || 0)) % 2000000000);
-}
-
-async function getManualRestaurantByCode(code) {
-  const { data: restaurant, error } = await supabase
-    .from('restaurants')
-    .select('id, code, name, wp_site_url')
-    .eq('code', code)
-    .single();
-
-  if (error || !restaurant) {
-    const err = new Error('Restaurant not found');
-    err.status = 404;
-    throw err;
-  }
-
-  if (restaurant.wp_site_url) {
-    const err = new Error('This restaurant is linked to WordPress. Manage its addons in WordPress/Orderable and import them into POSUP.');
-    err.status = 409;
-    throw err;
-  }
-
-  return restaurant;
-}
-
-async function getManualAddonGroup(groupId) {
-  const { data: group, error: groupError } = await supabase
-    .from('addon_groups')
-    .select('id, restaurant_id, name, wc_id, active')
-    .eq('id', groupId)
-    .single();
-
-  if (groupError || !group) {
-    const err = new Error('Addon group not found');
-    err.status = 404;
-    throw err;
-  }
-
-  const { data: restaurant, error: restaurantError } = await supabase
-    .from('restaurants')
-    .select('id, code, name, wp_site_url')
-    .eq('id', group.restaurant_id)
-    .single();
-
-  if (restaurantError || !restaurant) {
-    const err = new Error('Restaurant not found');
-    err.status = 404;
-    throw err;
-  }
-
-  if (restaurant.wp_site_url) {
-    const err = new Error('This restaurant is linked to WordPress. Manage its addons in WordPress/Orderable.');
-    err.status = 409;
-    throw err;
-  }
-
-  return { group, restaurant };
-}
-
-function normalizeManualAddonOptions(options) {
-  if (!Array.isArray(options)) return [];
-
-  return options
-    .map((option, index) => {
-      const name = String(option?.name || '').trim();
-      if (!name) return null;
-
-      const numericPrice = Number(option?.price);
-      const type = option?.type === 'radio' ? 'radio' : 'checkbox';
-
-      return {
-        name,
-        price: Number.isFinite(numericPrice) ? numericPrice : 0,
-        type,
-        required: option?.required === true,
-        sort_order: index,
-        active: option?.active !== false,
-      };
-    })
-    .filter(Boolean);
-}
-
-async function validManualAssignmentIds(restaurantId, categoryIds, productIds) {
-  const cleanCategoryIds = Array.from(new Set(
-    (Array.isArray(categoryIds) ? categoryIds : []).map(String).filter(Boolean)
-  ));
-  const cleanProductIds = Array.from(new Set(
-    (Array.isArray(productIds) ? productIds : []).map(String).filter(Boolean)
-  ));
-
-  let validCategoryIds = [];
-  let validProductIds = [];
-
-  if (cleanCategoryIds.length > 0) {
-    const { data, error } = await supabase
-      .from('categories')
-      .select('id')
-      .eq('restaurant_id', restaurantId)
-      .in('id', cleanCategoryIds);
-    if (error) throw new Error(error.message);
-    validCategoryIds = (data || []).map(row => row.id);
-  }
-
-  if (cleanProductIds.length > 0) {
-    const { data, error } = await supabase
-      .from('products')
-      .select('id')
-      .eq('restaurant_id', restaurantId)
-      .in('id', cleanProductIds);
-    if (error) throw new Error(error.message);
-    validProductIds = (data || []).map(row => row.id);
-  }
-
-  return { validCategoryIds, validProductIds };
-}
-
-async function insertManualAddonChildren(groupId, restaurantId, payload) {
-  const options = normalizeManualAddonOptions(payload.options);
-  if (options.length === 0) {
-    const err = new Error('Add at least one addon option');
-    err.status = 400;
-    throw err;
-  }
-
-  const optionRows = options.map((option, index) => ({
-    addon_group_id: groupId,
-    wc_option_id: posupManualExternalId(index + 1),
-    name: option.name,
-    price: option.price,
-    type: option.type,
-    required: option.required,
-    sort_order: option.sort_order,
-    active: option.active,
-  }));
-
-  const { error: optionError } = await supabase
-    .from('addon_options')
-    .insert(optionRows);
-  if (optionError) throw new Error(optionError.message);
-
-  const { validCategoryIds, validProductIds } = await validManualAssignmentIds(
-    restaurantId,
-    payload.assigned_category_ids,
-    payload.assigned_product_ids
-  );
-
-  if (validCategoryIds.length > 0) {
-    const { error } = await supabase
-      .from('addon_category_assignments')
-      .insert(validCategoryIds.map(categoryId => ({
-        addon_group_id: groupId,
-        category_id: categoryId,
-      })));
-    if (error) throw new Error(error.message);
-  }
-
-  if (validProductIds.length > 0) {
-    const { error } = await supabase
-      .from('addon_product_assignments')
-      .insert(validProductIds.map(productId => ({
-        addon_group_id: groupId,
-        product_id: productId,
-      })));
-    if (error) throw new Error(error.message);
-  }
-}
-
-// POST /posup/addon-group — create a manual addon group
-router.post('/addon-group', async (req, res) => {
-  const restaurantCode = String(req.body.restaurant_code || '').trim();
-  const name = String(req.body.name || '').trim();
-
-  if (!restaurantCode || !name) {
-    return res.status(400).json({ success: false, error: 'restaurant_code and name are required' });
-  }
-
-  let insertedGroup = null;
-
-  try {
-    const restaurant = await getManualRestaurantByCode(restaurantCode);
-
-    const { data, error } = await supabase
-      .from('addon_groups')
-      .insert({
-        restaurant_id: restaurant.id,
-        wc_id: posupManualExternalId(),
-        name,
-        active: req.body.active !== false,
-      })
-      .select()
-      .single();
-
-    if (error) throw new Error(error.message);
-    insertedGroup = data;
-
-    await insertManualAddonChildren(insertedGroup.id, restaurant.id, req.body);
-
-    return res.json({ success: true, addon_group: insertedGroup });
-  } catch (err) {
-    if (insertedGroup?.id) {
-      await supabase.from('addon_options').delete().eq('addon_group_id', insertedGroup.id);
-      await supabase.from('addon_category_assignments').delete().eq('addon_group_id', insertedGroup.id);
-      await supabase.from('addon_product_assignments').delete().eq('addon_group_id', insertedGroup.id);
-      await supabase.from('addon_groups').delete().eq('id', insertedGroup.id);
-    }
-    return res.status(err.status || 500).json({ success: false, error: err.message });
-  }
-});
-
-// PATCH /posup/addon-group/:id — replace a manual addon group + its options/assignments
-router.patch('/addon-group/:id', async (req, res) => {
-  const { id } = req.params;
-  const name = String(req.body.name || '').trim();
-
-  if (!name) {
-    return res.status(400).json({ success: false, error: 'name is required' });
-  }
-
-  try {
-    const { group, restaurant } = await getManualAddonGroup(id);
-    const options = normalizeManualAddonOptions(req.body.options);
-    if (options.length === 0) {
-      return res.status(400).json({ success: false, error: 'Add at least one addon option' });
-    }
-
-    const { error: updateError } = await supabase
-      .from('addon_groups')
-      .update({
-        name,
-        active: req.body.active !== false,
-      })
-      .eq('id', group.id);
-
-    if (updateError) throw new Error(updateError.message);
-
-    // Replace child rows. The dashboard sends the complete current group.
-    await supabase.from('addon_options').delete().eq('addon_group_id', group.id);
-    await supabase.from('addon_category_assignments').delete().eq('addon_group_id', group.id);
-    await supabase.from('addon_product_assignments').delete().eq('addon_group_id', group.id);
-
-    await insertManualAddonChildren(group.id, restaurant.id, req.body);
-
-    return res.json({ success: true });
-  } catch (err) {
-    return res.status(err.status || 500).json({ success: false, error: err.message });
-  }
-});
-
-// DELETE /posup/addon-group/:id — permanently remove a manual addon group
-router.delete('/addon-group/:id', async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const { group } = await getManualAddonGroup(id);
-
-    await supabase.from('addon_options').delete().eq('addon_group_id', group.id);
-    await supabase.from('addon_category_assignments').delete().eq('addon_group_id', group.id);
-    await supabase.from('addon_product_assignments').delete().eq('addon_group_id', group.id);
-
-    const { error } = await supabase
-      .from('addon_groups')
-      .delete()
-      .eq('id', group.id);
-
-    if (error) throw new Error(error.message);
-    return res.json({ success: true });
-  } catch (err) {
-    return res.status(err.status || 500).json({ success: false, error: err.message });
   }
 });
 
