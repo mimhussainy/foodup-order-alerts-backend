@@ -1,7 +1,7 @@
 const express = require("express");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const app = installAsyncRouteSafety(express());
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
