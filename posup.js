@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
+const crypto = require('crypto');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -114,7 +115,7 @@ await supabase.from('categories').delete().eq('restaurant_id', restaurantId);
       // Check if product exists and has price_overridden
       const { data: existing } = await supabase
         .from('products')
-        .select('id, price, price_overridden, is_alcohol')
+        .select('id, price, price_overridden, is_alcohol, image_url')
         .eq('restaurant_id', restaurantId)
         .eq('wc_id', product.wc_id)
         .single();
@@ -122,6 +123,11 @@ await supabase.from('categories').delete().eq('restaurant_id', restaurantId);
             const priceOverridden = existing?.price_overridden === true;
       const finalPrice = priceOverridden ? existing.price : (product.price || 0);
       const isAlcohol = existing?.is_alcohol === true;
+      // Preserve images uploaded through SmartKasse's QR/camera flow on later WordPress imports.
+      const hasSmartKasseImage = String(existing?.image_url || '').includes(`/storage/v1/object/public/${PRODUCT_IMAGE_BUCKET}/`);
+      const finalImageUrl = hasSmartKasseImage
+        ? existing.image_url
+        : (product.image_url || existing?.image_url || '');
 
       const { data: inserted, error } = await supabase
         .from('products')
@@ -133,7 +139,7 @@ await supabase.from('categories').delete().eq('restaurant_id', restaurantId);
           type:           product.type || 'simple',
           price:          finalPrice,
           regular_price:  product.regular_price || 0,
-          image_url:      product.image_url || '',
+          image_url:      finalImageUrl,
           sort_order:     product.sort_order || 0,
           active:         true,
           is_alcohol:     isAlcohol,
@@ -447,6 +453,292 @@ router.patch('/product/:id', async (req, res) => {
 
   if (error) return res.status(500).json({ success: false, error: error.message });
   res.json({ success: true });
+});
+
+// ─────────────────────────────────────────
+// SMARTKASSE PRODUCT IMAGE QR / PHONE CAMERA FLOW
+// ─────────────────────────────────────────
+const PRODUCT_IMAGE_BUCKET = process.env.SMARTKASSE_PRODUCT_IMAGE_BUCKET || 'product-images';
+const PRODUCT_IMAGE_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+
+function productImageSigningSecret() {
+  return process.env.POSUP_IMAGE_UPLOAD_SECRET || process.env.SUPABASE_SERVICE_KEY || '';
+}
+
+function signProductImageToken(payload) {
+  const secret = productImageSigningSecret();
+  if (!secret) throw new Error('Product image upload secret is not configured');
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const signature = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
+  return `${encoded}.${signature}`;
+}
+
+function verifyProductImageToken(token) {
+  const secret = productImageSigningSecret();
+  if (!secret || !token || !token.includes('.')) throw new Error('Invalid upload link');
+  const [encoded, signature] = String(token).split('.', 2);
+  const expected = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
+  const a = Buffer.from(signature || '');
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw new Error('Invalid upload link');
+  const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+  if (!payload.exp || Date.now() > Number(payload.exp)) throw new Error('This QR code has expired');
+  if (!payload.restaurant_code || !payload.product_id) throw new Error('Invalid upload link');
+  return payload;
+}
+
+function safeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+async function ensureProductImageBucket() {
+  const probe = await supabase.storage.from(PRODUCT_IMAGE_BUCKET).list('', { limit: 1 });
+  if (!probe.error) return;
+
+  const message = String(probe.error.message || '');
+  if (!/bucket|not found|does not exist/i.test(message)) throw probe.error;
+
+  const created = await supabase.storage.createBucket(PRODUCT_IMAGE_BUCKET, {
+    public: true,
+    fileSizeLimit: 5 * 1024 * 1024,
+    allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+  });
+  if (created.error && !/already exists/i.test(String(created.error.message || ''))) {
+    throw created.error;
+  }
+}
+
+// POST /posup/product-image-token
+// Authenticated from SmartKasse Settings with the owner PIN.
+// The QR contains only a short-lived signed token — never the PIN.
+router.post('/product-image-token', async (req, res) => {
+  try {
+    const restaurant_code = String(req.body.restaurant_code || '').toLowerCase().trim();
+    const product_id = String(req.body.product_id || '').trim();
+    const pin = String(req.body.pin || '').trim();
+
+    if (!restaurant_code || !product_id || !pin) {
+      return res.status(400).json({ success: false, error: 'Missing restaurant_code, product_id, or pin' });
+    }
+
+    const { data: restaurant, error: restError } = await supabase
+      .from('restaurants')
+      .select('id, code, pin')
+      .eq('code', restaurant_code)
+      .single();
+
+    if (restError || !restaurant) return res.status(404).json({ success: false, error: 'Business not found' });
+    if (String(restaurant.pin || '') !== pin) return res.status(401).json({ success: false, error: 'Incorrect PIN' });
+
+    const { data: product, error: productError } = await supabase
+      .from('products')
+      .select('id, name')
+      .eq('id', product_id)
+      .eq('restaurant_id', restaurant.id)
+      .single();
+
+    if (productError || !product) return res.status(404).json({ success: false, error: 'Product not found' });
+
+    const token = signProductImageToken({
+      restaurant_code,
+      product_id: String(product.id),
+      exp: Date.now() + PRODUCT_IMAGE_TOKEN_TTL_MS,
+    });
+
+    const host = req.get('host');
+    const protocol = /^localhost(?::|$)|^127\.0\.0\.1(?::|$)/i.test(host || '') ? 'http' : 'https';
+    const upload_url = `${protocol}://${host}/posup/product-image-upload/${encodeURIComponent(token)}`;
+
+    return res.json({ success: true, upload_url, expires_in_hours: 12 });
+  } catch (err) {
+    console.error('Product image token error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /posup/product-image-upload/:token
+// Mobile-friendly page opened after the restaurant owner scans the product QR.
+router.get('/product-image-upload/:token', async (req, res) => {
+  try {
+    const payload = verifyProductImageToken(req.params.token);
+
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('id, name')
+      .eq('code', payload.restaurant_code)
+      .single();
+
+    if (!restaurant) throw new Error('Business not found');
+
+    const { data: product } = await supabase
+      .from('products')
+      .select('id, name, image_url')
+      .eq('id', payload.product_id)
+      .eq('restaurant_id', restaurant.id)
+      .single();
+
+    if (!product) throw new Error('Product not found');
+
+    const token = String(req.params.token);
+    const currentImage = product.image_url
+      ? `<img class="preview current" src="${safeHtml(product.image_url)}" alt="Current product image">`
+      : `<div class="empty" id="emptyState"><span>▧</span><strong>No image yet</strong><small>Take a photo below</small></div>`;
+
+    res.type('html').send(`<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#102A43">
+<title>SmartKasse – Produktbild</title>
+<style>
+  *{box-sizing:border-box} body{margin:0;background:#F5F7FA;color:#17202A;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+  .wrap{max-width:520px;margin:0 auto;min-height:100vh;padding:20px 16px 36px}.brand{display:flex;align-items:center;gap:10px;margin:4px 0 20px}.mark{width:38px;height:38px;border-radius:11px;background:#102A43;color:white;display:grid;place-items:center;font-weight:800}.brand b{font-size:18px}.brand small{display:block;color:#8A94A6;margin-top:1px}.card{background:white;border:1px solid #E4E7EC;border-radius:18px;overflow:hidden;box-shadow:0 8px 28px rgba(16,42,67,.06)}.head{padding:18px 18px 14px;border-bottom:1px solid #EEF1F4}.eyebrow{font-size:11px;font-weight:800;color:#2F6BFF;letter-spacing:.08em;text-transform:uppercase}.head h1{font-size:23px;line-height:1.2;margin:5px 0 3px}.head p{font-size:13px;color:#667085;margin:0}.media{padding:16px}.preview,.empty{width:100%;aspect-ratio:4/3;border-radius:14px;background:#F1F4F7;object-fit:cover}.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;color:#98A2B3;border:1px dashed #D0D5DD}.empty span{font-size:38px}.empty strong{font-size:14px;margin-top:4px}.empty small{font-size:12px;margin-top:3px}.actions{padding:0 16px 18px}.btn{width:100%;min-height:52px;border:0;border-radius:13px;font-size:15px;font-weight:750;cursor:pointer}.primary{background:#102A43;color:#fff}.secondary{background:#EEF3FF;color:#214DB8;margin-top:10px;display:none}.hint{text-align:center;color:#667085;font-size:12px;line-height:1.5;margin:12px 8px 0}.status{display:none;margin:14px 16px 18px;border-radius:12px;padding:13px;font-size:13px;font-weight:650}.status.ok{display:block;background:#ECFDF3;color:#067647}.status.err{display:block;background:#FEF3F2;color:#B42318}.spinner{display:none;margin-right:8px}input{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><div class="mark">SK</div><div><b>SmartKasse</b><small>Produktbild hinzufügen</small></div></div>
+  <div class="card">
+    <div class="head"><div class="eyebrow">${safeHtml(restaurant.name || payload.restaurant_code)}</div><h1>${safeHtml(product.name)}</h1><p>Dieses Foto wird nur diesem Produkt zugeordnet.</p></div>
+    <div class="media" id="media">${currentImage}</div>
+    <div class="actions">
+      <input id="camera" type="file" accept="image/jpeg,image/png,image/webp,image/*" capture="environment">
+      <button class="btn primary" id="cameraBtn">Kamera öffnen</button>
+      <button class="btn secondary" id="uploadBtn">Foto verwenden & speichern</button>
+      <div class="hint">Am besten das Produkt gut beleuchtet und von oben bzw. leicht schräg fotografieren.</div>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+</div>
+<script>
+const token=${JSON.stringify(token)};
+const input=document.getElementById('camera');
+const cameraBtn=document.getElementById('cameraBtn');
+const uploadBtn=document.getElementById('uploadBtn');
+const media=document.getElementById('media');
+const status=document.getElementById('status');
+let prepared=null;
+
+function showStatus(message,type){status.textContent=message;status.className='status '+type;}
+
+cameraBtn.addEventListener('click',()=>input.click());
+input.addEventListener('change',async()=>{
+  const file=input.files&&input.files[0]; if(!file)return;
+  try{
+    prepared=await prepareImage(file);
+    media.innerHTML='<img class="preview" src="'+prepared.dataUrl+'" alt="Preview">';
+    uploadBtn.style.display='block';
+    status.className='status';
+  }catch(e){showStatus(e.message||'Foto konnte nicht verarbeitet werden','err');}
+});
+
+uploadBtn.addEventListener('click',async()=>{
+  if(!prepared)return;
+  uploadBtn.disabled=true; cameraBtn.disabled=true; uploadBtn.textContent='Wird gespeichert…';
+  try{
+    const response=await fetch('/posup/product-image-upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,image_base64:prepared.base64,mime_type:prepared.mime})});
+    const data=await response.json();
+    if(!response.ok||!data.success)throw new Error(data.error||'Upload fehlgeschlagen');
+    if(data.image_url) media.innerHTML='<img class="preview" src="'+data.image_url+'?v='+Date.now()+'" alt="Saved product image">';
+    showStatus('✓ Bild gespeichert. Sie können diese Seite jetzt schließen.','ok');
+    uploadBtn.style.display='none'; cameraBtn.textContent='Neues Foto aufnehmen';
+  }catch(e){showStatus(e.message||'Upload fehlgeschlagen','err');uploadBtn.textContent='Nochmals versuchen';}
+  finally{uploadBtn.disabled=false;cameraBtn.disabled=false;}
+});
+
+function prepareImage(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error('Foto konnte nicht gelesen werden'));
+    reader.onload=()=>{
+      const img=new Image();
+      img.onerror=()=>reject(new Error('Ungültiges Bild'));
+      img.onload=()=>{
+        const max=1600; let w=img.width,h=img.height;
+        if(Math.max(w,h)>max){const scale=max/Math.max(w,h);w=Math.round(w*scale);h=Math.round(h*scale);}
+        const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+        const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0,w,h);
+        const dataUrl=canvas.toDataURL('image/jpeg',0.82);
+        resolve({dataUrl,base64:dataUrl.split(',')[1],mime:'image/jpeg'});
+      };
+      img.src=reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+</script>
+</body></html>`);
+  } catch (err) {
+    res.status(400).type('html').send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font-family:Arial;padding:30px;background:#f5f7fa"><h2>SmartKasse</h2><p>${safeHtml(err.message)}</p><p>Bitte in SmartKasse einen neuen QR-Code erstellen.</p></body>`);
+  }
+});
+
+// POST /posup/product-image-upload
+// Receives a compressed image from the mobile camera page and assigns it to the product.
+router.post('/product-image-upload', async (req, res) => {
+  try {
+    const payload = verifyProductImageToken(req.body.token);
+    const mime = String(req.body.mime_type || 'image/jpeg').toLowerCase();
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(mime)) {
+      return res.status(400).json({ success: false, error: 'Unsupported image type' });
+    }
+
+    const raw = String(req.body.image_base64 || '').replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '');
+    if (!raw) return res.status(400).json({ success: false, error: 'Image is missing' });
+    const buffer = Buffer.from(raw, 'base64');
+    if (!buffer.length || buffer.length > 4.5 * 1024 * 1024) {
+      return res.status(413).json({ success: false, error: 'Image is too large' });
+    }
+
+    const { data: restaurant } = await supabase
+      .from('restaurants')
+      .select('id, code')
+      .eq('code', payload.restaurant_code)
+      .single();
+    if (!restaurant) return res.status(404).json({ success: false, error: 'Business not found' });
+
+    const { data: product } = await supabase
+      .from('products')
+      .select('id')
+      .eq('id', payload.product_id)
+      .eq('restaurant_id', restaurant.id)
+      .single();
+    if (!product) return res.status(404).json({ success: false, error: 'Product not found' });
+
+    await ensureProductImageBucket();
+    const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+    const safeCode = String(restaurant.code || payload.restaurant_code).replace(/[^a-z0-9_-]/gi, '-');
+    const path = `${safeCode}/${String(product.id).replace(/[^a-z0-9_-]/gi, '-')}-${Date.now()}.${ext}`;
+
+    const upload = await supabase.storage.from(PRODUCT_IMAGE_BUCKET).upload(path, buffer, {
+      contentType: mime,
+      cacheControl: '3600',
+      upsert: true,
+    });
+    if (upload.error) throw upload.error;
+
+    const publicResult = supabase.storage.from(PRODUCT_IMAGE_BUCKET).getPublicUrl(path);
+    const image_url = publicResult?.data?.publicUrl;
+    if (!image_url) throw new Error('Could not create public image URL');
+
+    const updated = await supabase
+      .from('products')
+      .update({ image_url })
+      .eq('id', product.id)
+      .eq('restaurant_id', restaurant.id);
+    if (updated.error) throw updated.error;
+
+    return res.json({ success: true, image_url });
+  } catch (err) {
+    console.error('Product image upload error:', err);
+    return res.status(400).json({ success: false, error: err.message || 'Upload failed' });
+  }
 });
 
 // DELETE /posup/product/:id — permanently remove a product
