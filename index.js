@@ -732,6 +732,46 @@ console.log("Full order data:", JSON.stringify(order));
   res.json({ success: true });
 });
 
+async function sendCourierStatusUpdate(code, orderId, status) {
+  try {
+    const deviceTokens = await getTokens(code);
+
+    if (!deviceTokens || deviceTokens.length === 0) {
+      return;
+    }
+
+    const messages = deviceTokens.map(token => ({
+      to: token,
+      sound: null,
+      title: `Order #${orderId} delivery updated`,
+      body: `Status: ${status}`,
+      data: {
+        restaurant_code: code,
+        order_id: String(orderId || ''),
+        delivery_status: String(status || ''),
+        event_type: 'courier_status_update',
+      },
+    }));
+
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(messages),
+    });
+  } catch (error) {
+    console.log(
+      "Courier status push failed:",
+      code,
+      orderId,
+      status,
+      error?.message || error
+    );
+  }
+}
+
 // -------------------------------------------------------
 // PIN
 // -------------------------------------------------------
@@ -1064,6 +1104,13 @@ await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
   history = history.filter(o => new Date(o.delivered_at) > thirtyDaysAgo);
 
 await redisCommand("SET", courierKey, JSON.stringify(history));
+
+  // Notify restaurant devices once the courier marks this order delivered.
+  void sendCourierStatusUpdate(
+    code,
+    order_id,
+    'delivered'
+  );
   res.json({ success: true });
 });
 
@@ -1160,11 +1207,12 @@ app.post("/claim-order", async (req, res) => {
 
   const claimKey = k(code, `claimed:${order_id}`);
   const now = new Date().toISOString();
+  let effectiveDeliveryStatus = delivery_status || 'in_bag';
   const firstClaim = {
     order_id,
     delivery_name,
     claimed_at: now,
-    delivery_status: delivery_status || 'in_bag',
+    delivery_status: effectiveDeliveryStatus,
   };
 
   // SET NX makes the first claim atomic. Two couriers pressing Add to Bag at
@@ -1189,11 +1237,22 @@ app.post("/claim-order", async (req, res) => {
       order_id,
       delivery_name,
       claimed_at: claim.claimed_at || now,
-      delivery_status: delivery_status || claim.delivery_status || 'in_bag',
+      delivery_status: (
+        effectiveDeliveryStatus =
+          delivery_status || claim.delivery_status || 'in_bag'
+      ),
     }));
   }
 
   await redisCommand("SADD", k(code, "active_claims"), String(order_id));
+
+  // One event-driven notification when courier state changes.
+  // No polling is introduced.
+  void sendCourierStatusUpdate(
+    code,
+    order_id,
+    effectiveDeliveryStatus
+  );
   res.json({ success: true });
 });
 
