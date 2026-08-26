@@ -253,6 +253,7 @@ await supabase.from('categories').delete().eq('restaurant_id', restaurantId);
 // ─────────────────────────────────────────
 router.get('/products/:code', async (req, res) => {
   const { code } = req.params;
+  const includeInactive = ['1', 'true', 'yes'].includes(String(req.query.include_inactive || '').toLowerCase());
   try {
     // Get restaurant first (needed for restaurantId)
     const { data: restaurant, error: restErr } = await supabase
@@ -263,25 +264,34 @@ router.get('/products/:code', async (req, res) => {
     if (restErr || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
     const restaurantId = restaurant.id;
 
-    // Run categories, products, and addons queries in parallel
+    // The POS app receives only active menu data by default.
+    // The dashboard can request inactive rows as well so disabled categories/products
+    // remain manageable and can be re-enabled later.
+    let categoriesQuery = supabase
+      .from('categories')
+      .select('*')
+      .eq('restaurant_id', restaurantId)
+      .order('name');
+
+    let productsQuery = supabase
+      .from('products')
+      .select(`
+        *,
+        product_categories(category_id),
+        variations(*)
+      `)
+      .eq('restaurant_id', restaurantId)
+      .order('sort_order', { ascending: true })
+      .order('name', { ascending: true });
+
+    if (!includeInactive) {
+      categoriesQuery = categoriesQuery.eq('active', true);
+      productsQuery = productsQuery.eq('active', true);
+    }
+
     const [categoriesRes, productsRes, addonGroupsRes] = await Promise.all([
-      supabase
-        .from('categories')
-        .select('*')
-        .eq('restaurant_id', restaurantId)
-        .eq('active', true)
-        .order('name'),
-      supabase
-        .from('products')
-        .select(`
-          *,
-          product_categories(category_id),
-          variations(*)
-        `)
-        .eq('restaurant_id', restaurantId)
-        .eq('active', true)
-        .order('sort_order', { ascending: true })
-        .order('name', { ascending: true }),
+      categoriesQuery,
+      productsQuery,
       supabase
         .from('addon_groups')
         .select(`
@@ -294,9 +304,19 @@ router.get('/products/:code', async (req, res) => {
         .eq('active', true)
     ]);
 
-    const categories = categoriesRes.data;
-    const products = productsRes.data;
+    const products = productsRes.data || [];
     const addonGroups = addonGroupsRes.data;
+    let categories = categoriesRes.data || [];
+
+    // App safety: never expose an empty category title. This also repairs the
+    // old state where a category stayed active while all of its products were disabled.
+    if (!includeInactive) {
+      const visibleCategoryIds = new Set();
+      products.forEach(product => {
+        (product.product_categories || []).forEach(link => visibleCategoryIds.add(String(link.category_id)));
+      });
+      categories = categories.filter(category => visibleCategoryIds.has(String(category.id)));
+    }
 
 // Format products
     const formattedProducts = (products || []).map(p => ({
@@ -445,6 +465,53 @@ router.delete('/product/:id', async (req, res) => {
 });
 
 
+
+// PATCH /posup/category/:id — update category fields (used for enable/disable)
+router.patch('/category/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const allowed = {};
+    if (typeof req.body.active === 'boolean') allowed.active = req.body.active;
+    if (typeof req.body.name === 'string' && req.body.name.trim()) allowed.name = req.body.name.trim();
+    if (Number.isFinite(Number(req.body.sort_order))) allowed.sort_order = Number(req.body.sort_order);
+
+    if (Object.keys(allowed).length === 0) {
+      return res.status(400).json({ success: false, error: 'No valid category fields provided' });
+    }
+
+    const { data, error } = await supabase
+      .from('categories')
+      .update(allowed)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    res.json({ success: true, category: data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /posup/category/:id — remove category only, keep products
+router.delete('/category/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Remove all references first. Products themselves are intentionally kept.
+    const { error: pcError } = await supabase.from('product_categories').delete().eq('category_id', id);
+    if (pcError) throw new Error(pcError.message);
+
+    const { error: addonError } = await supabase.from('addon_category_assignments').delete().eq('category_id', id);
+    if (addonError) throw new Error(addonError.message);
+
+    const { error } = await supabase.from('categories').delete().eq('id', id);
+    if (error) throw new Error(error.message);
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // POST /posup/category — add new category
 router.post('/category', async (req, res) => {
