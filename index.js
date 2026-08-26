@@ -214,73 +214,9 @@ async function saveToken(code, token, channelId = 'foodup_default') {
 }
 
 async function removeToken(code, token) {
-  await redisCommand(
-    "SREM",
-    k(code, "device_tokens"),
-    token
-  );
-
-  await redisCommand(
-    "DEL",
-    k(code, `token_channel:${token}`)
-  );
-
-  // If this was the active FoodUp Orders token,
-  // revoke the active-device assignment as well.
-  const activeTokenData = await redisCommand(
-    "GET",
-    k(code, "active_order_token")
-  );
-
-  if (
-    String(activeTokenData.result || "") ===
-    String(token)
-  ) {
-    await redisCommand(
-      "DEL",
-      k(code, "active_order_token"),
-      k(code, "active_order_device_id")
-    );
-  }
+  await redisCommand("SREM", k(code, "device_tokens"), token);
+  await redisCommand("DEL", k(code, `token_channel:${token}`));
 }
-
-async function getOrderTokens(code) {
-  const printerData = await redisCommand(
-    "GET",
-    k(code, "printer_device_id")
-  );
-
-  const printerDeviceId =
-    String(printerData.result || "").trim();
-
-  // Backwards compatibility:
-  // restaurants without a configured device ID keep old behaviour.
-  if (!printerDeviceId) {
-    return getTokens(code);
-  }
-
-  const [activeTokenData, activeDeviceData] = await Promise.all([
-    redisCommand("GET", k(code, "active_order_token")),
-    redisCommand("GET", k(code, "active_order_device_id")),
-  ]);
-
-  const activeToken =
-    String(activeTokenData.result || "").trim();
-
-  const activeDeviceId =
-    String(activeDeviceData.result || "").trim();
-
-  if (
-    !activeToken ||
-    !activeDeviceId ||
-    activeDeviceId !== printerDeviceId
-  ) {
-    return [];
-  }
-
-  return [activeToken];
-}
-
 
 async function getOrderAcceptanceState(code, orderId) {
   const state = await redisCommand(
@@ -581,165 +517,32 @@ app.post("/verify-restaurant", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/register-token", async (req, res) => {
-  const {
-    token,
-    restaurant_code,
-    channel_id,
-    device_id,
-  } = req.body;
+  const { token, restaurant_code, channel_id } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
 
-  const code =
-    restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  if (!token) return res.json({ success: false, message: "Token required" });
 
-  if (!code) {
-    return res.json({
-      success: false,
-      message: "Restaurant code required",
-    });
-  }
+  console.log("Registering token for:", code, "channel:", channel_id || 'foodup_default');
 
-  if (!token) {
-    return res.json({
-      success: false,
-      message: "Token required",
-    });
-  }
-
-  const printerData = await redisCommand(
-    "GET",
-    k(code, "printer_device_id")
-  );
-
-  const printerDeviceId =
-    String(printerData.result || "").trim();
-
-  const incomingDeviceId =
-    String(device_id || "").trim();
-
-  /*
-   * Once a restaurant has a registered device ID,
-   * only that physical Android device may register
-   * as the active FoodUp Orders terminal.
-   */
-  if (
-    printerDeviceId &&
-    incomingDeviceId !== printerDeviceId
-  ) {
-    await removeToken(code, token);
-
-    const activeTokenData = await redisCommand(
-      "GET",
-      k(code, "active_order_token")
-    );
-
-    if (
-      String(activeTokenData.result || "") ===
-      String(token)
-    ) {
-      await redisCommand(
-        "DEL",
-        k(code, "active_order_token"),
-        k(code, "active_order_device_id")
-      );
-    }
-
-    console.log(
-      "Rejected order-device registration:",
-      code,
-      "device:",
-      incomingDeviceId || "missing",
-      "required:",
-      printerDeviceId
-    );
-
-    return res.status(403).json({
-      success: false,
-      authorized: false,
-      message:
-        "This device is not the registered FoodUp Orders device",
-    });
-  }
-
-  console.log(
-    "Registering token for:",
-    code,
-    "channel:",
-    channel_id || "foodup_default",
-    "device:",
-    incomingDeviceId || "none"
-  );
-
-  // Remove this Expo token from all other restaurants.
+  // Remove this token from all other restaurants first
   try {
-    const allRestaurants =
-      await redisCommand("SMEMBERS", "restaurants");
+    const allRestaurants = await redisCommand("SMEMBERS", "restaurants");
+    const others = (allRestaurants.result || []).filter(function(r) { return r !== code; });
 
-    const others =
-      (allRestaurants.result || [])
-        .filter(function(r) {
-          return r !== code;
-        });
-
-    await Promise.all(
-      others.map(async function(otherCode) {
-        const members = await redisCommand(
-          "SMEMBERS",
-          k(otherCode, "device_tokens")
-        );
-
-        if (
-          members.result &&
-          members.result.includes(token)
-        ) {
-          await removeToken(otherCode, token);
-        }
-      })
-    );
+    await Promise.all(others.map(async function(otherCode) {
+      const members = await redisCommand("SMEMBERS", k(otherCode, "device_tokens"));
+      if (members.result && members.result.includes(token)) {
+        await removeToken(otherCode, token);
+        console.log("Removed duplicate token from " + otherCode);
+      }
+    }));
   } catch (e) {
-    console.log(
-      "Error cleaning duplicate tokens:",
-      e
-    );
+    console.log("Error cleaning duplicate tokens:", e);
   }
 
-  await saveToken(
-    code,
-    token,
-    channel_id || "foodup_default"
-  );
-
-  if (printerDeviceId) {
-    /*
-     * This is the registered physical order device.
-     * Remove every old token from this restaurant.
-     */
-    const existingTokens = await getTokens(code);
-
-    await Promise.all(
-      existingTokens
-        .filter(existing => existing !== token)
-        .map(existing =>
-          removeToken(code, existing)
-        )
-    );
-
-    await redisCommand(
-      "SET",
-      k(code, "active_order_token"),
-      token
-    );
-
-    await redisCommand(
-      "SET",
-      k(code, "active_order_device_id"),
-      incomingDeviceId
-    );
-  }
-
-  res.json({
-    success: true,
-    authorized: true,
-  });
+  await saveToken(code, token, channel_id || 'foodup_default');
+  res.json({ success: true });
 });
 
 app.post("/unregister-token", async (req, res) => {
@@ -778,7 +581,7 @@ app.post("/new-order", async (req, res) => {
   order.received_at = new Date().toISOString();
 await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
   await upsertOrderInList(code, order);
-  const deviceTokens = await getOrderTokens(code);
+  const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) {
     return res.json({ success: false, message: "No device tokens registered" });
   }
@@ -877,7 +680,7 @@ console.log("Full order data:", JSON.stringify(order));
 // Update order status in orders list
   await upsertOrderInList(code, order);
 
-  const deviceTokens = await getOrderTokens(code);
+  const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) return res.json({ success: false });
 
   let itemsString = '[]';
@@ -2256,90 +2059,15 @@ app.get("/debug-tokens/:code", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/set-printer-device", async (req, res) => {
-  const {
-    restaurant_code,
-    owner_pin,
-    device_id,
-  } = req.body;
-
-  const code =
-    restaurant_code?.toLowerCase().trim();
-
-  const newDeviceId =
-    String(device_id || "").trim();
-
-  if (!code) {
-    return res.json({ success: false });
+  const { restaurant_code, owner_pin, device_id } = req.body;
+  const code = restaurant_code?.toLowerCase().trim();
+  if (!code) return res.json({ success: false });
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || storedPin.result !== owner_pin) {
+    return res.json({ success: false, message: "Unauthorized" });
   }
-
-  const storedPin = await redisCommand(
-    "GET",
-    k(code, "pin")
-  );
-
-  if (
-    !storedPin.result ||
-    storedPin.result !== owner_pin
-  ) {
-    return res.json({
-      success: false,
-      message: "Unauthorized",
-    });
-  }
-
-  const previousData = await redisCommand(
-    "GET",
-    k(code, "printer_device_id")
-  );
-
-  const previousDeviceId =
-    String(previousData.result || "").trim();
-
-  const changed =
-    previousDeviceId !== newDeviceId;
-
-  await redisCommand(
-    "SET",
-    k(code, "printer_device_id"),
-    newDeviceId
-  );
-
-  /*
-   * Device changed:
-   * immediately revoke all old push registrations.
-   * The newly registered device will claim the
-   * restaurant when FoodUp Orders opens/resumes.
-   */
-  if (changed) {
-    const existingTokens = await getTokens(code);
-
-    await Promise.all(
-      existingTokens.map(token =>
-        removeToken(code, token)
-      )
-    );
-
-    await redisCommand(
-      "DEL",
-      k(code, "active_order_token"),
-      k(code, "active_order_device_id")
-    );
-
-    console.log(
-      "Order device changed for",
-      code,
-      "from",
-      previousDeviceId || "none",
-      "to",
-      newDeviceId || "none",
-      "- old tokens revoked"
-    );
-  }
-
-  res.json({
-    success: true,
-    changed,
-  });
+  await redisCommand("SET", k(code, "printer_device_id"), device_id);
+  res.json({ success: true });
 });
 
 app.get("/printer-device/:code", async (req, res) => {
@@ -2443,7 +2171,7 @@ app.post("/wc-webhook", async (req, res) => {
     await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
     await upsertOrderInList(code, order);
 
-    const deviceTokens = await getOrderTokens(code);
+    const deviceTokens = await getTokens(code);
     if (deviceTokens.length === 0) return res.json({ success: true, message: "No tokens" });
 
     const itemsString = JSON.stringify(items);
@@ -2602,7 +2330,7 @@ app.post("/auto-accepted-notify", async (req, res) => {
 
   console.log("Auto-accepted notify for:", code, order_id);
 
-  const deviceTokens = await getOrderTokens(code);
+  const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) return res.json({ success: false, message: "No tokens" });
 
   let itemsString = '[]';
@@ -3718,7 +3446,7 @@ async function runAutoActions() {
               );
 
               // Send push notification for print button
-              const deviceTokens = await getOrderTokens(code);
+              const deviceTokens = await getTokens(code);
               if (deviceTokens.length > 0) {
                 let itemsString = '[]';
                 try { itemsString = JSON.stringify(order.items || []); } catch(e) {}
@@ -3805,7 +3533,7 @@ async function runAutoActions() {
               );
 
               // Send status update push notification
-              const deviceTokens = await getOrderTokens(code);
+              const deviceTokens = await getTokens(code);
               if (deviceTokens.length > 0) {
                 const messages = deviceTokens.map(token => ({
                   to: token,
