@@ -562,25 +562,28 @@ app.post("/new-order", async (req, res) => {
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
-  // Idempotency guard: if a new_order push was already sent for this order_id in the
-  // last 60 seconds, suppress this call. Protects against duplicate webhook calls no
-  // matter what causes them (checkout hook races, retries, etc.) — the backend no
-  // longer blindly trusts WordPress to only call this once.
-  const dedupeKey = k(code, `new_order_sent:${order.order_id}`);
-  const claimed = await redisCommand("SET", dedupeKey, "1", "NX", "EX", 60);
-  if (!claimed.result) {
-    console.log(`Duplicate /new-order suppressed for ${code} order ${order.order_id}`);
-    return res.json({ success: true, duplicate: true });
-  }
-
   console.log("New order received for:", code, order.order_id);
   console.log("Order date:", order.orderable_order_date, "Order time:", order.orderable_order_time);
   if (!order.date_created) {
     order.date_created = new Date().toISOString();
   }
-  order.received_at = new Date().toISOString();
-await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
+  order.received_at = order.received_at || new Date().toISOString();
+
+  // Persistence is authoritative and MUST happen before push deduplication.
+  // If Redis or the process fails after a dedupe claim but before persistence,
+  // a retry must still be able to recover the order instead of being suppressed.
+  await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
   await upsertOrderInList(code, order);
+
+  // Dedupe only the notification fan-out. Repeated /new-order calls still refresh
+  // the durable order record above, which makes retries safe for live restaurants.
+  const dedupeKey = k(code, `new_order_sent:${order.order_id}`);
+  const claimed = await redisCommand("SET", dedupeKey, "1", "NX", "EX", 60);
+  if (!claimed.result) {
+    console.log(`Duplicate /new-order push suppressed for ${code} order ${order.order_id}`);
+    return res.json({ success: true, duplicate: true, persisted: true });
+  }
+
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) {
     return res.json({ success: false, message: "No device tokens registered" });
@@ -616,6 +619,8 @@ await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
 
   const messages = deviceTokens.map(token => ({
     to: token,
+    priority: "high",
+    ttl: 900,
     sound: order.sound === false ? null : "default",
     title: `🛒 New Order #${order.order_id}`,
     body: `${order.customer_name} • ${order.currency} ${order.total}`,
@@ -640,6 +645,7 @@ await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
       orderable_order_date: String(order.orderable_order_date || ''),
       orderable_order_time: String(order.orderable_order_time || ''),
       date_created: String(order.date_created || ''),
+      received_at: String(order.received_at || ''),
       sent_at: new Date().toISOString(),
     },
   }));
@@ -1584,6 +1590,131 @@ app.get("/dedup-orders/:code", async (req, res) => {
 });
 
 // -------------------------------------------------------
+// LIVE ORDER RECONCILIATION
+// -------------------------------------------------------
+// Push notifications are an accelerator, not the source of truth. The Orders app
+// calls this lightweight endpoint while foregrounded so a delayed/missed FCM/Expo
+// push cannot hide a real order. `after` is the highest WooCommerce order ID the
+// current app process has already reconciled. On first sync (`after=0`) we return
+// the most recent window so unhandled orders can be recovered after a restart.
+app.get("/live-sync/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const after = Math.max(0, parseInt(String(req.query.after || '0'), 10) || 0);
+  const limit = Math.min(50, Math.max(10, parseInt(String(req.query.limit || '30'), 10) || 30));
+
+  try {
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, limit - 1);
+    const recentOrders = (listData.result || [])
+      .map(raw => {
+        try { return foodupNormalizeOrderFulfillment(JSON.parse(raw)); }
+        catch (e) { return null; }
+      })
+      .filter(Boolean);
+
+    const newestOrderId = recentOrders.reduce((max, order) => {
+      const id = Number(order.order_id || 0);
+      return Number.isFinite(id) ? Math.max(max, id) : max;
+    }, after);
+
+    const newOrders = after > 0
+      ? recentOrders.filter(order => Number(order.order_id || 0) > after)
+      : recentOrders;
+
+    // Reconcile state for both newly discovered orders and any pending order IDs
+    // the client already knows about. This lets the app close a modal/remove Review
+    // even when the separate auto/manual acceptance push was missed.
+    const pendingIds = String(req.query.pending || '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(value => /^\d+$/.test(value))
+      .slice(0, 40);
+
+    const stateIds = [...new Set([
+      ...newOrders.map(order => String(order.order_id || '')).filter(Boolean),
+      ...pendingIds,
+    ])].slice(0, 50);
+
+    const includeDeviceState = after === 0 || stateIds.length > 0;
+    const stateKeys = [];
+    for (const orderId of stateIds) {
+      stateKeys.push(
+        k(code, `accepted_time:${orderId}`),
+        k(code, `rejected_time:${orderId}`),
+        k(code, `auto_actioned:${orderId}`),
+        k(code, `auto_accepted:${orderId}`)
+      );
+    }
+    if (includeDeviceState) {
+      stateKeys.push(k(code, "auto_settings"), k(code, "printer_device_id"));
+    }
+
+    // Idle foreground sync is intentionally one Redis LRANGE only. The second
+    // MGET is performed only on bootstrap, when a new order exists, or while the
+    // app has pending decisions that need reconciliation.
+    const stateData = stateKeys.length > 0
+      ? await redisCommand("MGET", ...stateKeys)
+      : { result: [] };
+    const values = stateData.result || [];
+
+    const states = {};
+    let offset = 0;
+    for (const orderId of stateIds) {
+      const acceptedRaw = values[offset++];
+      const rejectedRaw = values[offset++];
+      const autoActionedRaw = values[offset++];
+      const autoAcceptedRaw = values[offset++];
+
+      let accepted = null;
+      if (acceptedRaw) {
+        try { accepted = JSON.parse(acceptedRaw); }
+        catch (e) { accepted = { accepted_time: String(acceptedRaw) }; }
+      }
+
+      states[orderId] = {
+        accepted,
+        rejected: Boolean(rejectedRaw),
+        auto_actioned: Boolean(autoActionedRaw),
+        auto_accepted: Boolean(autoAcceptedRaw) || Boolean(accepted?.auto_accepted) || accepted?.source === 'auto',
+      };
+    }
+
+    let autoSettings = null;
+    let printerDeviceId = null;
+    if (includeDeviceState) {
+      const autoSettingsRaw = values[offset++];
+      printerDeviceId = values[offset++] || '';
+      autoSettings = {
+        auto_action: 'disabled',
+        wait_minutes: 5,
+        accept_time: '30 Minutes',
+        reject_reason: 'Zu beschäftigt',
+      };
+      if (autoSettingsRaw) {
+        try { autoSettings = JSON.parse(autoSettingsRaw); } catch (e) {}
+      }
+    }
+
+    const stateIdSet = new Set(stateIds);
+    const stateOrders = recentOrders.filter(order => stateIdSet.has(String(order.order_id || '')));
+
+    res.json({
+      success: true,
+      server_time: new Date().toISOString(),
+      cursor: newestOrderId,
+      orders: newOrders.sort((a, b) => Number(a.order_id || 0) - Number(b.order_id || 0)),
+      state_orders: stateOrders,
+      states,
+      device_state_included: includeDeviceState,
+      auto_settings: autoSettings,
+      printer_device_id: printerDeviceId,
+    });
+  } catch (e) {
+    console.log(`live-sync error for ${code}:`, e.message);
+    res.json({ success: false, cursor: after, orders: [], states: {} });
+  }
+});
+
+// -------------------------------------------------------
 // ORDERS LIST
 // -------------------------------------------------------
 
@@ -2081,6 +2212,8 @@ app.post("/accepted-time", async (req, res) => {
     accepted_time,
     status,
     accepted_at: accepted_at || new Date().toISOString(),
+    source: 'manual',
+    auto_accepted: false,
   };
   await redisCommand("SET", k(code, `accepted_time:${order_id}`), JSON.stringify(data), "EX", 604800);
 
@@ -3662,6 +3795,8 @@ async function runAutoActions() {
                   accepted_time: effectiveAcceptTime,
                   accepted_at: new Date().toISOString(),
                   status: 'accepted',
+                  source: 'auto',
+                  auto_accepted: true,
                 }),
                 "EX",
                 86400
@@ -3675,6 +3810,8 @@ async function runAutoActions() {
 
                 const messages = deviceTokens.map(token => ({
                   to: token,
+                  priority: "high",
+                  ttl: 900,
                   sound: null,
                   title: `✅ Order #${order.order_id} auto-accepted`,
                   body: `${order.customer_name} • ${order.currency} ${order.total}`,
