@@ -399,6 +399,18 @@ router.get('/profile/:code', async (req, res) => {
       .single();
 
     if (error || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
+    // POSUP Bluetooth dashboard selection must win over legacy WordPress printer sync.
+    if (restaurant.printer_model === 'epson_bluetooth') {
+      return res.json({
+        name:            restaurant.name,
+        logo_url:        restaurant.logo_url,
+        printer_ip:      '',
+        printer_port:    '',
+        printer_model:   'epson_bluetooth',
+        currency:        restaurant.currency,
+        currency_symbol: restaurant.currency_symbol,
+      });
+    }
 
     // Try to fetch live printer + pin settings from WordPress
     if (restaurant.wp_site_url && restaurant.secret_key) {
