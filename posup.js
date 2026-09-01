@@ -1443,12 +1443,23 @@ router.post('/orders/:code', async (req, res) => {
 
     if (!restaurant) return res.status(404).json({ success: false, error: 'Restaurant not found' });
 
-    const { count } = await supabase
+    // Generate the next POS number from the highest remaining saved number.
+    // This avoids duplicate receipt numbers when old/test sales are deleted.
+    const { data: existingOrderNumbers, error: orderNumberError } = await supabase
       .from('pos_orders')
-      .select('*', { count: 'exact', head: true })
-      .eq('restaurant_id', restaurant.id);
+      .select('order_number')
+      .eq('restaurant_id', restaurant.id)
+      .like('order_number', 'POS-%')
+      .limit(5000);
 
-    const orderNumber = `POS-${String((count || 0) + 1).padStart(3, '0')}`;
+    if (orderNumberError) throw new Error(orderNumberError.message);
+
+    const maxOrderNumber = (existingOrderNumbers || []).reduce((max, row) => {
+      const match = /^POS-(\d+)$/.exec(String(row.order_number || ''));
+      return match ? Math.max(max, Number(match[1])) : max;
+    }, 0);
+
+    const orderNumber = `POS-${String(maxOrderNumber + 1).padStart(3, '0')}`;
 
     const { data, error } = await supabase
       .from('pos_orders')
@@ -1519,6 +1530,93 @@ router.get('/orders/:code', async (req, res) => {
     res.json({ success: true, orders: data || [] });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
+// ─────────────────────────────────────────
+// POSUP SALES MANAGER - DELETE SELECTED
+// Permanently removes only the selected POS sales for the selected restaurant.
+// ─────────────────────────────────────────
+router.post('/orders/:code/delete-selected', async (req, res) => {
+  const { code } = req.params;
+  const ids = Array.isArray(req.body?.ids)
+    ? req.body.ids.map(v => String(v || '').trim()).filter(Boolean)
+    : [];
+
+  if (req.body?.confirm !== 'DELETE_POSUP_SALES') {
+    return res.status(400).json({
+      success: false,
+      error: 'Delete confirmation is missing',
+    });
+  }
+
+  if (!ids.length) {
+    return res.status(400).json({
+      success: false,
+      error: 'Select at least one sale to delete',
+    });
+  }
+
+  if (ids.length > 200) {
+    return res.status(400).json({
+      success: false,
+      error: 'Delete at most 200 sales at a time',
+    });
+  }
+
+  try {
+    const { data: restaurant, error: restaurantError } = await supabase
+      .from('restaurants')
+      .select('id, code, name')
+      .eq('code', code)
+      .single();
+
+    if (restaurantError || !restaurant) {
+      return res.status(404).json({
+        success: false,
+        error: 'Restaurant not found',
+      });
+    }
+
+    const { data: matchingOrders, error: matchingError } = await supabase
+      .from('pos_orders')
+      .select('id, order_number')
+      .eq('restaurant_id', restaurant.id)
+      .in('id', ids);
+
+    if (matchingError) throw new Error(matchingError.message);
+
+    const matchingIds = (matchingOrders || []).map(row => row.id);
+
+    if (!matchingIds.length) {
+      return res.json({
+        success: true,
+        deleted_count: 0,
+        deleted_orders: [],
+      });
+    }
+
+    const { data: deleted, error: deleteError } = await supabase
+      .from('pos_orders')
+      .delete()
+      .eq('restaurant_id', restaurant.id)
+      .in('id', matchingIds)
+      .select('id, order_number');
+
+    if (deleteError) throw new Error(deleteError.message);
+
+    res.json({
+      success: true,
+      deleted_count: (deleted || []).length,
+      deleted_orders: deleted || [],
+    });
+  } catch (err) {
+    console.error('POSUP sales delete error:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
   }
 });
 
