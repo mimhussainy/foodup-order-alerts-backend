@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111217">
+  <title>FoodUp Control Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/admin/assets/admin.css">
+</head>
+<body>
+  <div id="loginView" class="login-view hidden">
+    <div class="login-card">
+      <div class="brand-mark">F</div>
+      <div class="login-brand">FoodUp</div>
+      <h1>Control Center</h1>
+      <p>Manage restaurants, orders, devices and platform health.</p>
+      <form id="loginForm">
+        <label for="password">Admin password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter password" required>
+        <button class="btn btn-primary btn-full" type="submit">Sign in</button>
+        <div id="loginError" class="form-error"></div>
+      </form>
+    </div>
+  </div>
+
+  <div id="appView" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark small">F</div>
+        <div><strong>FoodUp</strong><span>Control Center</span></div>
+      </div>
+      <nav class="nav-list">
+        <button class="nav-item active" data-view="overview"><span class="nav-icon">⌂</span><span>Overview</span></button>
+        <button class="nav-item" data-view="restaurants"><span class="nav-icon">▦</span><span>Restaurants</span><span id="navRestaurantCount" class="nav-count"></span></button>
+        <button class="nav-item" data-view="orders"><span class="nav-icon">≡</span><span>Orders</span></button>
+        <button class="nav-item" data-view="health"><span class="nav-icon">♡</span><span>Health</span><span id="navIssueCount" class="nav-count danger"></span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="backend-status"><span class="status-dot online"></span><div><strong>Backend online</strong><span id="lastRefresh">Not refreshed</span></div></div>
+        <button id="logoutBtn" class="nav-item logout"><span class="nav-icon">↪</span><span>Sign out</span></button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">FoodUp Platform</div>
+          <h1 id="pageTitle">Overview</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="search-wrap">
+            <span>⌕</span><input id="globalSearch" type="search" placeholder="Search restaurants or orders">
+          </div>
+          <button id="refreshBtn" class="icon-button" title="Refresh">↻</button>
+        </div>
+      </header>
+
+      <section id="view-overview" class="view active">
+        <div id="summaryCards" class="summary-grid skeleton-grid"></div>
+        <div class="dashboard-grid">
+          <section class="panel panel-large">
+            <div class="panel-head">
+              <div><h2>Restaurants</h2><p>Live operational overview</p></div>
+              <button class="text-button" data-jump="restaurants">View all →</button>
+            </div>
+            <div id="overviewRestaurants" class="restaurant-compact-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><h2>Needs attention</h2><p>Highest-priority issues</p></div></div>
+            <div id="attentionList" class="attention-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-restaurants" class="view">
+        <div class="section-toolbar">
+          <div class="filter-pills">
+            <button class="filter-pill active" data-status="all">All</button>
+            <button class="filter-pill" data-status="online">Online</button>
+            <button class="filter-pill" data-status="offline">Needs attention</button>
+          </div>
+          <select id="restaurantSort" class="select-control">
+            <option value="attention">Attention first</option>
+            <option value="name">Name A–Z</option>
+            <option value="orders">Orders today</option>
+            <option value="revenue">Revenue today</option>
+          </select>
+        </div>
+        <div class="panel table-panel">
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>Restaurant</th><th>Status</th><th>Features</th><th>Orders</th><th>Revenue</th><th>Devices</th><th>Printer</th><th></th></tr></thead>
+              <tbody id="restaurantsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-orders" class="view">
+        <div class="section-toolbar">
+          <div class="toolbar-title"><strong>Recent orders</strong><span id="ordersCount"></span></div>
+          <select id="ordersRestaurantFilter" class="select-control"><option value="all">All restaurants</option></select>
+        </div>
+        <div class="panel table-panel">
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead><tr><th>Order</th><th>Restaurant</th><th>Customer</th><th>Type</th><th>Payment</th><th>Status</th><th>Total</th><th>Time</th></tr></thead>
+              <tbody id="ordersTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-health" class="view">
+        <div id="healthSummary" class="health-summary"></div>
+        <div class="panel">
+          <div class="panel-head"><div><h2>Platform issues</h2><p>Operational problems across all restaurants</p></div></div>
+          <div id="healthIssues" class="health-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="drawerBackdrop" class="drawer-backdrop hidden"></div>
+  <aside id="restaurantDrawer" class="drawer hidden" aria-hidden="true">
+    <div class="drawer-head">
+      <div><div id="drawerStatus" class="drawer-status"></div><h2 id="drawerTitle">Restaurant</h2><p id="drawerCode"></p></div>
+      <button id="drawerClose" class="icon-button">×</button>
+    </div>
+    <div id="drawerContent" class="drawer-content"></div>
+  </aside>
+
+  <div id="modalBackdrop" class="modal-backdrop hidden"></div>
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-head"><h3 id="modalTitle"></h3><button id="modalClose" class="icon-button">×</button></div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+  <script src="/admin/assets/admin.js" defer></script>
+</body>
+</html>
