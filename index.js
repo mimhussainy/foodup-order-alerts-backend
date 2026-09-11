@@ -517,7 +517,7 @@ app.post("/verify-restaurant", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/register-token", async (req, res) => {
-  const { token, restaurant_code, channel_id } = req.body;
+  const { token, restaurant_code, channel_id, device_id, app_version } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
 
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
@@ -542,6 +542,17 @@ app.post("/register-token", async (req, res) => {
   }
 
   await saveToken(code, token, channel_id || 'foodup_default');
+
+  // A successful device registration is also a strong live signal. This makes
+  // freshly connected Orders App devices appear online immediately, even before
+  // the next periodic /heartbeat call arrives.
+  await redisCommand("SET", k(code, "heartbeat"), JSON.stringify({
+    last_seen: new Date().toISOString(),
+    device_id: device_id || '',
+    app_version: app_version || '',
+    source: 'register_token',
+  }), "EX", 86400);
+
   res.json({ success: true });
 });
 
