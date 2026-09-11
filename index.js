@@ -2738,7 +2738,7 @@ const posupRoutes = require('./posup');
 app.use('/posup', posupRoutes);
 const { startWebsiteMonitor } = require('./websiteMonitor');
 const { createMonitoringRoutes } = require('./monitoring');
-
+const { createControlCenter } = require('./controlCenter');
 const alertService = createAlertService(redisCommand, k);
 
 // -------------------------------------------------------
@@ -2747,6 +2747,7 @@ const alertService = createAlertService(redisCommand, k);
 
 const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
 app.use('/', createMonitoringRoutes(redisCommand, k, dashPassword));
+createControlCenter(app, redisCommand, k, dashPassword);
 
 // -------------------------------------------------------
 // HEARTBEAT
