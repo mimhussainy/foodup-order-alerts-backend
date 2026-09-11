@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css">
   <link rel="stylesheet" href="/admin/assets/admin.css">
 </head>
 <body>
@@ -33,14 +34,14 @@
         <div><strong>FoodUp</strong><span>Control Center</span></div>
       </div>
       <nav class="nav-list">
-        <button class="nav-item active" data-view="overview"><span class="nav-icon">⌂</span><span>Overview</span></button>
-        <button class="nav-item" data-view="restaurants"><span class="nav-icon">▦</span><span>Restaurants</span><span id="navRestaurantCount" class="nav-count"></span></button>
-        <button class="nav-item" data-view="orders"><span class="nav-icon">≡</span><span>Orders</span></button>
-        <button class="nav-item" data-view="health"><span class="nav-icon">♡</span><span>Health</span><span id="navIssueCount" class="nav-count danger"></span></button>
+        <button class="nav-item active" data-view="overview"><span class="nav-icon"><i class="ti ti-layout-dashboard"></i></span><span>Overview</span></button>
+        <button class="nav-item" data-view="restaurants"><span class="nav-icon"><i class="ti ti-building-store"></i></span><span>Restaurants</span><span id="navRestaurantCount" class="nav-count"></span></button>
+        <button class="nav-item" data-view="orders"><span class="nav-icon"><i class="ti ti-receipt-2"></i></span><span>Orders</span></button>
+        <button class="nav-item" data-view="health"><span class="nav-icon"><i class="ti ti-heartbeat"></i></span><span>Health</span><span id="navIssueCount" class="nav-count danger"></span></button>
       </nav>
       <div class="sidebar-foot">
         <div class="backend-status"><span class="status-dot online"></span><div><strong>Backend online</strong><span id="lastRefresh">Not refreshed</span></div></div>
-        <button id="logoutBtn" class="nav-item logout"><span class="nav-icon">↪</span><span>Sign out</span></button>
+        <button id="logoutBtn" class="nav-item logout"><span class="nav-icon"><i class="ti ti-logout-2"></i></span><span>Sign out</span></button>
       </div>
     </aside>
 
@@ -52,9 +53,9 @@
         </div>
         <div class="topbar-actions">
           <div class="search-wrap">
-            <span>⌕</span><input id="globalSearch" type="search" placeholder="Search restaurants or orders">
+            <span class="search-icon"><i class="ti ti-search"></i></span><input id="globalSearch" type="search" placeholder="Search restaurants or orders">
           </div>
-          <button id="refreshBtn" class="icon-button" title="Refresh">↻</button>
+          <button id="refreshBtn" class="icon-button" title="Refresh" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
         </div>
       </header>
 
@@ -64,7 +65,7 @@
           <section class="panel panel-large">
             <div class="panel-head">
               <div><h2>Restaurants</h2><p>Live operational overview</p></div>
-              <button class="text-button" data-jump="restaurants">View all →</button>
+              <button class="text-button" data-jump="restaurants">View all <i class="ti ti-arrow-right"></i></button>
             </div>
             <div id="overviewRestaurants" class="restaurant-compact-list"></div>
           </section>
@@ -128,14 +129,14 @@
   <aside id="restaurantDrawer" class="drawer hidden" aria-hidden="true">
     <div class="drawer-head">
       <div><div id="drawerStatus" class="drawer-status"></div><h2 id="drawerTitle">Restaurant</h2><p id="drawerCode"></p></div>
-      <button id="drawerClose" class="icon-button">×</button>
+      <button id="drawerClose" class="icon-button" aria-label="Close"><i class="ti ti-x"></i></button>
     </div>
     <div id="drawerContent" class="drawer-content"></div>
   </aside>
 
   <div id="modalBackdrop" class="modal-backdrop hidden"></div>
   <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
-    <div class="modal-head"><h3 id="modalTitle"></h3><button id="modalClose" class="icon-button">×</button></div>
+    <div class="modal-head"><h3 id="modalTitle"></h3><button id="modalClose" class="icon-button" aria-label="Close"><i class="ti ti-x"></i></button></div>
     <div id="modalBody" class="modal-body"></div>
   </div>
 

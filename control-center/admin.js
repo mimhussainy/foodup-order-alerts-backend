@@ -26,6 +26,7 @@
   };
   const statusLabel = status => ({ online:'Online', idle:'Idle', offline:'Offline', never:'Never seen', unknown:'Unknown' }[status] || status || 'Unknown');
   const initials = name => String(name || 'F').split(/\s+/).slice(0,2).map(x => x[0] || '').join('').toUpperCase();
+  const icon = name => `<i class="ti ti-${name}" aria-hidden="true"></i>`;
 
   async function api(url, options = {}) {
     const response = await fetch(url, {
@@ -113,7 +114,7 @@
 
   async function refreshAll() {
     $('#refreshBtn').disabled = true;
-    $('#refreshBtn').textContent = '…';
+    $('#refreshBtn').innerHTML = icon('loader-2'); $('#refreshBtn').classList.add('is-spinning');
     try {
       const [overview, orders, health] = await Promise.all([
         api('/admin/api/overview'),
@@ -133,7 +134,7 @@
       toast(error.message, 'error');
     } finally {
       $('#refreshBtn').disabled = false;
-      $('#refreshBtn').textContent = '↻';
+      $('#refreshBtn').innerHTML = icon('refresh'); $('#refreshBtn').classList.remove('is-spinning');
     }
   }
 
@@ -159,13 +160,13 @@
     if (!state.overview) return;
     const s = state.overview.summary || {};
     const cards = [
-      ['Restaurants', s.restaurants, 'purple', '▦'],
-      ['Online', s.online, 'green', '●'],
-      ['Needs attention', s.attention, 'red', '!'],
-      ['Orders today', s.orders_today, 'blue', '≡'],
-      ['Revenue today', fmtMoney(s.revenue_today), 'amber', '↗'],
+      ['Restaurants', s.restaurants, 'purple', 'building-store'],
+      ['Online', s.online, 'green', 'circle-check'],
+      ['Needs attention', s.attention, 'red', 'alert-triangle'],
+      ['Orders today', s.orders_today, 'blue', 'receipt-2'],
+      ['Revenue today', fmtMoney(s.revenue_today), 'amber', 'trending-up'],
     ];
-    $('#summaryCards').innerHTML = cards.map(([label,value,color,icon]) => `<div class="summary-card"><div class="summary-top"><span class="summary-icon ${color}">${icon}</span></div><div class="summary-value">${esc(value)}</div><div class="summary-label">${esc(label)}</div></div>`).join('');
+    $('#summaryCards').innerHTML = cards.map(([label,value,color,iconName]) => `<div class="summary-card"><div class="summary-top"><span class="summary-icon ${color}">${icon(iconName)}</span></div><div class="summary-value">${esc(value)}</div><div class="summary-label">${esc(label)}</div></div>`).join('');
 
     const query = state.search;
     const restaurants = state.restaurants.filter(r => !query || `${r.name} ${r.code} ${r.website}`.toLowerCase().includes(query));
@@ -177,7 +178,7 @@
         <div><span class="status-badge ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)}"></span>${esc(statusLabel(r.app_status))}</span></div>
         <div class="metric-cell"><strong>${esc(r.orders_today || 0)}</strong><span>orders</span></div>
         <div class="metric-cell"><strong>${esc(fmtMoney(r.revenue_today))}</strong><span>today</span></div>
-        <button class="row-action">›</button>
+        <button class="row-action" aria-label="Open restaurant">${icon('chevron-right')}</button>
       </div>`).join('') : '<div class="empty-box">No restaurants found.</div>';
 
     const attention = (state.overview.attention || []).filter(r => !query || `${r.name} ${r.code} ${(r.attention||[]).join(' ')}`.toLowerCase().includes(query));
@@ -211,7 +212,7 @@
       <td><div class="restaurant-name-cell"><div class="restaurant-avatar">${esc(initials(r.name))}</div><div><div class="restaurant-name">${esc(r.name)}</div><div class="restaurant-meta">${esc(r.code)}${r.website ? ' · '+esc(r.website) : ''}</div></div></div></td>
       <td><span class="status-badge ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)}"></span>${esc(statusLabel(r.app_status))}</span></td>
       <td><div class="feature-badges">${renderFeatureBadges(r.modules)}</div></td>
-      <td><strong>${esc(r.orders_today || 0)}</strong></td><td>${esc(fmtMoney(r.revenue_today))}</td><td>${esc(r.device_count || 0)}</td><td>${r.printer_device_id ? 'Connected' : '—'}</td><td><button class="row-action">›</button></td>
+      <td><strong>${esc(r.orders_today || 0)}</strong></td><td>${esc(fmtMoney(r.revenue_today))}</td><td>${esc(r.device_count || 0)}</td><td>${r.printer_device_id ? 'Connected' : '—'}</td><td><button class="row-action" aria-label="Open restaurant">${icon('chevron-right')}</button></td>
     </tr>`).join('') : '<tr><td colspan="8"><div class="empty-box">No restaurants match your filters.</div></td></tr>';
     bindRestaurantOpeners($('#view-restaurants'));
   }

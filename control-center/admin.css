@@ -19,3 +19,23 @@
 .modal-backdrop{position:fixed;inset:0;background:rgba(10,12,16,.42);z-index:100}.modal{position:fixed;z-index:110;left:50%;top:50%;transform:translate(-50%,-50%);width:min(430px,calc(100% - 30px));background:#fff;border-radius:17px;box-shadow:0 25px 90px rgba(0,0,0,.25);overflow:hidden}.modal-head{display:flex;align-items:center;justify-content:space-between;padding:17px 18px;border-bottom:1px solid var(--border)}.modal-head h3{font-size:14px;margin:0}.modal-body{padding:18px}.modal-body p{font-size:11px;color:#686e78;line-height:1.6}.modal-body input{width:100%;height:40px;border:1px solid var(--border);border-radius:9px;padding:0 10px;margin:7px 0 13px;outline:0}.modal-actions{display:flex;justify-content:flex-end;gap:8px}.toast-container{position:fixed;right:18px;bottom:18px;z-index:150;display:flex;flex-direction:column;gap:8px}.toast{background:#1e2025;color:#fff;padding:11px 13px;border-radius:10px;font-size:10px;font-weight:600;box-shadow:0 10px 35px rgba(0,0,0,.2)}.toast.error{background:#9f2f3d}.skeleton-grid:empty:before{content:"Loading platform data…";grid-column:1/-1;padding:30px;text-align:center;color:#9da2ad;font-size:11px}
 @media(max-width:1100px){.summary-grid{grid-template-columns:repeat(3,1fr)}.dashboard-grid{grid-template-columns:1fr}.search-wrap{width:240px}}
 @media(max-width:760px){.app-shell{display:block}.sidebar{top:auto;right:0;width:auto;height:66px;flex-direction:row;padding:7px 10px calc(7px + env(safe-area-inset-bottom));border-top:1px solid #25272d}.sidebar-brand,.sidebar-foot{display:none}.nav-list{flex-direction:row;width:100%;justify-content:space-around}.nav-item{flex:1;flex-direction:column;gap:2px;padding:5px 4px;font-size:9px}.nav-item .nav-icon{font-size:16px}.nav-count{display:none}.main{padding:0 15px 88px}.topbar{height:82px}.topbar h1{font-size:21px}.eyebrow{font-size:8px}.search-wrap{display:none}.summary-grid{grid-template-columns:repeat(2,1fr);gap:10px}.summary-card{min-height:94px;padding:14px}.summary-grid .summary-card:last-child{grid-column:span 2}.compact-row{grid-template-columns:minmax(150px,1fr) 80px 25px}.compact-row .metric-cell:nth-of-type(2),.compact-row .metric-cell:nth-of-type(3){display:none}.dashboard-grid{display:block}.dashboard-grid .panel{margin-bottom:12px}.section-toolbar{align-items:flex-start;flex-direction:column}.table-panel{margin:0 -15px;border-radius:0;border-left:0;border-right:0}.health-summary{grid-template-columns:1fr}.drawer{width:100%}.drawer-head{padding-top:calc(18px + env(safe-area-inset-top))}.edit-grid,.detail-grid,.module-grid{grid-template-columns:1fr}.toast-container{left:15px;right:15px;bottom:80px}.toast{text-align:center}}
+
+
+/* FoodUp Control Center v2.1 — Inter + Tabler Icons */
+html,body,button,input,select,textarea{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;}
+.ti{font-size:1.1em;line-height:1;vertical-align:-0.08em;}
+.nav-icon{display:grid;place-items:center;width:18px;height:18px;flex:0 0 18px;}
+.nav-icon .ti{font-size:17px;}
+.icon-button{display:inline-grid;place-items:center;}
+.icon-button .ti{font-size:19px;}
+.search-icon{display:grid;place-items:center;color:var(--muted);}
+.search-icon .ti{font-size:16px;}
+.text-button .ti{font-size:15px;margin-left:3px;}
+.summary-icon{display:grid!important;place-items:center;}
+.summary-icon .ti{font-size:17px;}
+.row-action{display:inline-grid!important;place-items:center;}
+.row-action .ti{font-size:18px;}
+.btn .ti{font-size:16px;margin-right:6px;}
+
+.is-spinning .ti{animation:foodup-spin .8s linear infinite;}
+@keyframes foodup-spin{to{transform:rotate(360deg)}}
