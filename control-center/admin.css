@@ -39,3 +39,29 @@ html,body,button,input,select,textarea{font-family:Inter,-apple-system,BlinkMacS
 
 .is-spinning .ti{animation:foodup-spin .8s linear infinite;}
 @keyframes foodup-spin{to{transform:rotate(360deg)}}
+
+
+/* FoodUp Control Center v2.2 — comfortable standard type scale */
+html,body{font-size:14px;}
+.sidebar-brand strong{font-size:16px}.sidebar-brand span{font-size:11.5px}
+.nav-item{font-size:13.5px;padding:11px 12px}.nav-count{font-size:11px}
+.backend-status strong{font-size:12px}.backend-status span:not(.status-dot){font-size:10.5px}
+.eyebrow{font-size:10.5px}.topbar h1{font-size:28px}
+.search-wrap input{font-size:13px}
+.summary-value{font-size:27px}.summary-label{font-size:11.5px}
+.panel-head h2{font-size:15px}.panel-head p{font-size:11.5px}.text-button{font-size:12px}
+.restaurant-name{font-size:13px}.restaurant-meta{font-size:11px;line-height:1.35}
+.metric-cell strong{font-size:12.5px}.metric-cell span{font-size:10.5px}
+.status-badge{font-size:10.5px;padding:5px 9px}
+.attention-title{font-size:12.5px}.attention-issues{font-size:11px}
+.filter-pill{font-size:11.5px;padding:8px 13px}.select-control{height:38px;font-size:11.5px}
+.data-table th{font-size:10.5px;padding:12px 15px}.data-table td{font-size:12.5px;padding:14px 15px}
+.feature-badge{font-size:9.5px;padding:4px 6px}.order-status{font-size:10.5px}
+.toolbar-title{font-size:13px}.toolbar-title span{font-size:11px}
+.health-card span{font-size:10.5px}.health-issue{font-size:11.5px}
+.drawer-head h2{font-size:22px}.drawer-head p{font-size:11.5px}.drawer-status{font-size:10.5px}
+.detail-section-head h3{font-size:12.5px}.detail-stat span{font-size:9.5px}.detail-stat strong{font-size:12.5px}
+.field label{font-size:10.5px}.field input{height:40px;font-size:12px}.module-toggle{font-size:11px;padding:10px 11px}
+.actions-row .btn{font-size:11px;padding:9px 11px}.mini-orders td{font-size:10.5px}
+.modal-head h3{font-size:15px}.modal-body p{font-size:12.5px}.toast{font-size:11.5px}.empty-box{font-size:12px}
+@media(max-width:760px){.nav-item{font-size:10px}.topbar h1{font-size:23px}.eyebrow{font-size:9px}.restaurant-name{font-size:12.5px}.restaurant-meta{font-size:10.5px}.data-table td{font-size:12px}}

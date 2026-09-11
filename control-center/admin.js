@@ -1,6 +1,6 @@
 (() => {
   const state = {
-    view: 'overview',
+    view: ['overview','restaurants','orders','health'].includes(location.hash.replace('#','')) ? location.hash.replace('#','') : 'overview',
     overview: null,
     restaurants: [],
     orders: [],
@@ -69,6 +69,7 @@
       const session = await api('/admin/api/session');
       if (!session.authenticated) return showLogin();
       showApp();
+      switchView(state.view, false);
       await refreshAll();
     } catch (_) {
       showLogin();
@@ -83,6 +84,7 @@
         await api('/admin/api/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) });
         $('#password').value = '';
         showApp();
+        switchView(state.view, false);
         await refreshAll();
       } catch (error) {
         $('#loginError').textContent = error.message;
@@ -138,8 +140,10 @@
     }
   }
 
-  function switchView(view) {
+  function switchView(view, updateUrl = true) {
+    if (!['overview','restaurants','orders','health'].includes(view)) view = 'overview';
     state.view = view;
+    if (updateUrl) history.replaceState(null, '', `#${view}`);
     $$('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
     $$('.nav-item[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
     $('#pageTitle').textContent = ({overview:'Overview',restaurants:'Restaurants',orders:'Orders',health:'Health & Alerts'}[view] || view);
