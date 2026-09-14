@@ -130,6 +130,123 @@ async function getOrderAcceptanceState(code, orderId) {
   return { accepted: true, rejected: false, message: "Order accepted" };
 }
 
+function foodupText(value) {
+  return String(value ?? '').trim();
+}
+
+function foodupMetaValue(order, key) {
+  const meta = Array.isArray(order?.meta_data) ? order.meta_data : [];
+  const found = meta.find(item => foodupText(item?.key) === key);
+  return found?.value;
+}
+
+function foodupFulfillmentType(order) {
+  const candidates = [
+    order?.fulfillment_type,
+    order?.order_type,
+    foodupMetaValue(order, '_foodup_fulfillment_type'),
+    foodupMetaValue(order, '_orderable_location_service_type'),
+    foodupMetaValue(order, '_orderable_order_service_type'),
+    foodupMetaValue(order, '_orderable_service_type'),
+  ];
+
+  for (const candidate of candidates) {
+    const raw = foodupText(candidate).toLowerCase();
+    const normalized = raw.replace(/-/g, '_').replace(/\s+/g, '_');
+    if (['dine_in', 'table', 'am_tisch', 'tisch'].includes(normalized)) return 'dine_in';
+    if (normalized === 'pickup') return 'pickup';
+    if (normalized === 'delivery') return 'delivery';
+  }
+
+  if (foodupText(order?.table_session_id)) return 'dine_in';
+  const qrNumber = Number(order?.qr_order_number || 0);
+  if (
+    Number.isInteger(qrNumber) && qrNumber >= 100 &&
+    (foodupText(order?.table_id) || foodupText(order?.table_number) || foodupText(order?.table_name))
+  ) return 'dine_in';
+
+  return 'unknown';
+}
+
+function foodupApplyOrderContext(order) {
+  const value = order && typeof order === 'object' ? order : {};
+  const fulfillment = foodupFulfillmentType(value);
+  if (fulfillment !== 'unknown') {
+    value.fulfillment_type = fulfillment;
+    if (!foodupText(value.order_type) && fulfillment === 'dine_in') value.order_type = 'dine_in';
+  }
+  return value;
+}
+
+function foodupOrderContextPushData(order) {
+  const value = foodupApplyOrderContext(order && typeof order === 'object' ? order : {});
+  return {
+    fulfillment_type: foodupText(value.fulfillment_type),
+    order_type: foodupText(value.order_type || value.fulfillment_type),
+    qr_order_number: foodupText(value.qr_order_number),
+    qr_service_day: foodupText(value.qr_service_day),
+    table_id: foodupText(value.table_id),
+    table_number: foodupText(value.table_number),
+    table_name: foodupText(value.table_name),
+    table_session_id: foodupText(value.table_session_id),
+    table_round_id: foodupText(value.table_round_id),
+    table_integration: foodupText(value.table_integration),
+    source: foodupText(value.source),
+  };
+}
+
+function foodupQrOrderNumber(order) {
+  const value = Number(order?.qr_order_number || 0);
+  return Number.isInteger(value) && value >= 100 ? value : null;
+}
+
+function foodupTableLabel(order) {
+  const tableName = foodupText(order?.table_name);
+  const tableNumber = foodupText(order?.table_number);
+  if (tableName) return tableName.replace(/^table\s+/i, 'Tisch ');
+  return tableNumber ? `Tisch ${tableNumber}` : '';
+}
+
+function foodupOrderLabel(order) {
+  const qrNumber = foodupQrOrderNumber(order);
+  return qrNumber !== null ? `QR #${qrNumber}` : `Order #${order?.order_id || ''}`;
+}
+
+function foodupPushOrderTitle(order) {
+  const tableLabel = foodupTableLabel(order);
+  const qrNumber = foodupQrOrderNumber(order);
+  if (qrNumber !== null) return `🛒 QR #${qrNumber}${tableLabel ? ` · ${tableLabel}` : ''}`;
+  return `🛒 New Order #${order?.order_id || ''}`;
+}
+
+function foodupPushOrderBody(order) {
+  if (foodupFulfillmentType(order) === 'dine_in') {
+    const tableLabel = foodupTableLabel(order);
+    const amount = `${foodupText(order?.currency)} ${foodupText(order?.total)}`.trim();
+    return [tableLabel, amount].filter(Boolean).join(' • ');
+  }
+  return `${foodupText(order?.customer_name)} - ${foodupText(order?.currency)} ${foodupText(order?.total)}`;
+}
+
+function foodupAutoAcceptedTitle(order) {
+  return `✓ ${foodupOrderLabel(order)} auto-accepted`;
+}
+
+async function foodupGetStoredOrderById(code, orderId) {
+  try {
+    const listData = await redisCommand('LRANGE', k(code, 'orders'), 0, 99);
+    for (const raw of listData.result || []) {
+      try {
+        const order = JSON.parse(raw);
+        if (String(order?.order_id) === String(orderId)) return order;
+      } catch (e) {}
+    }
+  } catch (e) {
+    console.log(`foodupGetStoredOrderById error for ${code} order ${orderId}:`, e.message);
+  }
+  return null;
+}
+
 // -------------------------------------------------------
 // RATE LIMITER
 // -------------------------------------------------------
@@ -302,7 +419,7 @@ app.post("/unregister-token", async (req, res) => {
 });
 
 app.post("/new-order", async (req, res) => {
-  const order = req.body;
+  const order = foodupApplyOrderContext(req.body || {});
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
@@ -361,8 +478,8 @@ app.post("/new-order", async (req, res) => {
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: order.sound === false ? null : "default",
-    title: `🛒 New Order #${order.order_id}`,
-    body: `${order.customer_name} - ${order.currency} ${order.total}`,
+    title: foodupPushOrderTitle(order),
+    body: foodupPushOrderBody(order),
     channelId: order.sound === false ? 'foodup_default' : (tokenChannels[token] || 'foodup_default'),
     data: {
       restaurant_code: code,
@@ -382,6 +499,7 @@ app.post("/new-order", async (req, res) => {
       orderable_order_date: String(order.orderable_order_date || ''),
       orderable_order_time: String(order.orderable_order_time || ''),
       date_created: String(order.date_created || ''),
+      ...foodupOrderContextPushData(order),
       sent_at: new Date().toISOString(),
     },
   }));
@@ -420,7 +538,10 @@ app.post("/status-update", async (req, res) => {
 console.log("Full order data:", JSON.stringify(order));
 
 // Update order status in orders list
+  foodupApplyOrderContext(order);
   await upsertOrderInList(code, order);
+  const storedOrder = await foodupGetStoredOrderById(code, order.order_id);
+  const pushOrder = foodupApplyOrderContext({ ...(storedOrder || {}), ...order });
 
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) return res.json({ success: false });
@@ -443,7 +564,7 @@ console.log("Full order data:", JSON.stringify(order));
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: null,
-    title: `Order #${order.order_id} updated`,
+    title: `${foodupOrderLabel(pushOrder)} updated`,
     body: `Status: ${order.status}`,
     data: {
       restaurant_code: code,
@@ -459,6 +580,7 @@ console.log("Full order data:", JSON.stringify(order));
       note: String(order.note || ''),
       shipping_method: String(order.shipping && order.shipping.method ? order.shipping.method : ''),
       shipping_address: String(order.shipping && order.shipping.address ? order.shipping.address : ''),
+      ...foodupOrderContextPushData(pushOrder),
       event_type: 'status_update',
     },
   }));
@@ -902,6 +1024,15 @@ app.post("/claim-order", async (req, res) => {
   const { order_id, delivery_name, restaurant_code, delivery_status } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code || !order_id || !delivery_name) return res.json({ success: false });
+
+  const storedOrder = await foodupGetStoredOrderById(code, order_id);
+  if (foodupFulfillmentType(storedOrder || req.body) === 'dine_in') {
+    return res.json({
+      success: false,
+      dine_in_order: true,
+      message: 'This is a dine-in order and cannot be assigned to a courier.',
+    });
+  }
 
   const acceptance = await getOrderAcceptanceState(code, order_id);
   if (!acceptance.accepted) {
@@ -1637,6 +1768,9 @@ app.post("/auto-accepted-notify", async (req, res) => {
 
   console.log("Auto-accepted notify for:", code, order_id);
 
+  const storedOrder = await foodupGetStoredOrderById(code, order_id);
+  const pushOrder = foodupApplyOrderContext({ ...(storedOrder || {}), ...orderData, order_id });
+
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) return res.json({ success: false, message: "No tokens" });
 
@@ -1648,8 +1782,8 @@ app.post("/auto-accepted-notify", async (req, res) => {
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: null,
-    title: `✓ Order #${order_id} auto-accepted`,
-    body: `${orderData.customer_name} - ${orderData.currency} ${orderData.total}`,
+    title: foodupAutoAcceptedTitle(pushOrder),
+    body: foodupPushOrderBody(pushOrder),
     data: {
       event_type: 'auto_accepted',
       restaurant_code: code,
@@ -1667,6 +1801,7 @@ app.post("/auto-accepted-notify", async (req, res) => {
       orderable_order_date: String(orderData.orderable_order_date || ''),
       orderable_order_time: String(orderData.orderable_order_time || ''),
       date_created: String(orderData.date_created || ''),
+      ...foodupOrderContextPushData(pushOrder),
       items: itemsString,
     },
   }));
@@ -2694,8 +2829,8 @@ async function runAutoActions() {
                 const messages = deviceTokens.map(token => ({
                   to: token,
                   sound: null,
-                  title: `✓ Order #${order.order_id} auto-accepted`,
-                  body: `${order.customer_name} - ${order.currency} ${order.total}`,
+                  title: foodupAutoAcceptedTitle(order),
+                  body: foodupPushOrderBody(order),
                   data: {
                     event_type: 'auto_accepted',
                     restaurant_code: code,
@@ -2713,6 +2848,7 @@ async function runAutoActions() {
                     orderable_order_date: String(order.orderable_order_date || ''),
                     orderable_order_time: String(order.orderable_order_time || ''),
                     date_created: String(order.date_created || ''),
+                    ...foodupOrderContextPushData(order),
                     items: itemsString,
                   },
                 }));
