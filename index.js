@@ -1173,6 +1173,175 @@ app.get("/dedup-orders/:code", async (req, res) => {
 });
 
 // -------------------------------------------------------
+// LIVE ORDER RECONCILIATION
+// -------------------------------------------------------
+// Push notifications are an accelerator, not the source of truth.
+// The Orders app calls this endpoint while foregrounded so delayed or
+// missed pushes cannot hide a real order.
+app.get("/live-sync/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const after = Math.max(0, parseInt(String(req.query.after || '0'), 10) || 0);
+  const limit = Math.min(
+    50,
+    Math.max(10, parseInt(String(req.query.limit || '30'), 10) || 30)
+  );
+
+  try {
+    const listData = await redisCommand(
+      "LRANGE",
+      k(code, "orders"),
+      0,
+      limit - 1
+    );
+
+    const recentOrders = (listData.result || [])
+      .map(raw => {
+        try {
+          return foodupApplyOrderContext(JSON.parse(raw));
+        } catch (e) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+
+    const newestOrderId = recentOrders.reduce((max, order) => {
+      const id = Number(order.order_id || 0);
+      return Number.isFinite(id) ? Math.max(max, id) : max;
+    }, after);
+
+    const newOrders =
+      after > 0
+        ? recentOrders.filter(order => Number(order.order_id || 0) > after)
+        : recentOrders;
+
+    const pendingIds = String(req.query.pending || '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(value => /^\d+$/.test(value))
+      .slice(0, 40);
+
+    const stateIds = [
+      ...new Set([
+        ...newOrders
+          .map(order => String(order.order_id || ''))
+          .filter(Boolean),
+        ...pendingIds,
+      ]),
+    ].slice(0, 50);
+
+    const includeDeviceState = after === 0 || stateIds.length > 0;
+
+    const stateKeys = [];
+
+    for (const orderId of stateIds) {
+      stateKeys.push(
+        k(code, `accepted_time:${orderId}`),
+        k(code, `rejected_time:${orderId}`),
+        k(code, `auto_actioned:${orderId}`),
+        k(code, `auto_accepted:${orderId}`)
+      );
+    }
+
+    if (includeDeviceState) {
+      stateKeys.push(
+        k(code, "auto_settings"),
+        k(code, "printer_device_id")
+      );
+    }
+
+    const stateData =
+      stateKeys.length > 0
+        ? await redisCommand("MGET", ...stateKeys)
+        : { result: [] };
+
+    const values = stateData.result || [];
+    const states = {};
+    let offset = 0;
+
+    for (const orderId of stateIds) {
+      const acceptedRaw = values[offset++];
+      const rejectedRaw = values[offset++];
+      const autoActionedRaw = values[offset++];
+      const autoAcceptedRaw = values[offset++];
+
+      let accepted = null;
+
+      if (acceptedRaw) {
+        try {
+          accepted = JSON.parse(acceptedRaw);
+        } catch (e) {
+          accepted = { accepted_time: String(acceptedRaw) };
+        }
+      }
+
+      states[orderId] = {
+        accepted,
+        rejected: Boolean(rejectedRaw),
+        auto_actioned: Boolean(autoActionedRaw),
+        auto_accepted:
+          Boolean(autoAcceptedRaw) ||
+          Boolean(accepted?.auto_accepted) ||
+          accepted?.source === 'auto',
+      };
+    }
+
+    let autoSettings = null;
+    let printerDeviceId = null;
+
+    if (includeDeviceState) {
+      const autoSettingsRaw = values[offset++];
+      printerDeviceId = values[offset++] || '';
+
+      autoSettings = {
+        auto_action: 'disabled',
+        wait_minutes: 5,
+        accept_time: '30 Minutes',
+        reject_reason: 'Zu beschäftigt',
+      };
+
+      if (autoSettingsRaw) {
+        try {
+          autoSettings = JSON.parse(autoSettingsRaw);
+        } catch (e) {}
+      }
+    }
+
+    const stateIdSet = new Set(stateIds);
+
+    const stateOrders = recentOrders.filter(order =>
+      stateIdSet.has(String(order.order_id || ''))
+    );
+
+    res.json({
+      success: true,
+      server_time: new Date().toISOString(),
+      cursor: newestOrderId,
+      orders: newOrders.sort(
+        (a, b) => Number(a.order_id || 0) - Number(b.order_id || 0)
+      ),
+      state_orders: stateOrders,
+      states,
+      device_state_included: includeDeviceState,
+      auto_settings: autoSettings,
+      printer_device_id: printerDeviceId,
+    });
+  } catch (e) {
+    console.log(`live-sync error for ${code}:`, e.message);
+
+    res.json({
+      success: false,
+      cursor: after,
+      orders: [],
+      state_orders: [],
+      states: {},
+      device_state_included: false,
+      auto_settings: null,
+      printer_device_id: null,
+    });
+  }
+});
+
+// -------------------------------------------------------
 // ORDERS LIST
 // -------------------------------------------------------
 
