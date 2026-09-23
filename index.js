@@ -1,6 +1,7 @@
 const express = require("express");
-const app = express();
-app.use(express.json());
+const { installAsyncRouteSafety } = require("./asyncRouteSafety");
+const app = installAsyncRouteSafety(express());
+app.use(express.json({ limit: "15mb" }));
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -12,18 +13,108 @@ app.use((req, res, next) => {
 
 const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const REDIS_TIMEOUT_MS = Math.max(1000, Number(process.env.REDIS_TIMEOUT_MS || 4000));
+const REDIS_MAX_ATTEMPTS = Math.max(1, Number(process.env.REDIS_MAX_ATTEMPTS || 2));
+const REDIS_CIRCUIT_FAILURES = Math.max(2, Number(process.env.REDIS_CIRCUIT_FAILURES || 3));
+const REDIS_CIRCUIT_OPEN_MS = Math.max(1000, Number(process.env.REDIS_CIRCUIT_OPEN_MS || 10000));
+
+let redisConsecutiveFailures = 0;
+let redisCircuitOpenUntil = 0;
+
+class FoodUpRedisUnavailableError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = "FoodUpRedisUnavailableError";
+    this.code = "FOODUP_REDIS_UNAVAILABLE";
+    if (cause) this.cause = cause;
+  }
+}
+
+function foodupSleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function foodupIsTransientRedisError(err) {
+  if (!err) return false;
+  if (err.name === "AbortError" || err.name === "TimeoutError") return true;
+  if (err.status === 429 || (err.status >= 500 && err.status <= 599)) return true;
+  const code = err.code || err.cause?.code || "";
+  return [
+    "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+    "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH"
+  ].includes(code) || err instanceof TypeError;
+}
 
 async function redisCommand(...args) {
-  const response = await fetch(`${UPSTASH_URL}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${UPSTASH_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(args),
-  });
-  return response.json();
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+    throw new FoodUpRedisUnavailableError("Upstash Redis is not configured");
+  }
+
+  if (Date.now() < redisCircuitOpenUntil) {
+    throw new FoodUpRedisUnavailableError("Upstash Redis circuit is temporarily open");
+  }
+
+  const command = String(args[0] || "UNKNOWN").toUpperCase();
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= REDIS_MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REDIS_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(UPSTASH_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${UPSTASH_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(args),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const httpError = new Error(`Upstash HTTP ${response.status}`);
+        httpError.status = response.status;
+        throw httpError;
+      }
+
+      const payload = await response.json();
+      if (payload && payload.error) {
+        const redisError = new Error(`Upstash command error: ${payload.error}`);
+        redisError.status = 400;
+        throw redisError;
+      }
+
+      redisConsecutiveFailures = 0;
+      redisCircuitOpenUntil = 0;
+      return payload;
+    } catch (err) {
+      lastError = err;
+      const transient = foodupIsTransientRedisError(err);
+      if (!transient || attempt >= REDIS_MAX_ATTEMPTS) break;
+      await foodupSleep(200 * attempt + Math.floor(Math.random() * 150));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  redisConsecutiveFailures += 1;
+  if (redisConsecutiveFailures >= REDIS_CIRCUIT_FAILURES) {
+    redisCircuitOpenUntil = Date.now() + REDIS_CIRCUIT_OPEN_MS;
+  }
+
+  const causeCode = lastError?.cause?.code || lastError?.code || lastError?.name || "unknown";
+  console.error(`[redis] ${command} failed after ${REDIS_MAX_ATTEMPTS} attempt(s): ${causeCode}`);
+  throw new FoodUpRedisUnavailableError(`Upstash Redis unavailable during ${command}`, lastError);
 }
+
+// Last-resort safety net. Route handlers and background jobs are wrapped/caught
+// below, but a rejected promise from an overlooked non-critical callback must not
+// terminate the entire Orders service.
+process.on("unhandledRejection", (reason) => {
+  const message = reason && reason.stack ? reason.stack : String(reason);
+  console.error("[process] Unhandled promise rejection contained:", message);
+});
 
 const k = (code, key) => `${code}:${key}`;
 
@@ -50,7 +141,11 @@ async function withRedisLock(lockKey, fn, maxWaitMs = 5000) {
     return await fn();
   } finally {
     if (acquired) {
-      await redisCommand("DEL", lockKey);
+      try {
+        await redisCommand("DEL", lockKey);
+      } catch (releaseErr) {
+        console.log(`withRedisLock: release failed for ${lockKey}:`, releaseErr.message);
+      }
     }
   }
 }
@@ -73,11 +168,18 @@ async function upsertOrderInList(code, order) {
 
       // Merge: prefer incoming fields but preserve received_at if already set
       const existing = orders.find(o => String(o.order_id) === String(order.order_id));
-      const merged = {
+      const mergedCandidate = {
         ...(existing || {}),
         ...order,
         received_at: existing?.received_at || order.received_at || new Date().toISOString(),
       };
+      const merged = foodupNormalizeOrderFulfillment(mergedCandidate);
+      if (
+        merged.fulfillment_type === "unknown"
+        && ["pickup", "delivery", "dine_in"].includes(foodupNormalizeText(existing?.fulfillment_type))
+      ) {
+        merged.fulfillment_type = foodupNormalizeText(existing.fulfillment_type);
+      }
 
       // Put merged order at top, keep max 100 unique
       const updated = [merged, ...filtered].slice(0, 100);
@@ -96,9 +198,9 @@ async function upsertOrderInList(code, order) {
 }
 
 async function isValidOwnerOrIosPin(code, pin) {
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  const storedIosPin = await redisCommand("GET", k(code, "ios_pin"));
-  return storedPin.result === pin || storedIosPin.result === pin;
+  const stored = await redisCommand("MGET", k(code, "pin"), k(code, "ios_pin"));
+  const [ownerPin, iosPin] = stored.result || [];
+  return ownerPin === pin || iosPin === pin;
 }
 
 async function getTokens(code) {
@@ -117,134 +219,253 @@ async function removeToken(code, token) {
 }
 
 async function getOrderAcceptanceState(code, orderId) {
-  const rejected = await redisCommand("GET", k(code, `rejected_time:${orderId}`));
-  if (rejected.result) {
+  const state = await redisCommand(
+    "MGET",
+    k(code, `rejected_time:${orderId}`),
+    k(code, `accepted_time:${orderId}`)
+  );
+  const [rejectedRaw, acceptedRaw] = state.result || [];
+  if (rejectedRaw) {
     return { accepted: false, rejected: true, message: "Order was rejected by restaurant owner" };
   }
-
-  const accepted = await redisCommand("GET", k(code, `accepted_time:${orderId}`));
-  if (!accepted.result) {
+  if (!acceptedRaw) {
     return { accepted: false, rejected: false, message: "Order is waiting for restaurant confirmation" };
   }
-
   return { accepted: true, rejected: false, message: "Order accepted" };
 }
 
-function foodupText(value) {
-  return String(value ?? '').trim();
+
+function foodupNormalizeText(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function foodupCourierFulfillmentEnforcementEnabled() {
+  const mode = foodupNormalizeText(
+    process.env.FOODUP_COURIER_FULFILLMENT_ENFORCEMENT || "log_only"
+  );
+  return ["enforce", "enabled", "on", "true", "1"].includes(mode);
+}
+
+function foodupLogCourierEligibilityDecision(context, code, orderId, eligibility) {
+  if (!eligibility || eligibility.allowed) return;
+  const action = foodupCourierFulfillmentEnforcementEnabled()
+    ? "blocked"
+    : "would_block";
+  console.warn(
+    `[fulfillment] ${action} ${context} for ${code}/${orderId}: ${eligibility.fulfillment_type} (${eligibility.code})`
+  );
 }
 
 function foodupMetaValue(order, key) {
-  const meta = Array.isArray(order?.meta_data) ? order.meta_data : [];
-  const found = meta.find(item => foodupText(item?.key) === key);
-  return found?.value;
-}
+  if (!order || typeof order !== "object") return "";
 
-function foodupFulfillmentType(order) {
-  const candidates = [
-    order?.fulfillment_type,
-    order?.order_type,
-    foodupMetaValue(order, '_foodup_fulfillment_type'),
-    foodupMetaValue(order, '_orderable_location_service_type'),
-    foodupMetaValue(order, '_orderable_order_service_type'),
-    foodupMetaValue(order, '_orderable_service_type'),
-  ];
-
-  for (const candidate of candidates) {
-    const raw = foodupText(candidate).toLowerCase();
-    const normalized = raw.replace(/-/g, '_').replace(/\s+/g, '_');
-    if (['dine_in', 'table', 'am_tisch', 'tisch'].includes(normalized)) return 'dine_in';
-    if (normalized === 'pickup') return 'pickup';
-    if (normalized === 'delivery') return 'delivery';
+  const direct = order[key];
+  if (direct !== undefined && direct !== null && String(direct).trim() !== "") {
+    return direct;
   }
 
-  if (foodupText(order?.table_session_id)) return 'dine_in';
-  const qrNumber = Number(order?.qr_order_number || 0);
+  const fulfillmentMeta = order.fulfillment_meta;
   if (
-    Number.isInteger(qrNumber) && qrNumber >= 100 &&
-    (foodupText(order?.table_id) || foodupText(order?.table_number) || foodupText(order?.table_name))
-  ) return 'dine_in';
+    fulfillmentMeta
+    && typeof fulfillmentMeta === "object"
+    && fulfillmentMeta[key] !== undefined
+    && fulfillmentMeta[key] !== null
+    && String(fulfillmentMeta[key]).trim() !== ""
+  ) {
+    return fulfillmentMeta[key];
+  }
 
-  return 'unknown';
+  const metaData = Array.isArray(order.meta_data) ? order.meta_data : [];
+  const match = metaData.find(item => item && item.key === key);
+  return match ? match.value : "";
 }
 
-function foodupApplyOrderContext(order) {
-  const value = order && typeof order === 'object' ? order : {};
-  const fulfillment = foodupFulfillmentType(value);
-  if (fulfillment !== 'unknown') {
-    value.fulfillment_type = fulfillment;
-    if (!foodupText(value.order_type) && fulfillment === 'dine_in') value.order_type = 'dine_in';
+function foodupDeriveFulfillmentType(order) {
+  const canonical = foodupNormalizeText(
+    foodupMetaValue(order, "_foodup_fulfillment_type")
+  );
+  if (["pickup", "delivery", "dine_in"].includes(canonical)) return canonical;
+
+  for (const key of [
+    "_orderable_location_service_type",
+    "orderable_service_type",
+    "_orderable_service_type",
+  ]) {
+    const value = foodupNormalizeText(foodupMetaValue(order, key));
+    if (["pickup", "delivery", "dine_in"].includes(value)) return value;
   }
-  return value;
+
+  const stored = foodupNormalizeText(order?.fulfillment_type);
+  if (["pickup", "delivery", "dine_in"].includes(stored)) return stored;
+
+  const orderType = foodupNormalizeText(order?.order_type).replace(/-/g, "_");
+  if (["pickup", "delivery", "dine_in"].includes(orderType)) return orderType;
+  if (["table", "dine in", "am tisch"].includes(orderType)) return "dine_in";
+
+  const methodIds = [
+    order?.shipping?.method_id,
+    order?.shipping?.methodId,
+    order?.shipping_method_id,
+  ].map(foodupNormalizeText).filter(Boolean);
+
+  if (methodIds.some(value => ["local_pickup", "orderable_pickup", "pickup"].includes(value))) {
+    return "pickup";
+  }
+  if (methodIds.some(value => ["foodup_delivery", "orderable_delivery", "delivery", "flat_rate"].includes(value))) {
+    return "delivery";
+  }
+
+  const labels = [
+    order?.shipping?.method,
+    order?.shipping?.label,
+    order?.shipping_method,
+  ].map(foodupNormalizeText).filter(Boolean);
+
+  const pickupLabels = new Set([
+    "abholung",
+    "abholen",
+    "pickup",
+    "pick up",
+    "pick-up",
+    "local pickup",
+    "local_pickup",
+  ]);
+  const deliveryLabels = new Set([
+    "lieferung",
+    "delivery",
+    "deliver",
+    "foodup delivery",
+    "foodup_delivery",
+  ]);
+
+  if (labels.some(value => pickupLabels.has(value))) return "pickup";
+  if (labels.some(value => deliveryLabels.has(value))) return "delivery";
+  if (labels.some(value => ["dine_in", "dine in", "table", "am tisch", "tisch"].includes(value))) return "dine_in";
+
+  return "unknown";
+}
+
+function foodupNormalizeOrderFulfillment(order) {
+  const normalized = { ...(order || {}) };
+  normalized.fulfillment_type = foodupDeriveFulfillmentType(normalized);
+  if (normalized.fulfillment_type === "unknown") {
+    console.warn(
+      `[fulfillment] Could not classify order ${normalized.order_id || normalized.id || "unknown"}`,
+      {
+        shipping_method: normalized.shipping_method || normalized.shipping?.method || "",
+        shipping_method_id: normalized.shipping_method_id || normalized.shipping?.method_id || "",
+      }
+    );
+  }
+  return normalized;
 }
 
 function foodupOrderContextPushData(order) {
-  const value = foodupApplyOrderContext(order && typeof order === 'object' ? order : {});
+  const value = order && typeof order === "object" ? order : {};
   return {
-    fulfillment_type: foodupText(value.fulfillment_type),
-    order_type: foodupText(value.order_type || value.fulfillment_type),
-    qr_order_number: foodupText(value.qr_order_number),
-    qr_service_day: foodupText(value.qr_service_day),
-    table_id: foodupText(value.table_id),
-    table_number: foodupText(value.table_number),
-    table_name: foodupText(value.table_name),
-    table_session_id: foodupText(value.table_session_id),
-    table_round_id: foodupText(value.table_round_id),
-    table_integration: foodupText(value.table_integration),
-    source: foodupText(value.source),
+    order_type: String(value.order_type || value.fulfillment_type || ''),
+    qr_order_number: String(value.qr_order_number || ''),
+    qr_service_day: String(value.qr_service_day || ''),
+    table_id: String(value.table_id || ''),
+    table_number: String(value.table_number || ''),
+    table_name: String(value.table_name || ''),
+    table_session_id: String(value.table_session_id || ''),
+    table_round_id: String(value.table_round_id || ''),
+    table_integration: String(value.table_integration || ''),
+    source: String(value.source || ''),
   };
 }
 
-function foodupQrOrderNumber(order) {
-  const value = Number(order?.qr_order_number || 0);
-  return Number.isInteger(value) && value >= 100 ? value : null;
-}
-
-function foodupTableLabel(order) {
-  const tableName = foodupText(order?.table_name);
-  const tableNumber = foodupText(order?.table_number);
+function foodupPushTableLabel(order) {
+  const tableName = String(order?.table_name || '').trim();
+  const tableNumber = String(order?.table_number || '').trim();
   if (tableName) return tableName.replace(/^table\s+/i, 'Tisch ');
   return tableNumber ? `Tisch ${tableNumber}` : '';
 }
 
-function foodupOrderLabel(order) {
-  const qrNumber = foodupQrOrderNumber(order);
-  return qrNumber !== null ? `QR #${qrNumber}` : `Order #${order?.order_id || ''}`;
-}
-
 function foodupPushOrderTitle(order) {
-  const tableLabel = foodupTableLabel(order);
-  const qrNumber = foodupQrOrderNumber(order);
-  if (qrNumber !== null) return `🛒 QR #${qrNumber}${tableLabel ? ` · ${tableLabel}` : ''}`;
+  const qrNumber = Number(order?.qr_order_number || 0);
+  if (order?.fulfillment_type === 'dine_in' && Number.isFinite(qrNumber) && qrNumber >= 100) {
+    const tableLabel = foodupPushTableLabel(order);
+    return `🛒 QR #${qrNumber}${tableLabel ? ` · ${tableLabel}` : ''}`;
+  }
   return `🛒 New Order #${order?.order_id || ''}`;
 }
 
 function foodupPushOrderBody(order) {
-  if (foodupFulfillmentType(order) === 'dine_in') {
-    const tableLabel = foodupTableLabel(order);
-    const amount = `${foodupText(order?.currency)} ${foodupText(order?.total)}`.trim();
+  if (order?.fulfillment_type === 'dine_in') {
+    const tableLabel = foodupPushTableLabel(order);
+    const amount = `${String(order?.currency || '')} ${String(order?.total || '')}`.trim();
     return [tableLabel, amount].filter(Boolean).join(' • ');
   }
-  return `${foodupText(order?.customer_name)} - ${foodupText(order?.currency)} ${foodupText(order?.total)}`;
-}
-
-function foodupAutoAcceptedTitle(order) {
-  return `✓ ${foodupOrderLabel(order)} auto-accepted`;
+  return `${String(order?.customer_name || '')} • ${String(order?.currency || '')} ${String(order?.total || '')}`;
 }
 
 async function foodupGetStoredOrderById(code, orderId) {
-  try {
-    const listData = await redisCommand('LRANGE', k(code, 'orders'), 0, 99);
-    for (const raw of listData.result || []) {
-      try {
-        const order = JSON.parse(raw);
-        if (String(order?.order_id) === String(orderId)) return order;
-      } catch (e) {}
-    }
-  } catch (e) {
-    console.log(`foodupGetStoredOrderById error for ${code} order ${orderId}:`, e.message);
+  const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+  const orders = (listData.result || []).map(raw => {
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  }).filter(Boolean);
+
+  const found = orders.find(order => String(order.order_id) === String(orderId));
+  if (found) return foodupNormalizeOrderFulfillment(found);
+
+  const lastData = await redisCommand("GET", k(code, "last_order"));
+  if (lastData.result) {
+    try {
+      const lastOrder = JSON.parse(lastData.result);
+      if (String(lastOrder.order_id) === String(orderId)) {
+        return foodupNormalizeOrderFulfillment(lastOrder);
+      }
+    } catch (e) {}
   }
+
   return null;
+}
+
+async function foodupCheckCourierEligibleOrder(code, orderId) {
+  const order = await foodupGetStoredOrderById(code, orderId);
+  if (!order) {
+    return {
+      allowed: false,
+      fulfillment_type: "unknown",
+      code: "order_not_found",
+      message: "Order not found",
+    };
+  }
+
+  const fulfillmentType = foodupDeriveFulfillmentType(order);
+  if (fulfillmentType === "delivery") {
+    return { allowed: true, fulfillment_type: fulfillmentType, order };
+  }
+
+  if (fulfillmentType === "pickup") {
+    return {
+      allowed: false,
+      fulfillment_type: fulfillmentType,
+      code: "pickup_order",
+      message: "This is a pickup order and cannot be assigned to a courier.",
+      order,
+    };
+  }
+
+  if (fulfillmentType === "dine_in") {
+    return {
+      allowed: false,
+      fulfillment_type: fulfillmentType,
+      code: "dine_in_order",
+      message: "This is a dine-in order and cannot be assigned to a courier.",
+      order,
+    };
+  }
+
+  return {
+    allowed: false,
+    fulfillment_type: "unknown",
+    code: "fulfillment_unknown",
+    message: "Order fulfillment type could not be verified. Courier assignment was blocked.",
+    order,
+  };
 }
 
 // -------------------------------------------------------
@@ -253,45 +474,8 @@ async function foodupGetStoredOrderById(code, orderId) {
 
 const rateLimitStore = {};
 const autoSettingsCache = {};
-const scheduledAutoActionTimers = new Map();
-
-async function scheduleExactAutoAction(code, order) {
-  try {
-    const key = `${code}:${order.order_id}`;
-    const existingTimer = scheduledAutoActionTimers.get(key);
-    if (existingTimer) clearTimeout(existingTimer);
-
-    let settings = autoSettingsCache[code];
-    if (!settings) {
-      const settingsData = await redisCommand("GET", k(code, "auto_settings"));
-      if (!settingsData.result) return;
-      settings = JSON.parse(settingsData.result);
-      autoSettingsCache[code] = settings;
-    }
-
-    if (!settings || settings.auto_action === 'disabled') return;
-
-    const waitMs = (Number(settings.wait_minutes) || 5) * 60 * 1000;
-    const receivedRaw = order.received_at || order.sent_at || order.date_created || new Date().toISOString();
-    const receivedMs = new Date(String(receivedRaw).replace(' ', 'T')).getTime();
-    const dueAt = (Number.isFinite(receivedMs) ? receivedMs : Date.now()) + waitMs;
-    const delay = Math.max(0, dueAt - Date.now() + 100);
-
-    const timer = setTimeout(async () => {
-      scheduledAutoActionTimers.delete(key);
-      try {
-        await runAutoActions();
-      } catch (e) {
-        console.log(`Exact auto-action timer error for ${key}:`, e.message);
-      }
-    }, delay);
-
-    scheduledAutoActionTimers.set(key, timer);
-    console.log(`Scheduled exact auto-action check for ${key} in ${delay}ms`);
-  } catch (e) {
-    console.log(`Could not schedule exact auto-action for ${code}:${order?.order_id}:`, e.message);
-  }
-}
+const statsResponseCache = new Map();
+const STATS_CACHE_TTL_MS = 10 * 1000;
 
 function rateLimit(ip, action, maxAttempts = 5, windowMs = 15 * 60 * 1000) {
   const key = `${action}:${ip}`;
@@ -342,18 +526,29 @@ setInterval(() => {
 // -------------------------------------------------------
 // RESTAURANT REGISTRATION
 // -------------------------------------------------------
-
 app.post("/register-restaurant", async (req, res) => {
-  const { restaurant_code, pin } = req.body;
-  if (!restaurant_code || !pin) {
-    return res.json({ success: false, message: "Restaurant code and PIN required" });
+  const { restaurant_code } = req.body;
+  let { pin } = req.body;
+  if (!restaurant_code) {
+    return res.json({ success: false, message: "Restaurant code required" });
   }
   const code = restaurant_code.toLowerCase().trim();
   const existing = await redisCommand("GET", k(code, "pin"));
   if (existing.result) {
     return res.json({ success: true, exists: true, message: "Restaurant already registered" });
   }
+
+  // Default Android/owner PIN if none provided
+  if (!pin) pin = "123445";
+
   await redisCommand("SET", k(code, "pin"), pin);
+
+  // Default iOS PIN — only set if not already present
+  const existingIosPin = await redisCommand("GET", k(code, "ios_pin"));
+  if (!existingIosPin.result) {
+    await redisCommand("SET", k(code, "ios_pin"), "1234");
+  }
+
   await redisCommand("SADD", "restaurants", code);
   console.log("New restaurant registered:", code);
   res.json({ success: true, exists: false, message: "Restaurant registered successfully" });
@@ -419,33 +614,31 @@ app.post("/unregister-token", async (req, res) => {
 });
 
 app.post("/new-order", async (req, res) => {
-  const order = foodupApplyOrderContext(req.body || {});
+  const order = foodupNormalizeOrderFulfillment(req.body);
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
-
-  // Idempotency guard: if a new_order push was already sent for this order_id in the
-  // last 60 seconds, suppress this call. Protects against duplicate webhook calls no
-  // matter what causes them (checkout hook races, retries, etc.) — the backend no
-  // longer blindly trusts WordPress to only call this once.
-  const dedupeKey = k(code, `new_order_sent:${order.order_id}`);
-  const claimed = await redisCommand("SET", dedupeKey, "1", "NX", "EX", 60);
-  if (!claimed.result) {
-    console.log(`Duplicate /new-order suppressed for ${code} order ${order.order_id}`);
-    return res.json({ success: true, duplicate: true });
-  }
 
   console.log("New order received for:", code, order.order_id);
   console.log("Order date:", order.orderable_order_date, "Order time:", order.orderable_order_time);
   if (!order.date_created) {
     order.date_created = new Date().toISOString();
   }
-  order.received_at = new Date().toISOString();
+  order.received_at = order.received_at || new Date().toISOString();
+
+  // Persistence is authoritative and MUST happen before push deduplication.
+  // If Redis or the process fails after a dedupe claim but before persistence,
+  // a retry must still be able to recover the order instead of being suppressed.
   await redisCommand("SET", k(code, "last_order"), JSON.stringify(order));
   await upsertOrderInList(code, order);
 
-  // Schedule this order's server-side auto action for its exact due time.
-  // The existing periodic sweep remains as a restart/failure safety net.
-  await scheduleExactAutoAction(code, order);
+  // Dedupe only the notification fan-out. Repeated /new-order calls still refresh
+  // the durable order record above, which makes retries safe for live restaurants.
+  const dedupeKey = k(code, `new_order_sent:${order.order_id}`);
+  const claimed = await redisCommand("SET", dedupeKey, "1", "NX", "EX", 60);
+  if (!claimed.result) {
+    console.log(`Duplicate /new-order push suppressed for ${code} order ${order.order_id}`);
+    return res.json({ success: true, duplicate: true, persisted: true });
+  }
 
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) {
@@ -470,13 +663,20 @@ app.post("/new-order", async (req, res) => {
   }
 
  const tokenChannels = {};
-  await Promise.all(deviceTokens.map(async token => {
-    const ch = await redisCommand("GET", k(code, `token_channel:${token}`));
-    tokenChannels[token] = ch.result || 'foodup_default';
-  }));
+  if (deviceTokens.length > 0) {
+    const channelData = await redisCommand(
+      "MGET",
+      ...deviceTokens.map(token => k(code, `token_channel:${token}`))
+    );
+    (channelData.result || []).forEach((channel, index) => {
+      tokenChannels[deviceTokens[index]] = channel || 'foodup_default';
+    });
+  }
 
   const messages = deviceTokens.map(token => ({
     to: token,
+    priority: "high",
+    ttl: 900,
     sound: order.sound === false ? null : "default",
     title: foodupPushOrderTitle(order),
     body: foodupPushOrderBody(order),
@@ -493,12 +693,15 @@ app.post("/new-order", async (req, res) => {
       items: itemsString,
       payment_method: String(order.payment_method || ''),
       note: String(order.note || ''),
+      fulfillment_type: String(order.fulfillment_type || 'unknown'),
       shipping_method: String(order.shipping && order.shipping.method ? order.shipping.method : ''),
+      shipping_method_id: String(order.shipping && order.shipping.method_id ? order.shipping.method_id : ''),
       shipping_address: String(order.shipping && order.shipping.address ? order.shipping.address : ''),
       event_type: String(order.event_type || 'new_order'),
       orderable_order_date: String(order.orderable_order_date || ''),
       orderable_order_time: String(order.orderable_order_time || ''),
       date_created: String(order.date_created || ''),
+      received_at: String(order.received_at || ''),
       ...foodupOrderContextPushData(order),
       sent_at: new Date().toISOString(),
     },
@@ -530,7 +733,7 @@ res.json({ success: true, result });
 });
 
 app.post("/status-update", async (req, res) => {
-  const order = req.body;
+  const order = foodupNormalizeOrderFulfillment(req.body);
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
 
@@ -538,10 +741,7 @@ app.post("/status-update", async (req, res) => {
 console.log("Full order data:", JSON.stringify(order));
 
 // Update order status in orders list
-  foodupApplyOrderContext(order);
   await upsertOrderInList(code, order);
-  const storedOrder = await foodupGetStoredOrderById(code, order.order_id);
-  const pushOrder = foodupApplyOrderContext({ ...(storedOrder || {}), ...order });
 
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) return res.json({ success: false });
@@ -564,8 +764,7 @@ console.log("Full order data:", JSON.stringify(order));
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: null,
-    title: `${foodupOrderLabel(pushOrder)} updated`,
-    body: `Status: ${order.status}`,
+    ...getOrderStatusNotification(order, order.status),
     data: {
       restaurant_code: code,
       order_id: String(order.order_id || ''),
@@ -578,9 +777,11 @@ console.log("Full order data:", JSON.stringify(order));
       items: itemsString,
       payment_method: String(order.payment_method || ''),
       note: String(order.note || ''),
+      fulfillment_type: String(order.fulfillment_type || 'unknown'),
       shipping_method: String(order.shipping && order.shipping.method ? order.shipping.method : ''),
+      shipping_method_id: String(order.shipping && order.shipping.method_id ? order.shipping.method_id : ''),
       shipping_address: String(order.shipping && order.shipping.address ? order.shipping.address : ''),
-      ...foodupOrderContextPushData(pushOrder),
+      ...foodupOrderContextPushData(order),
       event_type: 'status_update',
     },
   }));
@@ -593,6 +794,164 @@ console.log("Full order data:", JSON.stringify(order));
 
   res.json({ success: true });
 });
+
+function readablePushStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+
+  const labels = {
+    processing: 'Accepted',
+    accepted: 'Accepted',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+    canceled: 'Cancelled',
+    refunded: 'Refunded',
+    pending: 'Pending',
+    'pending-payment': 'Pending payment',
+    'on-hold': 'On hold',
+    failed: 'Failed',
+    in_bag: 'Picked up',
+    delivering: 'On the way',
+    delivered: 'Delivered',
+  };
+
+  if (labels[normalized]) return labels[normalized];
+
+  return String(status || 'Updated')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function getOrderStatusNotification(order, status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  const qrNumber = Number(order?.qr_order_number || 0);
+  const orderLabel = Number.isFinite(qrNumber) && qrNumber >= 100
+    ? `QR #${qrNumber}`
+    : `Order #${order?.order_id || ''}`;
+
+  switch (normalized) {
+    case 'processing':
+    case 'accepted':
+      return {
+        title: `✅ ${orderLabel} accepted`,
+        body: 'The order has been accepted.',
+      };
+
+    case 'completed':
+      return {
+        title: `✅ ${orderLabel} completed`,
+        body: 'The order has been completed.',
+      };
+
+    case 'cancelled':
+    case 'canceled':
+      return {
+        title: `❌ ${orderLabel} cancelled`,
+        body: 'The order has been cancelled.',
+      };
+
+    case 'refunded':
+      return {
+        title: `↩️ ${orderLabel} refunded`,
+        body: 'The order has been refunded.',
+      };
+
+    case 'failed':
+      return {
+        title: `⚠️ ${orderLabel} failed`,
+        body: 'The order could not be completed.',
+      };
+
+    case 'on-hold':
+      return {
+        title: `⏸️ ${orderLabel} on hold`,
+        body: 'The order is currently on hold.',
+      };
+
+    case 'pending':
+    case 'pending-payment':
+      return {
+        title: `⏳ ${orderLabel} pending`,
+        body: 'The order is awaiting confirmation.',
+      };
+
+    default:
+      return {
+        title: `${orderLabel} updated`,
+        body: `Order status: ${readablePushStatus(status)}`,
+      };
+  }
+}
+
+function getCourierStatusNotification(orderId, status) {
+  const normalized = String(status || '').trim().toLowerCase();
+
+  switch (normalized) {
+    case 'in_bag':
+      return {
+        title: `🛍️ Order #${orderId} picked up`,
+        body: 'The courier has collected the order.',
+      };
+
+    case 'delivering':
+      return {
+        title: `🚗 Order #${orderId} on the way`,
+        body: 'The courier is delivering the order.',
+      };
+
+    case 'delivered':
+      return {
+        title: `✅ Order #${orderId} delivered`,
+        body: 'The order has been delivered.',
+      };
+
+    default:
+      return {
+        title: `Order #${orderId} delivery updated`,
+        body: `Delivery status: ${readablePushStatus(status)}`,
+      };
+  }
+}
+
+async function sendCourierStatusUpdate(code, orderId, status) {
+  try {
+    const deviceTokens = await getTokens(code);
+
+    if (!deviceTokens || deviceTokens.length === 0) {
+      return;
+    }
+
+    const messages = deviceTokens.map(token => ({
+      to: token,
+      sound: null,
+      ...getCourierStatusNotification(orderId, status),
+      data: {
+        restaurant_code: code,
+        order_id: String(orderId || ''),
+        delivery_status: String(status || ''),
+        event_type: 'courier_status_update',
+      },
+    }));
+
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(messages),
+    });
+  } catch (error) {
+    console.log(
+      "Courier status push failed:",
+      code,
+      orderId,
+      status,
+      error?.message || error
+    );
+  }
+}
 
 // -------------------------------------------------------
 // PIN
@@ -765,10 +1124,13 @@ app.get("/delivery-accounts", async (req, res) => {
 
   const result = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
   const usernames = result.result || [];
-  const accounts = await Promise.all(usernames.map(async (u) => {
-    const data = await redisCommand("GET", k(code, `delivery_account:${u}`));
-    return data.result ? JSON.parse(data.result) : null;
-  }));
+  const values = usernames.length > 0
+    ? await redisCommand("MGET", ...usernames.map(u => k(code, `delivery_account:${u}`)))
+    : { result: [] };
+  const accounts = (values.result || []).map(raw => {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  });
   res.json({ success: true, accounts: accounts.filter(Boolean) });
 });
 
@@ -828,8 +1190,7 @@ app.post("/cancel-auto-action", async (req, res) => {
     }
   }
   console.log(`Cancel auto-action for: ${code} order ${order_id}`);
-  await redisCommand("SET", k(code, `auto_actioned:${order_id}`), 'yes');
-  await redisCommand("EXPIRE", k(code, `auto_actioned:${order_id}`), 86400);
+  await redisCommand("SET", k(code, `auto_actioned:${order_id}`), 'yes', "EX", 86400);
   res.json({ success: true });
 });
 
@@ -873,10 +1234,13 @@ app.get("/delivery-accounts-ios", async (req, res) => {
   }
   const result = await redisCommand("SMEMBERS", k(code, "delivery_accounts"));
   const usernames = result.result || [];
-  const accounts = await Promise.all(usernames.map(async (u) => {
-    const data = await redisCommand("GET", k(code, `delivery_account:${u}`));
-    return data.result ? JSON.parse(data.result) : null;
-  }));
+  const values = usernames.length > 0
+    ? await redisCommand("MGET", ...usernames.map(u => k(code, `delivery_account:${u}`)))
+    : { result: [] };
+  const accounts = (values.result || []).map(raw => {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  });
   res.json({ success: true, accounts: accounts.filter(Boolean) });
 });
 
@@ -922,39 +1286,13 @@ await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
 
 await redisCommand("SET", courierKey, JSON.stringify(history));
 
-  // Notify the restaurant WordPress site that the FoodUp internal lifecycle
-  // reached "delivered". WordPress keeps WooCommerce Completed and only sends
-  // the customer Delivered email / records the lifecycle state.
-  let wordpressDelivered = false;
-  try {
-    const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
-    const profile = profileData.result ? JSON.parse(profileData.result) : null;
-    const website = profile?.website;
-    if (website) {
-      const baseUrl = website.startsWith('http') ? website : `https://${website}`;
-      const wpResponse = await fetch(`${baseUrl}/wp-json/foodup/v1/order-delivered`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          secret: 'foodup2026',
-          order_id,
-          delivery_name,
-          delivered_at: deliveredAt,
-        }),
-      });
-      wordpressDelivered = wpResponse.ok;
-      if (!wpResponse.ok) {
-        const body = await wpResponse.text().catch(() => '');
-        console.log(`WP delivered callback failed for ${code} #${order_id}: ${wpResponse.status} ${body}`);
-      }
-    } else {
-      console.log(`WP delivered callback skipped for ${code} #${order_id}: restaurant website missing`);
-    }
-  } catch (e) {
-    console.log(`WP delivered callback error for ${code} #${order_id}:`, e.message);
-  }
-
-  res.json({ success: true, wordpress_delivered: wordpressDelivered });
+  // Notify restaurant devices once the courier marks this order delivered.
+  await sendCourierStatusUpdate(
+    code,
+    order_id,
+    'delivered'
+  );
+  res.json({ success: true });
 });
 
 app.get("/all-couriers-delivered/:code", async (req, res) => {
@@ -1025,15 +1363,6 @@ app.post("/claim-order", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code || !order_id || !delivery_name) return res.json({ success: false });
 
-  const storedOrder = await foodupGetStoredOrderById(code, order_id);
-  if (foodupFulfillmentType(storedOrder || req.body) === 'dine_in') {
-    return res.json({
-      success: false,
-      dine_in_order: true,
-      message: 'This is a dine-in order and cannot be assigned to a courier.',
-    });
-  }
-
   const acceptance = await getOrderAcceptanceState(code, order_id);
   if (!acceptance.accepted) {
     return res.json({
@@ -1044,13 +1373,27 @@ app.post("/claim-order", async (req, res) => {
     });
   }
 
+  const courierEligibility = await foodupCheckCourierEligibleOrder(code, order_id);
+  foodupLogCourierEligibilityDecision("claim-order", code, order_id, courierEligibility);
+  if (!courierEligibility.allowed && foodupCourierFulfillmentEnforcementEnabled()) {
+    return res.status(409).json({
+      success: false,
+      code: courierEligibility.code,
+      pickup_order: courierEligibility.fulfillment_type === "pickup",
+      fulfillment_unknown: courierEligibility.fulfillment_type === "unknown",
+      fulfillment_type: courierEligibility.fulfillment_type,
+      message: courierEligibility.message,
+    });
+  }
+
   const claimKey = k(code, `claimed:${order_id}`);
   const now = new Date().toISOString();
+  let effectiveDeliveryStatus = delivery_status || 'in_bag';
   const firstClaim = {
     order_id,
     delivery_name,
     claimed_at: now,
-    delivery_status: delivery_status || 'in_bag',
+    delivery_status: effectiveDeliveryStatus,
   };
 
   // SET NX makes the first claim atomic. Two couriers pressing Add to Bag at
@@ -1075,11 +1418,22 @@ app.post("/claim-order", async (req, res) => {
       order_id,
       delivery_name,
       claimed_at: claim.claimed_at || now,
-      delivery_status: delivery_status || claim.delivery_status || 'in_bag',
+      delivery_status: (
+        effectiveDeliveryStatus =
+          delivery_status || claim.delivery_status || 'in_bag'
+      ),
     }));
   }
 
   await redisCommand("SADD", k(code, "active_claims"), String(order_id));
+
+  // One event-driven notification when courier state changes.
+  // No polling is introduced.
+  await sendCourierStatusUpdate(
+    code,
+    order_id,
+    effectiveDeliveryStatus
+  );
   res.json({ success: true });
 });
 
@@ -1102,6 +1456,33 @@ app.post("/release-claim", async (req, res) => {
   res.json({ success: true });
 });
 
+app.get("/order/:code/:id", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const orderId = req.params.id;
+  try {
+    const data = await redisCommand("GET", k(code, "last_order"));
+    if (data.result) {
+      const order = JSON.parse(data.result);
+      if (String(order.order_id) === String(orderId)) {
+        const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+        const orders = (listData.result || []).map((o) => JSON.parse(o));
+        const found = orders.find((o) => String(o.order_id) === String(orderId));
+        if (found) return res.json({ success: true, order: foodupNormalizeOrderFulfillment(found) });
+        return res.json({ success: true, order: foodupNormalizeOrderFulfillment(order) });
+      }
+    }
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
+    const orders = (listData.result || []).map((o) => JSON.parse(o));
+    const found = orders.find((o) => String(o.order_id) === String(orderId));
+    if (found) {
+      return res.json({ success: true, order: foodupNormalizeOrderFulfillment(found) });
+    }
+    res.json({ success: false, message: "Order not found" });
+  } catch(e) {
+    res.json({ success: false, message: "Error fetching order" });
+  }
+});
+
 // -------------------------------------------------------
 // CUSTOMER APP — CONSOLIDATED ORDER TRACKING
 // -------------------------------------------------------
@@ -1110,7 +1491,6 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
   const expectedSecret = String(
     process.env.FOODUP_CUSTOMER_TRACKING_SECRET || ""
   ).trim();
-
   const suppliedSecret = String(
     req.headers["x-foodup-tracking-secret"] || ""
   ).trim();
@@ -1143,6 +1523,9 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
   }
 
   try {
+    // Two Redis commands total: one order-list read and one batched read for
+    // acceptance/courier state. This replaces the customer app's old
+    // accepted-time + order + all-claims polling fan-out.
     const [ordersData, stateData] = await Promise.all([
       redisCommand("LRANGE", k(code, "orders"), 0, 99),
       redisCommand(
@@ -1155,54 +1538,40 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
 
     const orders = (ordersData.result || [])
       .map(raw => {
-        try {
-          return JSON.parse(raw);
-        } catch (e) {
-          return null;
-        }
+        try { return JSON.parse(raw); } catch (e) { return null; }
       })
       .filter(Boolean);
 
     const order = orders.find(
       item => String(item.order_id) === orderId
     );
+    const fulfillmentType = foodupDeriveFulfillmentType(order || {});
 
-    const fulfillmentType = foodupFulfillmentType(order || {});
-
-    const [acceptedRaw, claimedRaw, deliveredRaw] =
-      stateData.result || [];
+    const [acceptedRaw, claimedRaw, deliveredRaw] = stateData.result || [];
 
     let accepted = {};
-
     if (acceptedRaw) {
       try {
         accepted = JSON.parse(acceptedRaw);
       } catch (e) {
-        accepted = {
-          accepted_time: String(acceptedRaw),
-        };
+        accepted = { accepted_time: String(acceptedRaw) };
       }
     }
 
     let claim = null;
-
     if (deliveredRaw) {
       try {
         const delivered = JSON.parse(deliveredRaw);
-
         claim = {
           status: "delivered",
           deliveredAt: delivered.delivered_at || "",
         };
       } catch (e) {
-        claim = {
-          status: "delivered",
-        };
+        claim = { status: "delivered" };
       }
-    } else if (claimedRaw) {
+    } else if (fulfillmentType === "delivery" && claimedRaw) {
       try {
         const claimed = JSON.parse(claimedRaw);
-
         claim = {
           status: claimed.delivery_status || "in_bag",
         };
@@ -1220,8 +1589,7 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
       deliveredAt: claim?.deliveredAt || "",
     });
   } catch (error) {
-    const unavailable =
-      error?.code === "FOODUP_REDIS_UNAVAILABLE";
+    const unavailable = error?.code === "FOODUP_REDIS_UNAVAILABLE";
 
     console.log(
       `Customer tracking failed for ${code}/${orderId}:`,
@@ -1237,32 +1605,6 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
         ? "Order tracking is temporarily unavailable."
         : "Order tracking could not be loaded.",
     });
-  }
-});
-app.get("/order/:code/:id", async (req, res) => {
-  const code = req.params.code.toLowerCase().trim();
-  const orderId = req.params.id;
-  try {
-    const data = await redisCommand("GET", k(code, "last_order"));
-    if (data.result) {
-      const order = JSON.parse(data.result);
-      if (String(order.order_id) === String(orderId)) {
-        const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
-        const orders = (listData.result || []).map((o) => JSON.parse(o));
-        const found = orders.find((o) => String(o.order_id) === String(orderId));
-        if (found) return res.json({ success: true, order: found });
-        return res.json({ success: true, order });
-      }
-    }
-    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
-    const orders = (listData.result || []).map((o) => JSON.parse(o));
-    const found = orders.find((o) => String(o.order_id) === String(orderId));
-    if (found) {
-      return res.json({ success: true, order: found });
-    }
-    res.json({ success: false, message: "Order not found" });
-  } catch(e) {
-    res.json({ success: false, message: "Error fetching order" });
   }
 });
 
@@ -1312,32 +1654,22 @@ app.get("/dedup-orders/:code", async (req, res) => {
 // -------------------------------------------------------
 // LIVE ORDER RECONCILIATION
 // -------------------------------------------------------
-// Push notifications are an accelerator, not the source of truth.
-// The Orders app calls this endpoint while foregrounded so delayed or
-// missed pushes cannot hide a real order.
+// Push notifications are an accelerator, not the source of truth. The Orders app
+// calls this lightweight endpoint while foregrounded so a delayed/missed FCM/Expo
+// push cannot hide a real order. `after` is the highest WooCommerce order ID the
+// current app process has already reconciled. On first sync (`after=0`) we return
+// the most recent window so unhandled orders can be recovered after a restart.
 app.get("/live-sync/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const after = Math.max(0, parseInt(String(req.query.after || '0'), 10) || 0);
-  const limit = Math.min(
-    50,
-    Math.max(10, parseInt(String(req.query.limit || '30'), 10) || 30)
-  );
+  const limit = Math.min(50, Math.max(10, parseInt(String(req.query.limit || '30'), 10) || 30));
 
   try {
-    const listData = await redisCommand(
-      "LRANGE",
-      k(code, "orders"),
-      0,
-      limit - 1
-    );
-
+    const listData = await redisCommand("LRANGE", k(code, "orders"), 0, limit - 1);
     const recentOrders = (listData.result || [])
       .map(raw => {
-        try {
-          return foodupApplyOrderContext(JSON.parse(raw));
-        } catch (e) {
-          return null;
-        }
+        try { return foodupNormalizeOrderFulfillment(JSON.parse(raw)); }
+        catch (e) { return null; }
       })
       .filter(Boolean);
 
@@ -1346,30 +1678,26 @@ app.get("/live-sync/:code", async (req, res) => {
       return Number.isFinite(id) ? Math.max(max, id) : max;
     }, after);
 
-    const newOrders =
-      after > 0
-        ? recentOrders.filter(order => Number(order.order_id || 0) > after)
-        : recentOrders;
+    const newOrders = after > 0
+      ? recentOrders.filter(order => Number(order.order_id || 0) > after)
+      : recentOrders;
 
+    // Reconcile state for both newly discovered orders and any pending order IDs
+    // the client already knows about. This lets the app close a modal/remove Review
+    // even when the separate auto/manual acceptance push was missed.
     const pendingIds = String(req.query.pending || '')
       .split(',')
       .map(value => value.trim())
       .filter(value => /^\d+$/.test(value))
       .slice(0, 40);
 
-    const stateIds = [
-      ...new Set([
-        ...newOrders
-          .map(order => String(order.order_id || ''))
-          .filter(Boolean),
-        ...pendingIds,
-      ]),
-    ].slice(0, 50);
+    const stateIds = [...new Set([
+      ...newOrders.map(order => String(order.order_id || '')).filter(Boolean),
+      ...pendingIds,
+    ])].slice(0, 50);
 
     const includeDeviceState = after === 0 || stateIds.length > 0;
-
     const stateKeys = [];
-
     for (const orderId of stateIds) {
       stateKeys.push(
         k(code, `accepted_time:${orderId}`),
@@ -1378,23 +1706,20 @@ app.get("/live-sync/:code", async (req, res) => {
         k(code, `auto_accepted:${orderId}`)
       );
     }
-
     if (includeDeviceState) {
-      stateKeys.push(
-        k(code, "auto_settings"),
-        k(code, "printer_device_id")
-      );
+      stateKeys.push(k(code, "auto_settings"), k(code, "printer_device_id"));
     }
 
-    const stateData =
-      stateKeys.length > 0
-        ? await redisCommand("MGET", ...stateKeys)
-        : { result: [] };
-
+    // Idle foreground sync is intentionally one Redis LRANGE only. The second
+    // MGET is performed only on bootstrap, when a new order exists, or while the
+    // app has pending decisions that need reconciliation.
+    const stateData = stateKeys.length > 0
+      ? await redisCommand("MGET", ...stateKeys)
+      : { result: [] };
     const values = stateData.result || [];
+
     const states = {};
     let offset = 0;
-
     for (const orderId of stateIds) {
       const acceptedRaw = values[offset++];
       const rejectedRaw = values[offset++];
@@ -1402,60 +1727,43 @@ app.get("/live-sync/:code", async (req, res) => {
       const autoAcceptedRaw = values[offset++];
 
       let accepted = null;
-
       if (acceptedRaw) {
-        try {
-          accepted = JSON.parse(acceptedRaw);
-        } catch (e) {
-          accepted = { accepted_time: String(acceptedRaw) };
-        }
+        try { accepted = JSON.parse(acceptedRaw); }
+        catch (e) { accepted = { accepted_time: String(acceptedRaw) }; }
       }
 
       states[orderId] = {
         accepted,
         rejected: Boolean(rejectedRaw),
         auto_actioned: Boolean(autoActionedRaw),
-        auto_accepted:
-          Boolean(autoAcceptedRaw) ||
-          Boolean(accepted?.auto_accepted) ||
-          accepted?.source === 'auto',
+        auto_accepted: Boolean(autoAcceptedRaw) || Boolean(accepted?.auto_accepted) || accepted?.source === 'auto',
       };
     }
 
     let autoSettings = null;
     let printerDeviceId = null;
-
     if (includeDeviceState) {
       const autoSettingsRaw = values[offset++];
       printerDeviceId = values[offset++] || '';
-
       autoSettings = {
         auto_action: 'disabled',
         wait_minutes: 5,
         accept_time: '30 Minutes',
         reject_reason: 'Zu beschäftigt',
       };
-
       if (autoSettingsRaw) {
-        try {
-          autoSettings = JSON.parse(autoSettingsRaw);
-        } catch (e) {}
+        try { autoSettings = JSON.parse(autoSettingsRaw); } catch (e) {}
       }
     }
 
     const stateIdSet = new Set(stateIds);
-
-    const stateOrders = recentOrders.filter(order =>
-      stateIdSet.has(String(order.order_id || ''))
-    );
+    const stateOrders = recentOrders.filter(order => stateIdSet.has(String(order.order_id || '')));
 
     res.json({
       success: true,
       server_time: new Date().toISOString(),
       cursor: newestOrderId,
-      orders: newOrders.sort(
-        (a, b) => Number(a.order_id || 0) - Number(b.order_id || 0)
-      ),
+      orders: newOrders.sort((a, b) => Number(a.order_id || 0) - Number(b.order_id || 0)),
       state_orders: stateOrders,
       states,
       device_state_included: includeDeviceState,
@@ -1464,17 +1772,7 @@ app.get("/live-sync/:code", async (req, res) => {
     });
   } catch (e) {
     console.log(`live-sync error for ${code}:`, e.message);
-
-    res.json({
-      success: false,
-      cursor: after,
-      orders: [],
-      state_orders: [],
-      states: {},
-      device_state_included: false,
-      auto_settings: null,
-      printer_device_id: null,
-    });
+    res.json({ success: false, cursor: after, orders: [], states: {} });
   }
 });
 
@@ -1567,6 +1865,311 @@ app.get("/claims/:code", async (req, res) => {
   }
 });
 
+function statsParseRequiredTimestamp(value) {
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function statsParseTotal(value) {
+  const total = parseFloat(value || '0');
+  return Number.isFinite(total) ? total : 0;
+}
+
+function statsIsCashPayment(paymentMethod) {
+  const method = String(paymentMethod || '').toLowerCase();
+  return method.includes('bar') || method.includes('cash');
+}
+
+function statsOrderTimestamp(order) {
+  const raw = order?.received_at || order?.date_created;
+  if (!raw) return null;
+  const timestamp = new Date(raw).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function statsSafeJsonParse(raw, fallback = null) {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw);
+  } catch(e) {
+    return fallback;
+  }
+}
+
+function statsBuildPeriod(orders, start, end, inclusiveEnd = true) {
+  const filtered = orders.filter(order => {
+    const timestamp = statsOrderTimestamp(order);
+    if (timestamp === null) return false;
+    const inRange = inclusiveEnd
+      ? timestamp >= start && timestamp <= end
+      : timestamp >= start && timestamp < end;
+    return inRange && order.status !== 'cancelled';
+  });
+
+  const totals = filtered.reduce((acc, order) => {
+    const total = statsParseTotal(order.total);
+    if (statsIsCashPayment(order.payment_method)) {
+      acc.cash += total;
+    } else {
+      acc.online += total;
+    }
+
+    if (order.shipping?.method === 'Abholung') {
+      acc.pickups += 1;
+    } else {
+      acc.deliveries += 1;
+    }
+
+    return acc;
+  }, {
+    cash: 0,
+    online: 0,
+    deliveries: 0,
+    pickups: 0,
+  });
+
+  return {
+    totalOrders: filtered.length,
+    cash: totals.cash,
+    online: totals.online,
+    total: totals.cash + totals.online,
+    deliveries: totals.deliveries,
+    pickups: totals.pickups,
+  };
+}
+
+function statsDeliveredDayTimestamp(value) {
+  let date = new Date(value);
+
+  if (isNaN(date.getTime())) {
+    const parts = String(value || '').match(/(\d+)\/(\d+)\/(\d+)/);
+    if (parts) {
+      date = new Date(`${parts[3]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`);
+    }
+  }
+
+  if (isNaN(date.getTime())) return null;
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function statsCompactOrder(order) {
+  return {
+    order_id: Number.isFinite(Number(order.order_id)) ? Number(order.order_id) : order.order_id,
+    total: String(order.total || ''),
+  };
+}
+
+function statsPruneCache(now = Date.now()) {
+  for (const [key, entry] of statsResponseCache.entries()) {
+    if (!entry.promise && entry.expiresAt <= now) {
+      statsResponseCache.delete(key);
+    }
+  }
+}
+
+async function buildStatsResponse(code, bounds) {
+  const [ordersResult, courierAccountsResult, activeClaimIdsResult] = await Promise.all([
+    redisCommand("LRANGE", k(code, "orders"), 0, 99),
+    redisCommand("SMEMBERS", k(code, "delivery_accounts")),
+    redisCommand("SMEMBERS", k(code, "active_claims")),
+  ]);
+
+  const orders = (ordersResult.result || [])
+    .map(raw => statsSafeJsonParse(raw))
+    .filter(Boolean);
+  const ordersById = new Map(orders.map(order => [String(order.order_id), order]));
+  const currency = orders.find(order => order.currency)?.currency || 'CHF';
+
+  const periods = {
+    today: statsBuildPeriod(orders, bounds.today_start, bounds.now),
+    week: statsBuildPeriod(orders, bounds.week_start, bounds.now),
+    month: statsBuildPeriod(orders, bounds.month_start, bounds.now),
+    year: statsBuildPeriod(orders, bounds.year_start, bounds.now),
+    previousYear: statsBuildPeriod(orders, bounds.previous_year_start, bounds.year_start, false),
+  };
+
+  const couriers = new Map();
+  const ensureCourier = (name) => {
+    if (!couriers.has(name)) {
+      couriers.set(name, {
+        name,
+        deliveredOrders: [],
+        openOrders: [],
+      });
+    }
+    return couriers.get(name);
+  };
+
+  const courierNames = courierAccountsResult.result || [];
+  if (courierNames.length > 0) {
+    const primaryKeys = courierNames.map(name => k(code, `courier_delivered:${name}`));
+    const primaryValues = await redisCommand("MGET", ...primaryKeys);
+    const missing = [];
+
+    courierNames.forEach((name, index) => {
+      if (!primaryValues.result?.[index]) {
+        missing.push({ name, index });
+      }
+    });
+
+    let fallbackByOriginalIndex = new Map();
+    if (missing.length > 0) {
+      const fallbackKeys = missing.map(({ name }) => {
+        const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+        return k(code, `courier_delivered:${capitalized}`);
+      });
+      const fallbackValues = await redisCommand("MGET", ...fallbackKeys);
+      missing.forEach((missingItem, fallbackIndex) => {
+        fallbackByOriginalIndex.set(missingItem.index, fallbackValues.result?.[fallbackIndex] || null);
+      });
+    }
+
+    courierNames.forEach((name, index) => {
+      const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+      const raw = primaryValues.result?.[index] || fallbackByOriginalIndex.get(index);
+      const deliveredOrders = statsSafeJsonParse(raw, []);
+      ensureCourier(displayName).deliveredOrders = Array.isArray(deliveredOrders) ? deliveredOrders : [];
+    });
+  }
+
+  const activeClaimIds = activeClaimIdsResult.result || [];
+  if (activeClaimIds.length > 0) {
+    const activeValues = await redisCommand(
+      "MGET",
+      ...activeClaimIds.map(orderId => k(code, `claimed:${orderId}`))
+    );
+
+    (activeValues.result || []).forEach((raw, index) => {
+      const claim = statsSafeJsonParse(raw);
+      if (!claim) return;
+
+      const status = claim.delivery_status || 'in_bag';
+      if (status === 'delivered') return;
+
+      const name = claim.delivery_name;
+      if (!name) return;
+
+      const orderId = String(claim.order_id || activeClaimIds[index]);
+      const order = ordersById.get(orderId);
+      if (!order) return;
+
+      ensureCourier(name).openOrders.push({
+        order_id: Number.isFinite(Number(orderId)) ? Number(orderId) : orderId,
+        total: String(order.total || ''),
+        currency: order.currency || 'CHF',
+        payment_method: order.payment_method || '',
+      });
+    });
+  }
+
+  const compactCouriers = Array.from(couriers.values()).map(courier => {
+    const todayDeliveredCashOrders = courier.deliveredOrders.filter(order => {
+      if (!statsIsCashPayment(order.payment_method)) return false;
+      const deliveredTimestamp = statsDeliveredDayTimestamp(order.delivered_at);
+      return deliveredTimestamp !== null
+        && deliveredTimestamp >= bounds.today_start
+        && deliveredTimestamp <= bounds.now;
+    });
+    const openCashOrders = courier.openOrders.filter(order => statsIsCashPayment(order.payment_method));
+    const todayCashTotal = todayDeliveredCashOrders.reduce((sum, order) => sum + statsParseTotal(order.total), 0);
+    const inProgressCashTotal = openCashOrders.reduce((sum, order) => sum + statsParseTotal(order.total), 0);
+    const deliveredCashTotal = courier.deliveredOrders.reduce((sum, order) => {
+      return statsIsCashPayment(order.payment_method)
+        ? sum + statsParseTotal(order.total)
+        : sum;
+    }, 0);
+    const legacySortTotal = deliveredCashTotal + inProgressCashTotal;
+
+    return {
+      name: courier.name,
+      currency: courier.deliveredOrders[0]?.currency || openCashOrders[0]?.currency || 'CHF',
+      todayCashTotal,
+      inProgressCashTotal,
+      totalOwed: todayCashTotal + inProgressCashTotal,
+      legacySortTotal,
+      openOrderCount: courier.openOrders.length,
+      openCashOrders: openCashOrders.map(statsCompactOrder),
+      todayDeliveredCashOrders: todayDeliveredCashOrders.map(statsCompactOrder),
+    };
+  }).sort((a, b) => b.legacySortTotal - a.legacySortTotal);
+
+  return {
+    success: true,
+    currency,
+    periods,
+    couriers: compactCouriers,
+  };
+}
+
+app.get("/stats/:code", async (req, res) => {
+  const code = req.params.code.toLowerCase().trim();
+  const requiredTimestamps = [
+    'now',
+    'today_start',
+    'week_start',
+    'month_start',
+    'year_start',
+    'previous_year_start',
+  ];
+  const bounds = {};
+
+  for (const name of requiredTimestamps) {
+    const timestamp = statsParseRequiredTimestamp(req.query[name]);
+    if (timestamp === null) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid or missing ${name}`,
+      });
+    }
+    bounds[name] = timestamp;
+  }
+
+  const cacheKey = JSON.stringify([
+    code,
+    bounds.now,
+    bounds.today_start,
+    bounds.week_start,
+    bounds.month_start,
+    bounds.year_start,
+    bounds.previous_year_start,
+  ]);
+
+  try {
+    const now = Date.now();
+    statsPruneCache(now);
+
+    const cached = statsResponseCache.get(cacheKey);
+    if (cached?.value && cached.expiresAt > now) {
+      return res.json(cached.value);
+    }
+    if (cached?.promise) {
+      const response = await cached.promise;
+      return res.json(response);
+    }
+
+    const promise = buildStatsResponse(code, bounds)
+      .then(response => {
+        statsResponseCache.set(cacheKey, {
+          value: response,
+          expiresAt: Date.now() + STATS_CACHE_TTL_MS,
+        });
+        return response;
+      })
+      .catch(error => {
+        statsResponseCache.delete(cacheKey);
+        throw error;
+      });
+
+    statsResponseCache.set(cacheKey, { promise });
+    const response = await promise;
+    res.json(response);
+  } catch(e) {
+    console.log("Stats error:", e.message);
+    res.status(500).json({ success: false, message: "Error fetching stats" });
+  }
+});
+
 
 // -------------------------------------------------------
 // RESTAURANT PROFILE
@@ -1613,6 +2216,52 @@ app.get("/restaurant-profile/:code", async (req, res) => {
 // ACCEPTED TIME
 // -------------------------------------------------------
 
+async function sendOrderAcceptedUpdate(code, orderId, acceptedData) {
+  try {
+    const deviceTokens = await getTokens(code);
+
+    if (!deviceTokens || deviceTokens.length === 0) {
+      return;
+    }
+
+    const acceptedTime = String(acceptedData?.accepted_time || "");
+    const acceptedAt = String(acceptedData?.accepted_at || "");
+
+    const messages = deviceTokens.map(token => ({
+      to: token,
+      sound: null,
+      title: `✅ Order #${orderId} accepted`,
+      body: acceptedTime
+        ? `Preparation time: ${acceptedTime}`
+        : "The order has been accepted.",
+      data: {
+        restaurant_code: code,
+        order_id: String(orderId || ""),
+        accepted_time: acceptedTime,
+        accepted_at: acceptedAt,
+        status: "accepted",
+        event_type: "order_accepted_update",
+      },
+    }));
+
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(messages),
+    });
+  } catch (error) {
+    console.log(
+      "Accepted-order push failed:",
+      code,
+      orderId,
+      error?.message || error
+    );
+  }
+}
+
 app.post("/accepted-time", async (req, res) => {
   const { restaurant_code, order_id, accepted_time, status, accepted_at } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
@@ -1625,9 +2274,14 @@ app.post("/accepted-time", async (req, res) => {
     accepted_time,
     status,
     accepted_at: accepted_at || new Date().toISOString(),
+    source: 'manual',
+    auto_accepted: false,
   };
-  await redisCommand("SET", k(code, `accepted_time:${order_id}`), JSON.stringify(data));
-  await redisCommand("EXPIRE", k(code, `accepted_time:${order_id}`), 604800);
+  await redisCommand("SET", k(code, `accepted_time:${order_id}`), JSON.stringify(data), "EX", 604800);
+
+  // Notify restaurant devices once after manual acceptance.
+  // No polling is introduced.
+  void sendOrderAcceptedUpdate(code, order_id, data);
   res.json({ success: true });
 });
 
@@ -1636,8 +2290,7 @@ app.post("/rejected-time", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
   if (secret !== 'foodup2026') return res.json({ success: false, message: 'Unauthorized' });
-  await redisCommand("SET", k(code, `rejected_time:${order_id}`), new Date().toISOString());
-  await redisCommand("EXPIRE", k(code, `rejected_time:${order_id}`), 604800);
+  await redisCommand("SET", k(code, `rejected_time:${order_id}`), new Date().toISOString(), "EX", 604800);
   res.json({ success: true });
 });
 
@@ -1671,21 +2324,22 @@ const stats = {};
     const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
     const startOfWeek = new Date(now); startOfWeek.setDate(now.getDate() - 7); startOfWeek.setHours(0, 0, 0, 0);
     
-    await Promise.all(orders.map(async (order) => {
-      const deliveredData = await redisCommand("GET", k(code, `delivered:${order.order_id}`));
-      if (deliveredData.result) {
-        const delivered = JSON.parse(deliveredData.result);
+    const deliveredBatch = orders.length > 0
+      ? await redisCommand("MGET", ...orders.map(order => k(code, `delivered:${order.order_id}`)))
+      : { result: [] };
+    (deliveredBatch.result || []).forEach(raw => {
+      if (!raw) return;
+      try {
+        const delivered = JSON.parse(raw);
         const name = delivered.delivery_name;
         if (!name) return;
-        
         if (!stats[name]) stats[name] = { today: 0, week: 0, total: 0 };
-        
         const deliveredAt = new Date(delivered.delivered_at);
         stats[name].total++;
         if (deliveredAt >= startOfWeek) stats[name].week++;
         if (deliveredAt >= startOfDay) stats[name].today++;
-      }
-    }));
+      } catch (e) {}
+    });
     
     res.json({ success: true, stats });
   } catch(e) {
@@ -1767,12 +2421,19 @@ app.post("/store-status", async (req, res) => {
 app.get("/health-check/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   try {
-const [profileData, tokensData, pinData, printerData] = await Promise.all([
-      redisCommand("GET", k(code, "restaurant_profile")),
+const [coreData, tokensData] = await Promise.all([
+      redisCommand(
+        "MGET",
+        k(code, "restaurant_profile"),
+        k(code, "pin"),
+        k(code, "printer_device_id")
+      ),
       redisCommand("SMEMBERS", k(code, "device_tokens")),
-      redisCommand("GET", k(code, "pin")),
-      redisCommand("GET", k(code, "printer_device_id")),
     ]);
+    const [profileRaw, pinRaw, printerRaw] = coreData.result || [];
+    const profileData = { result: profileRaw };
+    const pinData = { result: pinRaw };
+    const printerData = { result: printerRaw };
 
     const profile = profileData.result ? JSON.parse(profileData.result) : null;
     const tokens = tokensData.result || [];
@@ -1798,7 +2459,7 @@ app.delete("/clear-accepted-times/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const keys = await redisCommand("KEYS", k(code, "accepted_time:*"));
   if (keys.result && keys.result.length > 0) {
-    await Promise.all(keys.result.map(key => redisCommand("DEL", key)));
+    await redisCommand("DEL", ...keys.result);
   }
   res.json({ success: true, cleared: keys.result?.length || 0 });
 });
@@ -1851,6 +2512,12 @@ app.post("/wc-webhook", async (req, res) => {
     const metaData = data.meta_data || [];
     const orderableDateMeta = metaData.find(m => m.key === 'orderable_order_date');
     const orderableTimeMeta = metaData.find(m => m.key === 'orderable_order_time');
+    const fulfillmentMeta = {
+      _foodup_fulfillment_type: (metaData.find(m => m.key === '_foodup_fulfillment_type') || {}).value || '',
+      _orderable_location_service_type: (metaData.find(m => m.key === '_orderable_location_service_type') || {}).value || '',
+      orderable_service_type: (metaData.find(m => m.key === 'orderable_service_type') || {}).value || '',
+      _orderable_service_type: (metaData.find(m => m.key === '_orderable_service_type') || {}).value || '',
+    };
     const orderableDate = data.orderable_order_date || (orderableDateMeta ? orderableDateMeta.value : '');
     const orderableTime = data.orderable_order_time || (orderableTimeMeta ? orderableTimeMeta.value : '');
 
@@ -1881,6 +2548,7 @@ app.post("/wc-webhook", async (req, res) => {
     // Get shipping method
     const shippingLines = data.shipping_lines || [];
     const shippingMethod = shippingLines.length > 0 ? shippingLines[0].method_title : '';
+    const shippingMethodId = shippingLines.length > 0 ? shippingLines[0].method_id : '';
 
     // Get payment method
     const paymentMethod = data.payment_method_title || '';
@@ -1889,7 +2557,7 @@ app.post("/wc-webhook", async (req, res) => {
     // We'll use the billing email domain or a fixed code
     const code = 'eatime'; // TODO: make dynamic if multiple restaurants
 
-    const order = {
+    const order = foodupNormalizeOrderFulfillment({
       restaurant_code: code,
       order_id: orderId,
       customer_name: `${billing.first_name || ''} ${billing.last_name || ''}`.trim(),
@@ -1905,12 +2573,15 @@ app.post("/wc-webhook", async (req, res) => {
       date_created: data.date_created || new Date().toISOString(),
       orderable_order_date: orderableDate,
       orderable_order_time: orderableTime,
+      fulfillment_meta: fulfillmentMeta,
+      meta_data: metaData,
       shipping: {
         method: shippingMethod,
+        method_id: shippingMethodId,
         address: shippingAddress,
       },
       sound: true,
-    };
+    });
 
     console.log("WC Webhook order:", orderId, "Scheduled:", orderableDate, orderableTime);
 
@@ -1925,7 +2596,7 @@ app.post("/wc-webhook", async (req, res) => {
       to: token,
       sound: "default",
       title: `🛒 New Order #${orderId}`,
-      body: `${order.customer_name} - ${order.currency} ${order.total}`,
+      body: `${order.customer_name} • ${order.currency} ${order.total}`,
       data: {
         restaurant_code: code,
         order_id: String(orderId),
@@ -1938,7 +2609,9 @@ app.post("/wc-webhook", async (req, res) => {
         items: itemsString,
         payment_method: paymentMethod,
         note: order.note,
+        fulfillment_type: order.fulfillment_type,
         shipping_method: shippingMethod,
+        shipping_method_id: shippingMethodId,
         shipping_address: shippingAddress,
         event_type: 'new_order',
         orderable_order_date: orderableDate,
@@ -2074,9 +2747,6 @@ app.post("/auto-accepted-notify", async (req, res) => {
 
   console.log("Auto-accepted notify for:", code, order_id);
 
-  const storedOrder = await foodupGetStoredOrderById(code, order_id);
-  const pushOrder = foodupApplyOrderContext({ ...(storedOrder || {}), ...orderData, order_id });
-
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) return res.json({ success: false, message: "No tokens" });
 
@@ -2088,8 +2758,8 @@ app.post("/auto-accepted-notify", async (req, res) => {
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: null,
-    title: foodupAutoAcceptedTitle(pushOrder),
-    body: foodupPushOrderBody(pushOrder),
+    title: Number(orderData.qr_order_number || 0) >= 100 ? `✅ QR #${orderData.qr_order_number} auto-accepted` : `✅ Order #${order_id} auto-accepted`,
+    body: foodupPushOrderBody(foodupNormalizeOrderFulfillment({ ...orderData, order_id })),
     data: {
       event_type: 'auto_accepted',
       restaurant_code: code,
@@ -2107,7 +2777,7 @@ app.post("/auto-accepted-notify", async (req, res) => {
       orderable_order_date: String(orderData.orderable_order_date || ''),
       orderable_order_time: String(orderData.orderable_order_time || ''),
       date_created: String(orderData.date_created || ''),
-      ...foodupOrderContextPushData(pushOrder),
+      ...foodupOrderContextPushData(orderData),
       items: itemsString,
     },
   }));
@@ -2156,8 +2826,7 @@ app.post("/heartbeat", async (req, res) => {
     app_version: app_version || '',
   };
 
-  await redisCommand("SET", k(code, "heartbeat"), JSON.stringify(heartbeat));
-  await redisCommand("EXPIRE", k(code, "heartbeat"), 86400);
+  await redisCommand("SET", k(code, "heartbeat"), JSON.stringify(heartbeat), "EX", 86400);
   res.json({ success: true });
 });
 
@@ -2934,16 +3603,26 @@ async function checkAndSendAlerts() {
     const alertSettings = JSON.parse(alertData.result);
     if (!alertSettings.offline_threshold_minutes) return;
 
+    const monitorKeys = [];
     for (const code of restaurants) {
+      monitorKeys.push(k(code, "heartbeat"), k(code, "restaurant_profile"));
+    }
+    const monitorData = monitorKeys.length > 0
+      ? await redisCommand("MGET", ...monitorKeys)
+      : { result: [] };
+    const monitorValues = monitorData.result || [];
+
+    for (let index = 0; index < restaurants.length; index++) {
+      const code = restaurants[index];
       try {
-        const heartbeatData = await redisCommand("GET", k(code, "heartbeat"));
-        const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
-        const profile = profileData.result ? JSON.parse(profileData.result) : null;
+        const heartbeatRaw = monitorValues[index * 2];
+        const profileRaw = monitorValues[index * 2 + 1];
+        const profile = profileRaw ? JSON.parse(profileRaw) : null;
         const name = (profile && profile.name) ? profile.name : code;
 
-        if (!heartbeatData.result) continue;
+        if (!heartbeatRaw) continue;
 
-        const heartbeat = JSON.parse(heartbeatData.result);
+        const heartbeat = JSON.parse(heartbeatRaw);
         const minutesOffline = Math.floor((Date.now() - new Date(heartbeat.last_seen).getTime()) / 60000);
 
         if (minutesOffline >= alertSettings.offline_threshold_minutes) {
@@ -2961,18 +3640,31 @@ async function checkAndSendAlerts() {
 }
 
 // Run alert checker every 5 minutes
-setInterval(checkAndSendAlerts, 5 * 60 * 1000);
+setInterval(() => {
+  checkAndSendAlerts().catch(err => console.log('Alert checker uncaught error:', err.message));
+}, 5 * 60 * 1000);
 
 // -------------------------------------------------------
 // HEALTH CHECK
 // -------------------------------------------------------
 
 app.get("/", async (req, res) => {
-  const restaurants = await redisCommand("SMEMBERS", "restaurants");
-  res.json({
-    status: "FoodUp Order Alerts backend is running!",
-    restaurants: restaurants.result || [],
-  });
+  try {
+    const restaurants = await redisCommand("SMEMBERS", "restaurants");
+    res.json({
+      status: "FoodUp Orders backend is running!",
+      redis: "online",
+      restaurants: restaurants.result || [],
+    });
+  } catch (err) {
+    // Keep the process health endpoint alive during a temporary Redis outage so
+    // Render does not treat a dependency timeout as an application crash.
+    res.status(200).json({
+      status: "FoodUp Orders backend is running with degraded storage",
+      redis: "degraded",
+      restaurants: [],
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
@@ -3014,11 +3706,17 @@ async function runAutoActions() {
         const ordersData = await redisCommand("LRANGE", k(code, "orders"), 0, 99);
         const orders = (ordersData.result || []).map(o => JSON.parse(o));
 
-        // Get restaurant profile for website URL
-        const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
-        const profile = profileData.result ? JSON.parse(profileData.result) : null;
-        const website = profile?.website;
-        const baseUrl = website ? (website.startsWith('http') ? website : `https://${website}`) : null;
+        // Restaurant profile is only needed if an order actually reaches an auto action.
+        // Avoid reading it every minute for restaurants with no actionable orders.
+        let baseUrl = undefined;
+        const getBaseUrl = async () => {
+          if (baseUrl !== undefined) return baseUrl;
+          const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
+          const profile = profileData.result ? JSON.parse(profileData.result) : null;
+          const website = profile?.website;
+          baseUrl = website ? (website.startsWith('http') ? website : `https://${website}`) : null;
+          return baseUrl;
+        };
 
         for (const order of orders) {
   try {
@@ -3053,16 +3751,15 @@ async function runAutoActions() {
       }
     }
 
-            // Check if already accepted or rejected manually
-            const acceptedData = await redisCommand("GET", k(code, `accepted_time:${order.order_id}`));
-            const rejectedData = await redisCommand("GET", k(code, `rejected_time:${order.order_id}`));
-            if (acceptedData.result || rejectedData.result) {
-              continue;
-            }
-
-            // Check if already auto-actioned
-            const autoActioned = await redisCommand("GET", k(code, `auto_actioned:${order.order_id}`));
-            if (autoActioned.result) {
+            // Read manual/automatic action markers in one Redis command.
+            const actionState = await redisCommand(
+              "MGET",
+              k(code, `accepted_time:${order.order_id}`),
+              k(code, `rejected_time:${order.order_id}`),
+              k(code, `auto_actioned:${order.order_id}`)
+            );
+            const [acceptedRaw, rejectedRaw, autoActionedRaw] = actionState.result || [];
+            if (acceptedRaw || rejectedRaw || autoActionedRaw) {
               continue;
             }
 
@@ -3080,12 +3777,6 @@ async function runAutoActions() {
               continue;
             }
 
-            // Mark as auto-actioned to prevent duplicate processing
-            await redisCommand("SET", k(code, `auto_actioned:${order.order_id}`), 'yes');
-            await redisCommand("EXPIRE", k(code, `auto_actioned:${order.order_id}`), 86400);
-            // Mark as auto-accepted for pill display
-            await redisCommand("SET", k(code, `auto_accepted:${order.order_id}`), 'yes');
-            await redisCommand("EXPIRE", k(code, `auto_accepted:${order.order_id}`), 86400);
 
             console.log(`Auto ${autoSettings.auto_action} for restaurant ${code}, order ${order.order_id}`);
 
@@ -3104,27 +3795,75 @@ async function runAutoActions() {
               }
             }
 
-            if (autoSettings.auto_action === 'accept') {
-              // Save accepted time to Redis
-              await redisCommand("SET", k(code, `accepted_time:${order.order_id}`), JSON.stringify({
-                accepted_time: effectiveAcceptTime,
-                accepted_at: new Date().toISOString(),
-                status: 'accepted',
-              }));
-              await redisCommand("EXPIRE", k(code, `accepted_time:${order.order_id}`), 86400);
 
-              // Call WordPress to update order status and send email
-              if (baseUrl) {
-                fetch(`${baseUrl}/wp-json/foodup/v1/order-accepted`, {
+            if (autoSettings.auto_action === 'accept') {
+              // WooCommerce must confirm Completed before FoodUp records the auto-accept.
+              const resolvedBaseUrl = await getBaseUrl();
+
+              if (!resolvedBaseUrl) {
+                throw new Error(
+                  `WordPress base URL missing for ${code}`
+                );
+              }
+
+              const wpResponse = await fetch(
+                `${resolvedBaseUrl}/wp-json/foodup/v1/order-accepted`,
+                {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
                   body: JSON.stringify({
                     secret: 'foodup2026',
                     order_id: order.order_id,
                     accepted_time: effectiveAcceptTime,
                   }),
-                }).catch(e => console.log(`WP accept error for ${code}:`, e.message));
+                }
+              );
+
+              const wpResult = await wpResponse
+                .json()
+                .catch(() => ({}));
+
+              if (
+                !wpResponse.ok ||
+                wpResult?.success !== true
+              ) {
+                throw new Error(
+                  `WP auto-accept failed for ${code}, order ${order.order_id}: HTTP ${wpResponse.status}`
+                );
               }
+
+              // WordPress confirmed Completed. Now commit the FoodUp auto-action.
+              await redisCommand(
+                "SET",
+                k(code, `auto_actioned:${order.order_id}`),
+                'yes',
+                "EX",
+                86400
+              );
+
+              await redisCommand(
+                "SET",
+                k(code, `auto_accepted:${order.order_id}`),
+                'yes',
+                "EX",
+                86400
+              );
+
+              await redisCommand(
+                "SET",
+                k(code, `accepted_time:${order.order_id}`),
+                JSON.stringify({
+                  accepted_time: effectiveAcceptTime,
+                  accepted_at: new Date().toISOString(),
+                  status: 'accepted',
+                  source: 'auto',
+                  auto_accepted: true,
+                }),
+                "EX",
+                86400
+              );
 
               // Send push notification for print button
               const deviceTokens = await getTokens(code);
@@ -3134,8 +3873,10 @@ async function runAutoActions() {
 
                 const messages = deviceTokens.map(token => ({
                   to: token,
+                  priority: "high",
+                  ttl: 900,
                   sound: null,
-                  title: foodupAutoAcceptedTitle(order),
+                  title: Number(order.qr_order_number || 0) >= 100 ? `✅ QR #${order.qr_order_number} auto-accepted` : `✅ Order #${order.order_id} auto-accepted`,
                   body: foodupPushOrderBody(order),
                   data: {
                     event_type: 'auto_accepted',
@@ -3166,19 +3907,53 @@ async function runAutoActions() {
                 }).catch(() => {});
               }
 
+
             } else if (autoSettings.auto_action === 'reject') {
-              // Call WordPress to reject order and send email
-              if (baseUrl) {
-                fetch(`${baseUrl}/wp-json/foodup/v1/order-rejected`, {
+              // WooCommerce must confirm Cancelled before FoodUp records the auto-reject.
+              const resolvedBaseUrl = await getBaseUrl();
+
+              if (!resolvedBaseUrl) {
+                throw new Error(
+                  `WordPress base URL missing for ${code}`
+                );
+              }
+
+              const wpResponse = await fetch(
+                `${resolvedBaseUrl}/wp-json/foodup/v1/order-rejected`,
+                {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
                   body: JSON.stringify({
                     secret: 'foodup2026',
                     order_id: order.order_id,
                     reason: rejectReason,
                   }),
-                }).catch(e => console.log(`WP reject error for ${code}:`, e.message));
+                }
+              );
+
+              const wpResult = await wpResponse
+                .json()
+                .catch(() => ({}));
+
+              if (
+                !wpResponse.ok ||
+                wpResult?.success !== true
+              ) {
+                throw new Error(
+                  `WP auto-reject failed for ${code}, order ${order.order_id}: HTTP ${wpResponse.status}`
+                );
               }
+
+              // WordPress confirmed Cancelled. Now commit the FoodUp auto-action.
+              await redisCommand(
+                "SET",
+                k(code, `auto_actioned:${order.order_id}`),
+                'yes',
+                "EX",
+                86400
+              );
 
               // Send status update push notification
               const deviceTokens = await getTokens(code);
@@ -3186,7 +3961,7 @@ async function runAutoActions() {
                 const messages = deviceTokens.map(token => ({
                   to: token,
                   sound: null,
-                  title: `Order #${order.order_id} auto-rejected`,
+                  title: `❌ Order #${order.order_id} auto-rejected`,
                   body: rejectReason,
                   data: {
                     event_type: 'status_update',
@@ -3218,13 +3993,45 @@ async function runAutoActions() {
 }
 
 // Run every minute
-setInterval(runAutoActions, 60 * 1000);
+setInterval(() => {
+  runAutoActions().catch(err => console.log('Auto action uncaught error:', err.message));
+}, 60 * 1000);
 // Also run once on startup after 10 seconds
-setTimeout(runAutoActions, 10 * 1000);
+setTimeout(() => {
+  runAutoActions().catch(err => console.log('Initial auto action uncaught error:', err.message));
+}, 10 * 1000);
 
 
 app.get("/check-auto-actioned/:code/:order_id", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const data = await redisCommand("GET", k(code, `auto_actioned:${req.params.order_id}`));
   res.json({ auto_actioned: !!data.result, value: data.result });
+});
+
+
+// -------------------------------------------------------
+// FINAL ERROR BOUNDARY
+// -------------------------------------------------------
+app.use((err, req, res, next) => {
+  const isRedisOutage = err && err.code === "FOODUP_REDIS_UNAVAILABLE";
+  console.error(
+    `[requestError] ${req.method} ${req.originalUrl}:`,
+    err && err.stack ? err.stack : err
+  );
+
+  if (res.headersSent) return next(err);
+
+  if (isRedisOutage) {
+    return res.status(503).json({
+      success: false,
+      code: "storage_temporarily_unavailable",
+      message: "FoodUp storage is temporarily unavailable. Please retry shortly.",
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    code: "internal_error",
+    message: "Internal server error",
+  });
 });
