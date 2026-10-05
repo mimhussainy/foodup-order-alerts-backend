@@ -1,12 +1,14 @@
 const express = require("express");
+const { createRestaurantSecurity, safeEqual, clientIpFromRequest } = require("./restaurantSecurity");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const app = installAsyncRouteSafety(express());
+app.set('trust proxy', 1);
 app.use(express.json({ limit: "15mb" }));
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-FoodUp-Secret, X-FoodUp-Client, X-FoodUp-Device');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
@@ -117,6 +119,120 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const k = (code, key) => `${code}:${key}`;
+
+
+const restaurantSecurity = createRestaurantSecurity({ redisCommand, k });
+
+async function isValidOwnerPin(code, pin) {
+  const stored = await redisCommand("GET", k(code, "pin"));
+  return Boolean(stored.result) && stored.result === pin;
+}
+
+function foodupRequestClient(req) {
+  return String(req.headers['x-foodup-client'] || '').trim().toLowerCase();
+}
+
+function foodupRequestSecret(req) {
+  return String(req.headers['x-foodup-secret'] || '').trim();
+}
+
+function foodupBearerToken(req) {
+  const authorization = String(req.headers.authorization || '').trim();
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : '';
+}
+
+function foodupRequestDevice(req) {
+  return String(req.headers['x-foodup-device'] || '').trim();
+}
+
+function foodupClientIp(req) {
+  return clientIpFromRequest(req);
+}
+
+function foodupLooksLikeWordPressRequest(req) {
+  if (foodupRequestClient(req) === 'wordpress') return true;
+  const userAgent = String(req.headers['user-agent'] || '').trim().toLowerCase();
+  return userAgent.includes('wordpress/');
+}
+
+function foodupRedactLogMessage(value) {
+  return String(value || '')
+    .replace(/((?:secret|token|password|owner[_ -]?pin|ios[_ -]?pin|pin)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+    .slice(0, 4000);
+}
+
+async function foodupNoteLegacyTransitionUse(req, code, kind) {
+  const normalizedCode = String(code || '').trim().toLowerCase();
+  if (!normalizedCode) return;
+  console.warn(`[legacy-${kind}] compatibility call accepted for ${normalizedCode}: ${req.method} ${req.path}`);
+  try {
+    await restaurantSecurity.recordLegacyUse(normalizedCode, kind, {
+      method: req.method,
+      path: req.path,
+      client: foodupRequestClient(req) || 'unidentified',
+    });
+  } catch (error) {
+    console.warn(`[legacy-${kind}] usage log write failed for ${normalizedCode}: ${error?.code || error?.name || 'error'}`);
+  }
+}
+
+async function requireWordPressRequest(req, res, code) {
+  const auth = await restaurantSecurity.authorizeWordPress(
+    code,
+    foodupRequestSecret(req),
+    foodupRequestClient(req)
+  );
+  if (!auth.ok) {
+    res.status(401).json({ success: false, code: 'unauthorized', message: 'Unauthorized.' });
+    return null;
+  }
+  if (auth.legacy) await foodupNoteLegacyTransitionUse(req, code, 'wordpress');
+  return auth;
+}
+
+async function requireAppSession(req, res, allowedApps, requestedCode = '') {
+  const auth = await restaurantSecurity.authorizeAppRequest({
+    code: requestedCode,
+    token: foodupBearerToken(req),
+    deviceId: foodupRequestDevice(req),
+    client: foodupRequestClient(req),
+    allowedApps,
+  });
+  if (!auth.ok) {
+    const code = auth.reason === 'legacy_disabled' ? 'legacy_access_disabled' : 'invalid_session';
+    res.status(401).json({ success: false, code, message: 'Unauthorized.' });
+    return null;
+  }
+  if (auth.legacy) await foodupNoteLegacyTransitionUse(req, requestedCode, 'app');
+  return auth.session;
+}
+
+function foodupBackendAdminAuthorized(req) {
+  const provided = String(req.headers['x-foodup-admin'] || '').trim();
+  const expected = String(process.env.ADMIN_SECRET || process.env.DASHBOARD_PASSWORD || '').trim();
+  return Boolean(expected) && safeEqual(provided, expected);
+}
+
+async function buildLoginSecurityPayload(code, appType, requestedDeviceId, pinChangeRequired = false) {
+  const session = await restaurantSecurity.issueSession({ code, app: appType, deviceId: requestedDeviceId });
+  const profileRaw = await redisCommand("GET", k(code, "restaurant_profile"));
+  let profile = {};
+  if (profileRaw.result) {
+    try { profile = JSON.parse(profileRaw.result); } catch (_) {}
+  }
+  const callbackSecret = await restaurantSecurity.getLoginCallbackSecret(code);
+  return {
+    session_token: session.token,
+    session_device_id: session.deviceId,
+    session_expires_at: session.expiresAt,
+    website_url: String(profile.website || ''),
+    callback_secret: callbackSecret || '',
+    pin_policy_configured: restaurantSecurity.defaultPinProtectionConfigured(),
+    pin_change_required: Boolean(pinChangeRequired),
+    pin_warning: pinChangeRequired ? 'Change the default PIN before continuing setup.' : '',
+  };
+}
 
 // -------------------------------------------------------
 // SIMPLE DISTRIBUTED LOCK (prevents concurrent list rewrites)
@@ -472,83 +588,39 @@ async function foodupCheckCourierEligibleOrder(code, orderId) {
 // RATE LIMITER
 // -------------------------------------------------------
 
-const rateLimitStore = {};
 const autoSettingsCache = {};
 const statsResponseCache = new Map();
 const STATS_CACHE_TTL_MS = 10 * 1000;
-
-function rateLimit(ip, action, maxAttempts = 5, windowMs = 15 * 60 * 1000) {
-  const key = `${action}:${ip}`;
-  const now = Date.now();
-  if (!rateLimitStore[key]) {
-    rateLimitStore[key] = { attempts: 0, firstAttempt: now, blockedUntil: null };
-  }
-  const record = rateLimitStore[key];
-
-  // If blocked, check if block has expired
-  if (record.blockedUntil) {
-    if (now < record.blockedUntil) {
-      const minutesLeft = Math.ceil((record.blockedUntil - now) / 60000);
-      return { allowed: false, blocked: true, minutesLeft, attemptsLeft: 0 };
-    } else {
-      // Block expired, reset
-      rateLimitStore[key] = { attempts: 0, firstAttempt: now, blockedUntil: null };
-      return { allowed: true, blocked: false, attemptsLeft: maxAttempts - 1 };
-    }
-  }
-
-  // Reset window if expired
-  if (now - record.firstAttempt > windowMs) {
-    rateLimitStore[key] = { attempts: 1, firstAttempt: now, blockedUntil: null };
-    return { allowed: true, blocked: false, attemptsLeft: maxAttempts - 1 };
-  }
-
-  record.attempts++;
-
-  if (record.attempts > maxAttempts) {
-    record.blockedUntil = now + windowMs;
-    return { allowed: false, blocked: true, minutesLeft: 15, attemptsLeft: 0 };
-  }
-
-  return { allowed: true, blocked: false, attemptsLeft: maxAttempts - record.attempts };
-}
-
-// Clean up old rate limit records every 30 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const key of Object.keys(rateLimitStore)) {
-    const record = rateLimitStore[key];
-    const expired = record.blockedUntil ? now > record.blockedUntil + 60000 : now - record.firstAttempt > 16 * 60 * 1000;
-    if (expired) delete rateLimitStore[key];
-  }
-}, 30 * 60 * 1000);
 
 // -------------------------------------------------------
 // RESTAURANT REGISTRATION
 // -------------------------------------------------------
 app.post("/register-restaurant", async (req, res) => {
-  const { restaurant_code } = req.body;
-  let { pin } = req.body;
-  if (!restaurant_code) {
-    return res.json({ success: false, message: "Restaurant code required" });
-  }
+  const { restaurant_code, pin } = req.body;
+  if (!restaurant_code) return res.status(400).json({ success: false, message: "Restaurant code required" });
   const code = restaurant_code.toLowerCase().trim();
   const existing = await redisCommand("GET", k(code, "pin"));
   if (existing.result) {
-    return res.json({ success: true, exists: true, message: "Restaurant already registered" });
+    const loginPolicy = restaurantSecurity.evaluatePinLogin(existing.result);
+    return res.json({
+      success: true,
+      exists: true,
+      pin_policy_configured: loginPolicy.pinPolicyConfigured,
+      pin_change_required: loginPolicy.pinChangeRequired,
+      message: "Restaurant already registered",
+    });
   }
-
-  // Default Android/owner PIN if none provided
-  if (!pin) pin = "123445";
-
+  if (!restaurantSecurity.defaultPinProtectionConfigured()) {
+    return res.status(503).json({ success: false, code: 'pin_policy_not_configured', message: 'PIN policy is not configured.' });
+  }
+  if (!pin || restaurantSecurity.isKnownDefaultPin(pin)) {
+    return res.status(400).json({
+      success: false,
+      code: "unsafe_pin",
+      message: "Choose a non-default owner PIN before registering this restaurant.",
+    });
+  }
   await redisCommand("SET", k(code, "pin"), pin);
-
-  // Default iOS PIN — only set if not already present
-  const existingIosPin = await redisCommand("GET", k(code, "ios_pin"));
-  if (!existingIosPin.result) {
-    await redisCommand("SET", k(code, "ios_pin"), "1234");
-  }
-
   await redisCommand("SADD", "restaurants", code);
   console.log("New restaurant registered:", code);
   res.json({ success: true, exists: false, message: "Restaurant registered successfully" });
@@ -568,13 +640,69 @@ app.post("/verify-restaurant", async (req, res) => {
   }
 });
 
+app.get("/legacy-access/:code", async (req, res) => {
+  if (!foodupBackendAdminAuthorized(req)) {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+  const code = req.params.code?.toLowerCase().trim();
+  if (!code) return res.status(400).json({ success: false, message: "Restaurant code required" });
+  const state = await restaurantSecurity.getLegacyAppAccessState(code);
+  const usage = await redisCommand(
+    "MGET",
+    k(code, "legacy_app_last_seen"),
+    k(code, "legacy_wordpress_last_seen")
+  );
+  const parseUsage = (raw) => {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (_) { return null; }
+  };
+  res.json({
+    success: true,
+    restaurant_code: code,
+    ...state,
+    last_seen: {
+      app: parseUsage(usage.result?.[0]),
+      wordpress: parseUsage(usage.result?.[1]),
+    },
+  });
+});
+
+app.post("/legacy-access", async (req, res) => {
+  if (!foodupBackendAdminAuthorized(req)) {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+  const code = req.body?.restaurant_code?.toLowerCase().trim();
+  if (!code || typeof req.body?.enabled !== 'boolean') {
+    return res.status(400).json({ success: false, message: "Restaurant code and enabled=true/false are required" });
+  }
+  const state = await restaurantSecurity.setLegacyAppAccess(code, req.body.enabled);
+  console.log(`[legacy-access] ${code} set to ${state.enabled ? 'enabled' : 'disabled'}`);
+  res.json({ success: true, restaurant_code: code, ...state });
+});
+
+app.post("/restaurant-secret/reset", async (req, res) => {
+  if (!foodupBackendAdminAuthorized(req)) {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+  const code = req.body?.restaurant_code?.toLowerCase().trim();
+  if (!code) {
+    return res.status(400).json({ success: false, message: "Restaurant code required" });
+  }
+  await restaurantSecurity.resetStoredRestaurantSecret(code);
+  console.warn(`[security] stored restaurant secret reset by admin for ${code}; next full profile sync must re-establish ownership.`);
+  res.json({ success: true, restaurant_code: code, secret_reset: true });
+});
+
 // -------------------------------------------------------
 // PUSH NOTIFICATIONS
 // -------------------------------------------------------
 
 app.post("/register-token", async (req, res) => {
   const { token, restaurant_code, channel_id } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders', 'courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
 
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
   if (!token) return res.json({ success: false, message: "Token required" });
@@ -603,7 +731,10 @@ app.post("/register-token", async (req, res) => {
 
 app.post("/unregister-token", async (req, res) => {
   const { token, restaurant_code } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders', 'courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
 
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
   if (!token) return res.json({ success: false, message: "Token required" });
@@ -617,6 +748,7 @@ app.post("/new-order", async (req, res) => {
   const order = foodupNormalizeOrderFulfillment(req.body);
   const code = order.restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  if (!await requireWordPressRequest(req, res, code)) return;
 
   console.log("New order received for:", code, order.order_id);
   console.log("Order date:", order.orderable_order_date, "Order time:", order.orderable_order_time);
@@ -734,8 +866,17 @@ res.json({ success: true, result });
 
 app.post("/status-update", async (req, res) => {
   const order = foodupNormalizeOrderFulfillment(req.body);
-  const code = order.restaurant_code?.toLowerCase().trim();
-  if (!code) return res.json({ success: false });
+  const requestedCode = order.restaurant_code?.toLowerCase().trim();
+  if (!requestedCode) return res.json({ success: false });
+  let code = requestedCode;
+  if (foodupLooksLikeWordPressRequest(req)) {
+    if (!await requireWordPressRequest(req, res, requestedCode)) return;
+  } else {
+    const session = await requireAppSession(req, res, ['orders', 'courier'], requestedCode);
+    if (!session) return;
+    code = session.restaurant_code;
+    order.restaurant_code = code;
+  }
 
   console.log("Status update for:", code, order.order_id, order.status);
 console.log("Full order data:", JSON.stringify(order));
@@ -959,13 +1100,19 @@ async function sendCourierStatusUpdate(code, orderId, status) {
 
 app.post("/change-pin", async (req, res) => {
   const { restaurant_code, current_pin, new_pin } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
-  if (!code) return res.json({ success: false, message: "Restaurant code required" });
-  const stored = await redisCommand("GET", k(code, "pin"));
-  if (!stored.result || stored.result !== current_pin) {
-    return res.json({ success: false, message: "Incorrect current PIN" });
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  if (!requestedCode) return res.status(400).json({ success: false, message: "Restaurant code required" });
+  const session = await requireAppSession(req, res, ['orders'], requestedCode);
+  if (!session) return;
+  if (!restaurantSecurity.defaultPinProtectionConfigured()) {
+    return res.status(503).json({ success: false, code: 'pin_policy_not_configured', message: 'PIN policy is not configured.' });
   }
-  await redisCommand("SET", k(code, "pin"), new_pin);
+  if (!new_pin || restaurantSecurity.isKnownDefaultPin(new_pin)) {
+    return res.status(400).json({ success: false, code: 'unsafe_pin', message: 'Choose a non-default PIN.' });
+  }
+  const stored = await redisCommand("GET", k(session.restaurant_code, "pin"));
+  if (!stored.result || stored.result !== current_pin) return res.status(401).json({ success: false, message: "Incorrect current PIN" });
+  await redisCommand("SET", k(session.restaurant_code, "pin"), new_pin);
   res.json({ success: true });
 });
 
@@ -974,35 +1121,39 @@ app.post("/verify-pin", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
-  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
-  const limit = rateLimit(ip, `verify-pin:${code}`);
+  const ip = foodupClientIp(req);
+  const rateArgs = { action: 'verify-pin', code, ip };
+  const limit = await restaurantSecurity.pinAttemptRateLimitState(rateArgs);
   if (!limit.allowed) {
     return res.json({
       success: false,
       rate_limited: true,
-      message: limit.blocked
-        ? `Too many failed attempts. Try again in ${limit.minutesLeft} minute${limit.minutesLeft > 1 ? 's' : ''}.`
-        : 'Rate limit exceeded.',
+      message: `Too many failed attempts. Try again in ${limit.minutesLeft} minute${limit.minutesLeft > 1 ? 's' : ''}.`,
       minutes_left: limit.minutesLeft,
+      attempts_left: 0,
     });
   }
 
   const stored = await redisCommand("GET", k(code, "pin"));
-  if (stored.result && stored.result === pin) {
-    // Reset rate limit on success
-    const key = `verify-pin:${code}:${ip}`;
-    delete rateLimitStore[key];
-    res.json({ success: true });
-  } else {
-    res.json({
-      success: false,
-      rate_limited: false,
-      attempts_left: limit.attemptsLeft,
-      message: limit.attemptsLeft <= 2
-        ? `Incorrect PIN. ${limit.attemptsLeft} attempt${limit.attemptsLeft !== 1 ? 's' : ''} left before 15 minute lockout.`
-        : 'Incorrect PIN.',
-    });
+  if (stored.result && safeEqual(stored.result, pin)) {
+    await restaurantSecurity.clearPinFailures(rateArgs);
+    const loginPolicy = restaurantSecurity.evaluatePinLogin(pin);
+    const securityPayload = await buildLoginSecurityPayload(code, 'orders', req.body.device_id, loginPolicy.pinChangeRequired);
+    return res.json({ success: true, ...securityPayload });
   }
+
+  const failure = await restaurantSecurity.recordPinFailure(rateArgs);
+  return res.json({
+    success: false,
+    rate_limited: failure.blocked,
+    attempts_left: failure.attemptsLeft,
+    minutes_left: failure.blocked ? failure.minutesLeft : undefined,
+    message: failure.blocked
+      ? `Too many failed attempts. Try again in ${failure.minutesLeft} minute${failure.minutesLeft > 1 ? 's' : ''}.`
+      : failure.attemptsLeft <= 2
+        ? `Incorrect PIN. ${failure.attemptsLeft} attempt${failure.attemptsLeft !== 1 ? 's' : ''} left before 15 minute lockout.`
+        : 'Incorrect PIN.',
+  });
 });
 
 app.post("/verify-ios-pin", async (req, res) => {
@@ -1010,42 +1161,66 @@ app.post("/verify-ios-pin", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
-  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
-  const limit = rateLimit(ip, `verify-ios-pin:${code}`);
+  const ip = foodupClientIp(req);
+  const rateArgs = { action: 'verify-ios-pin', code, ip };
+  const limit = await restaurantSecurity.pinAttemptRateLimitState(rateArgs);
   if (!limit.allowed) {
     return res.json({
       success: false,
       rate_limited: true,
       message: `Too many failed attempts. Try again in ${limit.minutesLeft} minute${limit.minutesLeft > 1 ? 's' : ''}.`,
       minutes_left: limit.minutesLeft,
+      attempts_left: 0,
     });
   }
 
   const stored = await redisCommand("GET", k(code, "ios_pin"));
-  if (!stored.result) return res.json({ success: false, message: "iOS PIN not set" });
-  if (stored.result === ios_pin) {
-    res.json({ success: true });
-  } else {
-    res.json({
+  if (stored.result && safeEqual(stored.result, ios_pin)) {
+    await restaurantSecurity.clearPinFailures(rateArgs);
+    const loginPolicy = restaurantSecurity.evaluatePinLogin(ios_pin);
+    const securityPayload = await buildLoginSecurityPayload(code, 'orders', req.body.device_id, loginPolicy.pinChangeRequired);
+    return res.json({ success: true, ...securityPayload });
+  }
+
+  const failure = await restaurantSecurity.recordPinFailure(rateArgs);
+  if (!stored.result) {
+    return res.json({
       success: false,
-      rate_limited: false,
-      attempts_left: limit.attemptsLeft,
-      message: limit.attemptsLeft <= 2
-        ? `Incorrect PIN. ${limit.attemptsLeft} attempt${limit.attemptsLeft !== 1 ? 's' : ''} left before 15 minute lockout.`
-        : 'Incorrect iOS PIN.',
+      rate_limited: failure.blocked,
+      attempts_left: failure.attemptsLeft,
+      minutes_left: failure.blocked ? failure.minutesLeft : undefined,
+      message: failure.blocked
+        ? `Too many failed attempts. Try again in ${failure.minutesLeft} minute${failure.minutesLeft > 1 ? 's' : ''}.`
+        : 'iOS PIN not set',
     });
   }
+
+  return res.json({
+    success: false,
+    rate_limited: failure.blocked,
+    attempts_left: failure.attemptsLeft,
+    minutes_left: failure.blocked ? failure.minutesLeft : undefined,
+    message: failure.blocked
+      ? `Too many failed attempts. Try again in ${failure.minutesLeft} minute${failure.minutesLeft > 1 ? 's' : ''}.`
+      : failure.attemptsLeft <= 2
+        ? `Incorrect PIN. ${failure.attemptsLeft} attempt${failure.attemptsLeft !== 1 ? 's' : ''} left before 15 minute lockout.`
+        : 'Incorrect iOS PIN.',
+  });
 });
 
 app.post("/set-ios-pin", async (req, res) => {
-  const { restaurant_code, owner_pin, ios_pin } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
-  if (!code) return res.json({ success: false });
-  const storedPin = await redisCommand("GET", k(code, "pin"));
-  if (!storedPin.result || storedPin.result !== owner_pin) {
-    return res.json({ success: false, message: "Unauthorized" });
+  const { restaurant_code, ios_pin } = req.body;
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  if (!requestedCode) return res.status(400).json({ success: false });
+  const session = await requireAppSession(req, res, ['orders'], requestedCode);
+  if (!session) return;
+  if (!restaurantSecurity.defaultPinProtectionConfigured()) {
+    return res.status(503).json({ success: false, code: 'pin_policy_not_configured', message: 'PIN policy is not configured.' });
   }
-  await redisCommand("SET", k(code, "ios_pin"), ios_pin);
+  if (!ios_pin || restaurantSecurity.isKnownDefaultPin(ios_pin)) {
+    return res.status(400).json({ success: false, code: 'unsafe_pin', message: 'Choose a non-default PIN.' });
+  }
+  await redisCommand("SET", k(session.restaurant_code, "ios_pin"), ios_pin);
   res.json({ success: true });
 });
 
@@ -1055,7 +1230,10 @@ app.post("/set-ios-pin", async (req, res) => {
 
 app.post("/add-delivery-account", async (req, res) => {
   const { username, password, restaurant_code, owner_pin, phone } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
   if (!await isValidOwnerOrIosPin(code, owner_pin)) {
@@ -1080,37 +1258,56 @@ app.post("/verify-delivery-account", async (req, res) => {
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
-  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
-  const limit = rateLimit(ip, `verify-delivery:${code}:${username?.toLowerCase()}`);
+  const usernameKey = String(username || '').trim().toLowerCase();
+  const ip = foodupClientIp(req);
+  const rateArgs = { action: 'verify-delivery-account', code, ip };
+  const limit = await restaurantSecurity.pinAttemptRateLimitState(rateArgs);
   if (!limit.allowed) {
     return res.json({
       success: false,
       rate_limited: true,
       message: `Too many failed attempts. Try again in ${limit.minutesLeft} minute${limit.minutesLeft > 1 ? 's' : ''}.`,
       minutes_left: limit.minutesLeft,
+      attempts_left: 0,
     });
   }
 
-  const data = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
-  if (!data.result) return res.json({ success: false, message: "Account not found" });
+  const data = usernameKey
+    ? await redisCommand("GET", k(code, `delivery_account:${usernameKey}`))
+    : { result: null };
+
+  if (!data.result) {
+    const failure = await restaurantSecurity.recordPinFailure(rateArgs);
+    return res.json({
+      success: false,
+      rate_limited: failure.blocked,
+      attempts_left: failure.attemptsLeft,
+      minutes_left: failure.blocked ? failure.minutesLeft : undefined,
+      message: failure.blocked
+        ? `Too many failed attempts. Try again in ${failure.minutesLeft} minute${failure.minutesLeft > 1 ? 's' : ''}.`
+        : 'Account not found',
+    });
+  }
 
   const account = JSON.parse(data.result);
-  if (account.password === password) {
-    // Reset courier login rate limit on successful login
-    const key = `verify-delivery:${code}:${username.toLowerCase()}:${ip}`;
-    delete rateLimitStore[key];
-
-    res.json({ success: true, username: account.username });
-  } else {
-    res.json({
-      success: false,
-      rate_limited: false,
-      attempts_left: limit.attemptsLeft,
-      message: limit.attemptsLeft <= 2
-        ? `Incorrect password. ${limit.attemptsLeft} attempt${limit.attemptsLeft !== 1 ? 's' : ''} left before 15 minute lockout.`
-        : 'Incorrect password.',
-    });
+  if (safeEqual(account.password, password)) {
+    await restaurantSecurity.clearPinFailures(rateArgs);
+    const securityPayload = await buildLoginSecurityPayload(code, 'courier', req.body.device_id, false);
+    return res.json({ success: true, username: account.username, ...securityPayload });
   }
+
+  const failure = await restaurantSecurity.recordPinFailure(rateArgs);
+  return res.json({
+    success: false,
+    rate_limited: failure.blocked,
+    attempts_left: failure.attemptsLeft,
+    minutes_left: failure.blocked ? failure.minutesLeft : undefined,
+    message: failure.blocked
+      ? `Too many failed attempts. Try again in ${failure.minutesLeft} minute${failure.minutesLeft > 1 ? 's' : ''}.`
+      : failure.attemptsLeft <= 2
+        ? `Incorrect password. ${failure.attemptsLeft} attempt${failure.attemptsLeft !== 1 ? 's' : ''} left before 15 minute lockout.`
+        : 'Incorrect password.',
+  });
 });
 
 app.get("/delivery-accounts", async (req, res) => {
@@ -1136,7 +1333,10 @@ app.get("/delivery-accounts", async (req, res) => {
 
 app.delete("/delete-delivery-account", async (req, res) => {
   const { username, owner_pin, restaurant_code } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
 if (!await isValidOwnerOrIosPin(code, owner_pin)) {
@@ -1158,7 +1358,10 @@ app.get("/courier-phone/:code/:username", async (req, res) => {
 
 app.post("/change-delivery-password", async (req, res) => {
   const { username, current_password, new_password, restaurant_code } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false });
   const data = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
   if (!data.result) return res.json({ success: false, message: "Account not found" });
@@ -1179,15 +1382,16 @@ app.get("/check-auto-accepted/:code/:order_id", async (req, res) => {
 });
 
 app.post("/cancel-auto-action", async (req, res) => {
-  const { restaurant_code, order_id, owner_pin, secret } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
-  if (!code) return res.json({ success: false });
-  const isPlugin = secret === 'foodup2026';
-  if (!isPlugin) {
-    const storedPin = await redisCommand("GET", k(code, "pin"));
-    if (!storedPin.result || storedPin.result !== owner_pin) {
-      return res.json({ success: false, message: "Unauthorized" });
-    }
+  const { restaurant_code, order_id } = req.body;
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  if (!requestedCode) return res.json({ success: false });
+  let code = requestedCode;
+  if (foodupRequestClient(req) === 'wordpress') {
+    if (!await requireWordPressRequest(req, res, requestedCode)) return;
+  } else {
+    const session = await requireAppSession(req, res, ['orders'], requestedCode);
+    if (!session) return;
+    code = session.restaurant_code;
   }
   console.log(`Cancel auto-action for: ${code} order ${order_id}`);
   await redisCommand("SET", k(code, `auto_actioned:${order_id}`), 'yes', "EX", 86400);
@@ -1196,7 +1400,10 @@ app.post("/cancel-auto-action", async (req, res) => {
 
 app.post("/update-delivery-phone", async (req, res) => {
   const { username, phone, restaurant_code } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false });
   const data = await redisCommand("GET", k(code, `delivery_account:${username.toLowerCase()}`));
   if (!data.result) return res.json({ success: false, message: "Account not found" });
@@ -1208,7 +1415,10 @@ app.post("/update-delivery-phone", async (req, res) => {
 
 app.post("/reset-delivery-password", async (req, res) => {
   const { username, new_password, owner_pin, restaurant_code } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false, message: "Restaurant code required" });
 
 if (!await isValidOwnerOrIosPin(code, owner_pin)) {
@@ -1250,7 +1460,10 @@ app.get("/delivery-accounts-ios", async (req, res) => {
 
 app.post("/mark-delivered", async (req, res) => {
   const { order_id, delivery_name, restaurant_code, order_data } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false });
 
   const acceptance = await getOrderAcceptanceState(code, order_id);
@@ -1335,7 +1548,10 @@ app.get("/clear-courier-delivered/:code/:name", async (req, res) => {
 // Remove single order from courier delivered history
 app.post("/remove-delivered", async (req, res) => {
   const { order_id, delivery_name, restaurant_code } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false });
 
   const courierKey = k(code, `courier_delivered:${delivery_name}`);
@@ -1360,7 +1576,10 @@ app.get("/check-delivered/:code/:id", async (req, res) => {
 
 app.post("/claim-order", async (req, res) => {
   const { order_id, delivery_name, restaurant_code, delivery_status } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code || !order_id || !delivery_name) return res.json({ success: false });
 
   const acceptance = await getOrderAcceptanceState(code, order_id);
@@ -1449,7 +1668,10 @@ app.get("/check-claimed/:code/:id", async (req, res) => {
 
 app.post("/release-claim", async (req, res) => {
   const { order_id, restaurant_code } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false });
   await redisCommand("DEL", k(code, `claimed:${order_id}`));
   await redisCommand("SREM", k(code, "active_claims"), String(order_id));
@@ -1614,7 +1836,7 @@ app.get("/customer-tracking/:code/:id", async (req, res) => {
 
 app.get("/dedup-orders/:code", async (req, res) => {
   const { secret } = req.query;
-  const adminSecret = process.env.ADMIN_SECRET || 'foodup2026';
+  const adminSecret = String(process.env.ADMIN_SECRET || '').trim();
   if (secret !== adminSecret) return res.json({ success: false, message: 'Unauthorized' });
   const code = req.params.code.toLowerCase().trim();
   try {
@@ -2176,30 +2398,160 @@ app.get("/stats/:code", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/restaurant-profile", async (req, res) => {
-  const { owner_pin, restaurant_code, name, phone, address, website, secret } = req.body;
+  const { owner_pin, restaurant_code, name, phone, address, website, callback_secret } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
-  if (!code) return res.json({ success: false, message: "Restaurant code required" });
+  if (!code) return res.status(400).json({ success: false, message: "Restaurant code required" });
 
-  const isPlugin = secret === 'foodup2026';
-  if (!isPlugin) {
-    if (!await isValidOwnerOrIosPin(code, owner_pin)) {
-      return res.json({ success: false, message: "Unauthorized" });
-    }
-  }
   const existing = await redisCommand("GET", k(code, "restaurant_profile"));
   const current = existing.result ? JSON.parse(existing.result) : {};
+  const currentWebsite = String(current.website || '').trim();
+  const requestedWebsite = website === undefined ? undefined : String(website || '').trim();
 
-const { print_logo_url, email_logo_url } = req.body;
-  await redisCommand("SET", k(code, "restaurant_profile"), JSON.stringify({
-    name: name !== undefined ? name : current.name,
-    phone: phone !== undefined ? phone : current.phone,
-    address: address !== undefined ? address : current.address,
-    website: website !== undefined ? website : current.website,
+  const strictSecretProof = await restaurantSecurity.isStrictWordPressProof(
+    code,
+    foodupRequestSecret(req),
+    foodupRequestClient(req)
+  );
+
+  let ownerPinValid = false;
+  if (owner_pin && !strictSecretProof) {
+    const ip = foodupClientIp(req);
+    const rateArgs = { action: 'restaurant-profile-owner-pin', code, ip };
+    const limit = await restaurantSecurity.pinAttemptRateLimitState(rateArgs);
+    if (!limit.allowed) {
+      return res.status(429).json({
+        success: false,
+        code: 'owner_pin_rate_limited',
+        rate_limited: true,
+        minutes_left: limit.minutesLeft,
+        attempts_left: 0,
+        message: `Too many failed owner PIN attempts. Try again in ${limit.minutesLeft} minute${limit.minutesLeft > 1 ? 's' : ''}.`,
+      });
+    }
+
+    ownerPinValid = await isValidOwnerPin(code, owner_pin);
+    if (!ownerPinValid) {
+      const failure = await restaurantSecurity.recordPinFailure(rateArgs);
+      return res.status(failure.blocked ? 429 : 401).json({
+        success: false,
+        code: failure.blocked ? 'owner_pin_rate_limited' : 'owner_proof_required',
+        rate_limited: failure.blocked,
+        minutes_left: failure.blocked ? failure.minutesLeft : undefined,
+        attempts_left: failure.attemptsLeft,
+        message: failure.blocked
+          ? `Too many failed owner PIN attempts. Try again in ${failure.minutesLeft} minute${failure.minutesLeft > 1 ? 's' : ''}.`
+          : 'Owner proof is required.',
+      });
+    }
+    await restaurantSecurity.clearPinFailures(rateArgs);
+  }
+
+  const decision = await restaurantSecurity.profileAuthorization({
+    code,
+    providedSecret: foodupRequestSecret(req),
+    callbackSecret: String(callback_secret || '').trim(),
+    ownerPinValid,
+    client: foodupRequestClient(req),
+  });
+  if (!decision.ok) {
+    const recoveryRequired = decision.mode === 'secret_recovery_required';
+    return res.status(recoveryRequired ? 409 : 401).json({
+      success: false,
+      code: recoveryRequired ? 'secret_recovery_required' : 'unauthorized',
+      message: recoveryRequired ? 'Stored restaurant secret requires admin recovery.' : 'Unauthorized.',
+    });
+  }
+  if (decision.mode === 'legacy_profile' || decision.mode === 'logo_only') {
+    await foodupNoteLegacyTransitionUse(req, code, 'wordpress');
+  }
+
+  const { print_logo_url, email_logo_url, main_logo_url } = req.body;
+
+  if (!decision.canUpdateProtectedProfile) {
+    const attemptedProtectedUpdate = [name, phone, address, website].some(value => value !== undefined);
+    if (attemptedProtectedUpdate || owner_pin) {
+      return res.status(401).json({ success: false, code: 'owner_proof_required', message: 'Owner proof is required.' });
+    }
+  }
+
+  const websitePolicy = restaurantSecurity.profileWebsitePolicy({
+    decision,
+    currentWebsite,
+    requestedWebsite,
+    callbackSecret: callback_secret,
+  });
+  const mayUseBrandNewWebsite = websitePolicy.mayUseBrandNewWebsite;
+
+  if (!websitePolicy.allowed) {
+    return res.status(403).json({
+      success: false,
+      code: 'website_change_requires_secret_proof',
+      message: 'Changing the restaurant website requires proof with the currently stored restaurant secret.',
+    });
+  }
+
+  if (decision.canEstablishSecret && callback_secret) {
+    if (!restaurantSecurity.encryptionConfigured()) {
+      return res.status(503).json({ success: false, code: 'secret_encryption_not_configured', message: 'Restaurant secret storage is not configured.' });
+    }
+    if (!restaurantSecurity.isAcceptableRestaurantSecret(callback_secret)) {
+      return res.status(400).json({ success: false, code: 'invalid_callback_secret', message: 'Restaurant secret does not meet the required format.' });
+    }
+
+    if (decision.mode === 'first_migration') {
+      if (currentWebsite && websitePolicy.changeRequested) {
+        return res.status(403).json({
+          success: false,
+          code: 'website_change_requires_secret_proof',
+          message: 'The website cannot be changed during first secret migration.',
+        });
+      }
+      const verificationWebsite = websitePolicy.verificationWebsite;
+      if (!verificationWebsite) {
+        return res.status(400).json({
+          success: false,
+          code: 'website_required_for_secret_migration',
+          message: 'A restaurant website is required before the restaurant secret can be established.',
+        });
+      }
+      const verification = await restaurantSecurity.verifyRestaurantSecretAgainstWebsite(
+        verificationWebsite,
+        callback_secret
+      );
+      if (!verification.ok) {
+        const status = verification.reason === 'website_verification_request_failed' ? 502 : 401;
+        return res.status(status).json({
+          success: false,
+          code: 'restaurant_secret_website_verification_failed',
+          message: 'The restaurant secret could not be verified against the restaurant website.',
+        });
+      }
+    }
+  }
+
+  const profile = {
+    ...current,
     print_logo_url: print_logo_url !== undefined ? print_logo_url : current.print_logo_url,
     email_logo_url: email_logo_url !== undefined ? email_logo_url : current.email_logo_url,
+    main_logo_url: main_logo_url !== undefined ? main_logo_url : current.main_logo_url,
     updated_at: new Date().toISOString(),
-  }));
-  res.json({ success: true });
+  };
+  if (decision.canUpdateProtectedProfile) {
+    profile.name = name !== undefined ? name : current.name;
+    profile.phone = phone !== undefined ? phone : current.phone;
+    profile.address = address !== undefined ? address : current.address;
+  }
+  if (decision.canUpdateWebsite || mayUseBrandNewWebsite) {
+    profile.website = website !== undefined ? requestedWebsite : current.website;
+  }
+
+  await redisCommand("SET", k(code, "restaurant_profile"), JSON.stringify(profile));
+
+  if (decision.canEstablishSecret && callback_secret) {
+    await restaurantSecurity.setStoredRestaurantSecret(code, callback_secret);
+  }
+
+  res.json({ success: true, secret_state: decision.mode });
 });
 
 app.get("/restaurant-profile/:code", async (req, res) => {
@@ -2264,7 +2616,10 @@ async function sendOrderAcceptedUpdate(code, orderId, acceptedData) {
 
 app.post("/accepted-time", async (req, res) => {
   const { restaurant_code, order_id, accepted_time, status, accepted_at } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false });
 
   console.log("Accepted time for:", code, order_id, accepted_time, status);
@@ -2286,10 +2641,12 @@ app.post("/accepted-time", async (req, res) => {
 });
 
 app.post("/rejected-time", async (req, res) => {
-  const { restaurant_code, order_id, secret } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
-  if (!code) return res.json({ success: false });
-  if (secret !== 'foodup2026') return res.json({ success: false, message: 'Unauthorized' });
+  const { restaurant_code, order_id } = req.body;
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  if (!requestedCode) return res.json({ success: false });
+  const session = await requireAppSession(req, res, ['orders'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   await redisCommand("SET", k(code, `rejected_time:${order_id}`), new Date().toISOString(), "EX", 604800);
   res.json({ success: true });
 });
@@ -2383,7 +2740,10 @@ app.get("/acceptance-times/:code", async (req, res) => {
 
 app.post("/acceptance-times", async (req, res) => {
   const { restaurant_code, owner_pin, times } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false });if (!await isValidOwnerOrIosPin(code, owner_pin)) {
     return res.json({ success: false, message: "Unauthorized" });
   }
@@ -2408,6 +2768,7 @@ app.post("/store-status", async (req, res) => {
   const { restaurant_code, is_open } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
+  if (!await requireWordPressRequest(req, res, code)) return;
   await redisCommand("SET", k(code, "store_status"), is_open ? 'open' : 'closed');
   res.json({ success: true, is_open });
 });
@@ -2454,8 +2815,11 @@ const [coreData, tokensData] = await Promise.all([
 });
 
 app.delete("/clear-accepted-times/:code", async (req, res) => {
-  const { secret } = req.body;
-  if (secret !== 'foodup2026') return res.json({ success: false, message: "Unauthorized" });
+  const adminSecret = String(process.env.ADMIN_SECRET || '').trim();
+  const provided = String(req.headers['x-foodup-admin'] || '').trim();
+  if (!adminSecret || !provided || provided !== adminSecret) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
   const code = req.params.code.toLowerCase().trim();
   const keys = await redisCommand("KEYS", k(code, "accepted_time:*"));
   if (keys.result && keys.result.length > 0) {
@@ -2463,7 +2827,6 @@ app.delete("/clear-accepted-times/:code", async (req, res) => {
   }
   res.json({ success: true, cleared: keys.result?.length || 0 });
 });
-
 
 app.get("/debug-tokens/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
@@ -2477,7 +2840,10 @@ app.get("/debug-tokens/:code", async (req, res) => {
 
 app.post("/set-printer-device", async (req, res) => {
   const { restaurant_code, owner_pin, device_id } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false });
   const storedPin = await redisCommand("GET", k(code, "pin"));
   if (!storedPin.result || storedPin.result !== owner_pin) {
@@ -2642,19 +3008,21 @@ app.post("/wc-webhook", async (req, res) => {
 
 app.post("/log", async (req, res) => {
   const { message, restaurant_code } = req.body;
-  console.log("APP LOG:", message);
-  if (restaurant_code) {
-    const code = restaurant_code.toLowerCase().trim();
-    const entry = JSON.stringify({ message, ts: new Date().toISOString() });
-    await redisCommand("LPUSH", k(code, "debug_logs"), entry);
-    await redisCommand("LTRIM", k(code, "debug_logs"), 0, 49);
-  }
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders', 'courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
+  const safeMessage = foodupRedactLogMessage(message);
+  console.log("APP LOG:", safeMessage);
+  const entry = JSON.stringify({ message: safeMessage, ts: new Date().toISOString() });
+  await redisCommand("LPUSH", k(code, "debug_logs"), entry);
+  await redisCommand("LTRIM", k(code, "debug_logs"), 0, 49);
   res.json({ success: true });
 });
 
 app.get("/debug-logs/:code", async (req, res) => {
   const { p } = req.query;
-  const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
+  const dashPassword = String(process.env.DASHBOARD_PASSWORD || '').trim();
   if (p !== dashPassword) return res.json({ success: false, message: 'Unauthorized' });
   const code = req.params.code.toLowerCase().trim();
   const data = await redisCommand("LRANGE", k(code, "debug_logs"), 0, 49);
@@ -2664,7 +3032,7 @@ app.get("/debug-logs/:code", async (req, res) => {
 
 app.delete("/debug-logs/:code", async (req, res) => {
   const { p } = req.query;
-  const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
+  const dashPassword = String(process.env.DASHBOARD_PASSWORD || '').trim();
   if (p !== dashPassword) return res.json({ success: false, message: 'Unauthorized' });
   const code = req.params.code.toLowerCase().trim();
   await redisCommand("DEL", k(code, "debug_logs"));
@@ -2674,7 +3042,10 @@ app.delete("/debug-logs/:code", async (req, res) => {
 
 // Batch accepted-time lookup used by Orders and Courier tab refreshes.
 app.post("/accepted-times/:code", async (req, res) => {
-  const code = req.params.code.toLowerCase().trim();
+  const requestedCode = req.params.code.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders', 'courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   const requested = Array.isArray(req.body?.order_ids) ? req.body.order_ids : [];
   const orderIds = [...new Set(requested.map(id => String(id)).filter(Boolean))].slice(0, 100);
 
@@ -2723,6 +3094,7 @@ app.post("/auto-settings", async (req, res) => {
   const { restaurant_code, owner_pin, auto_action, wait_minutes, accept_time, reject_reason } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
+  if (!await requireWordPressRequest(req, res, code)) return;
 
   const storedPin = await redisCommand("GET", k(code, "pin"));
   if (!storedPin.result || storedPin.result !== owner_pin) {
@@ -2744,6 +3116,7 @@ app.post("/auto-accepted-notify", async (req, res) => {
   const { restaurant_code, order_id, accepted_time, items, ...orderData } = req.body;
   const code = restaurant_code?.toLowerCase().trim();
   if (!code) return res.json({ success: false });
+  if (!await requireWordPressRequest(req, res, code)) return;
 
   console.log("Auto-accepted notify for:", code, order_id);
 
@@ -2808,7 +3181,7 @@ const alertService = createAlertService(redisCommand, k);
 // MONITORING ROUTES
 // -------------------------------------------------------
 
-const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
+const dashPassword = String(process.env.DASHBOARD_PASSWORD || '').trim();
 app.use('/', createMonitoringRoutes(redisCommand, k, dashPassword));
 
 // -------------------------------------------------------
@@ -2817,7 +3190,10 @@ app.use('/', createMonitoringRoutes(redisCommand, k, dashPassword));
 
 app.post("/heartbeat", async (req, res) => {
   const { restaurant_code, device_id, app_version } = req.body;
-  const code = restaurant_code?.toLowerCase().trim();
+  const requestedCode = restaurant_code?.toLowerCase().trim();
+  const session = await requireAppSession(req, res, ['orders', 'courier'], requestedCode);
+  if (!session) return;
+  const code = session.restaurant_code;
   if (!code) return res.json({ success: false });
 
   const heartbeat = {
@@ -2845,8 +3221,10 @@ app.get("/heartbeat/:code", async (req, res) => {
 // -------------------------------------------------------
 
 app.post("/alert-settings", async (req, res) => {
-  const { secret, alert_email, offline_threshold_minutes } = req.body;
-  if (secret !== 'foodup2026') return res.json({ success: false, message: 'Unauthorized' });
+  const { alert_email, offline_threshold_minutes } = req.body;
+  const provided = String(req.headers['x-foodup-admin'] || '').trim();
+  const expected = String(process.env.ADMIN_SECRET || process.env.DASHBOARD_PASSWORD || '').trim();
+  if (!expected || !provided || provided !== expected) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   await redisCommand("SET", "alert_settings", JSON.stringify({
     alert_email: alert_email || '',
@@ -2857,8 +3235,9 @@ app.post("/alert-settings", async (req, res) => {
 });
 
 app.get("/alert-settings", async (req, res) => {
-  const { secret } = req.query;
-  if (secret !== 'foodup2026') return res.json({ success: false, message: 'Unauthorized' });
+  const provided = String(req.headers['x-foodup-admin'] || '').trim();
+  const expected = String(process.env.ADMIN_SECRET || process.env.DASHBOARD_PASSWORD || '').trim();
+  if (!expected || !provided || provided !== expected) return res.status(401).json({ success: false, message: 'Unauthorized' });
   const data = await redisCommand("GET", "alert_settings");
   if (data.result) {
     res.json({ success: true, settings: JSON.parse(data.result) });
@@ -2873,7 +3252,7 @@ app.get("/alert-settings", async (req, res) => {
 
 app.get("/dashboard/settings", async (req, res) => {
   const { p } = req.query;
-  const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
+  const dashPassword = String(process.env.DASHBOARD_PASSWORD || '').trim();
 
   if (p !== dashPassword) {
     return res.redirect('/dashboard');
@@ -2938,8 +3317,8 @@ function saveSettings() {
   var threshold = document.getElementById('offline_threshold').value;
   fetch('/alert-settings', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ secret: 'foodup2026', alert_email: email, offline_threshold_minutes: parseInt(threshold) })
+    headers: { 'Content-Type': 'application/json', 'X-FoodUp-Admin': new URLSearchParams(window.location.search).get('p') || '' },
+    body: JSON.stringify({ alert_email: email, offline_threshold_minutes: parseInt(threshold) })
   }).then(function(r) { return r.json(); }).then(function(data) {
     if (data.success) {
       document.getElementById('saved_msg').style.display = 'block';
@@ -2958,7 +3337,7 @@ function saveSettings() {
 
 app.get("/dashboard", async (req, res) => {
   const { p } = req.query;
-  const dashPassword = process.env.DASHBOARD_PASSWORD || 'foodup2026';
+  const dashPassword = String(process.env.DASHBOARD_PASSWORD || '').trim();
 
   if (p !== dashPassword) {
     return res.send(`<!DOCTYPE html>
@@ -3806,15 +4185,13 @@ async function runAutoActions() {
                 );
               }
 
-              const wpResponse = await fetch(
+              const wpResponse = await restaurantSecurity.fetchWordPress(
+                code,
                 `${resolvedBaseUrl}/wp-json/foodup/v1/order-accepted`,
                 {
                   method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
+                  headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
-                    secret: 'foodup2026',
                     order_id: order.order_id,
                     accepted_time: effectiveAcceptTime,
                   }),
@@ -3918,15 +4295,13 @@ async function runAutoActions() {
                 );
               }
 
-              const wpResponse = await fetch(
+              const wpResponse = await restaurantSecurity.fetchWordPress(
+                code,
                 `${resolvedBaseUrl}/wp-json/foodup/v1/order-rejected`,
                 {
                   method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
+                  headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
-                    secret: 'foodup2026',
                     order_id: order.order_id,
                     reason: rejectReason,
                   }),
