@@ -1,5 +1,6 @@
 const express = require("express");
 const { createRestaurantSecurity, safeEqual, clientIpFromRequest } = require("./restaurantSecurity");
+const { createCustomerEmailService } = require("./customerEmail");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const app = installAsyncRouteSafety(express());
 app.set('trust proxy', 1);
@@ -122,6 +123,7 @@ const k = (code, key) => `${code}:${key}`;
 
 
 const restaurantSecurity = createRestaurantSecurity({ redisCommand, k });
+const customerEmailService = createCustomerEmailService({ fetchImpl: fetch, env: process.env, logger: console });
 
 async function isValidOwnerPin(code, pin) {
   const stored = await redisCommand("GET", k(code, "pin"));
@@ -213,6 +215,44 @@ function foodupBackendAdminAuthorized(req) {
   const expected = String(process.env.ADMIN_SECRET || process.env.DASHBOARD_PASSWORD || '').trim();
   return Boolean(expected) && safeEqual(provided, expected);
 }
+
+// -------------------------------------------------------
+// CENTRAL CUSTOMER EMAIL (Resend)
+// -------------------------------------------------------
+
+app.post("/customer-email", async (req, res) => {
+  const code = String(req.body?.restaurant_code || '').trim().toLowerCase();
+  if (!code) {
+    return res.status(400).json({ success: false, handled: true, code: 'restaurant_code_required', message: 'Restaurant code is required.' });
+  }
+
+  const auth = await requireWordPressRequest(req, res, code);
+  if (!auth) return;
+
+  let restaurantName = code;
+  try {
+    const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
+    if (profileData.result) {
+      const profile = JSON.parse(profileData.result);
+      if (profile && profile.name) restaurantName = String(profile.name);
+    }
+  } catch (error) {
+    console.warn(`[customer-email] profile lookup failed for ${code}: ${error?.name || 'error'}`);
+  }
+
+  const result = await customerEmailService.send({
+    restaurantCode: code,
+    restaurantName,
+    orderId: req.body?.order_id,
+    type: req.body?.type,
+    to: req.body?.to,
+    replyTo: req.body?.reply_to,
+    subject: req.body?.subject,
+    html: req.body?.html,
+  });
+
+  return res.status(result.status).json(result.body);
+});
 
 async function buildLoginSecurityPayload(code, appType, requestedDeviceId, pinChangeRequired = false) {
   const session = await restaurantSecurity.issueSession({ code, app: appType, deviceId: requestedDeviceId });
