@@ -3174,6 +3174,7 @@ const posupRoutes = require('./posup');
 app.use('/posup', posupRoutes);
 const { startWebsiteMonitor } = require('./websiteMonitor');
 const { createMonitoringRoutes } = require('./monitoring');
+const { createControlCenter } = require('./controlCenter');
 
 const alertService = createAlertService(redisCommand, k);
 
@@ -3183,6 +3184,11 @@ const alertService = createAlertService(redisCommand, k);
 
 const dashPassword = String(process.env.DASHBOARD_PASSWORD || '').trim();
 app.use('/', createMonitoringRoutes(redisCommand, k, dashPassword));
+if (dashPassword) {
+  createControlCenter(app, redisCommand, k, dashPassword);
+} else {
+  console.warn('[control-center] DASHBOARD_PASSWORD is not configured; Control Center is disabled.');
+}
 
 // -------------------------------------------------------
 // HEARTBEAT
