@@ -6,15 +6,15 @@ function quietLogger() {
   return { log() {}, warn() {}, error() {} };
 }
 
-test('does not handle restaurants outside the Resend allowlist', async () => {
+test('does not handle restaurants unless central Resend is enabled for that restaurant', async () => {
   let calls = 0;
   const service = createCustomerEmailService({
-    env: { FOODUP_RESEND_RESTAURANTS: 'hothouse', RESEND_API_KEY: 'test-key' },
+    env: { RESEND_API_KEY: 'test-key' },
     fetchImpl: async () => { calls += 1; throw new Error('should not run'); },
     logger: quietLogger(),
   });
 
-  const result = await service.send({ restaurantCode: 'grillhouse' });
+  const result = await service.send({ restaurantCode: 'hothouse', enabled: false });
   assert.equal(result.status, 200);
   assert.equal(result.body.handled, false);
   assert.equal(result.body.code, 'resend_not_enabled');
@@ -23,12 +23,12 @@ test('does not handle restaurants outside the Resend allowlist', async () => {
 
 test('requires RESEND_API_KEY for enabled restaurants', async () => {
   const service = createCustomerEmailService({
-    env: { FOODUP_RESEND_RESTAURANTS: 'hothouse' },
+    env: {},
     fetchImpl: async () => { throw new Error('should not run'); },
     logger: quietLogger(),
   });
 
-  const result = await service.send({ restaurantCode: 'hothouse' });
+  const result = await service.send({ restaurantCode: 'hothouse', enabled: true });
   assert.equal(result.status, 503);
   assert.equal(result.body.handled, true);
   assert.equal(result.body.code, 'resend_not_configured');
@@ -37,7 +37,7 @@ test('requires RESEND_API_KEY for enabled restaurants', async () => {
 test('sends through Resend with deterministic idempotency and FoodUp sender', async () => {
   let request;
   const service = createCustomerEmailService({
-    env: { FOODUP_RESEND_RESTAURANTS: 'hothouse', RESEND_API_KEY: 'test-key' },
+    env: { RESEND_API_KEY: 'test-key' },
     fetchImpl: async (url, options) => {
       request = { url, options };
       return { ok: true, status: 200, text: async () => JSON.stringify({ id: 'email-123' }) };
@@ -47,6 +47,7 @@ test('sends through Resend with deterministic idempotency and FoodUp sender', as
 
   const result = await service.send({
     restaurantCode: 'HotHouse',
+    enabled: true,
     restaurantName: 'Hot House',
     orderId: 965,
     type: 'accepted',
@@ -70,13 +71,14 @@ test('sends through Resend with deterministic idempotency and FoodUp sender', as
 
 test('returns a controlled provider failure without leaking provider body', async () => {
   const service = createCustomerEmailService({
-    env: { FOODUP_RESEND_RESTAURANTS: 'hothouse', RESEND_API_KEY: 'test-key' },
+    env: { RESEND_API_KEY: 'test-key' },
     fetchImpl: async () => ({ ok: false, status: 429, text: async () => '{"message":"rate limited"}' }),
     logger: quietLogger(),
   });
 
   const result = await service.send({
     restaurantCode: 'hothouse',
+    enabled: true,
     restaurantName: 'Hot House',
     orderId: 965,
     type: 'kitchen',

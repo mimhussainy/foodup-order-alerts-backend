@@ -13,15 +13,6 @@ function normalizeCode(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-function parseRestaurantAllowlist(value) {
-  return new Set(
-    String(value || '')
-      .split(',')
-      .map(normalizeCode)
-      .filter(Boolean)
-  );
-}
-
 function safeDisplayName(value, fallback = 'FoodUp Restaurant') {
   const cleaned = String(value || '')
     .replace(/[\r\n<>]/g, ' ')
@@ -41,9 +32,9 @@ function createCustomerEmailService({ fetchImpl = global.fetch, env = process.en
 
   async function send(input = {}) {
     const code = normalizeCode(input.restaurantCode);
-    const enabled = parseRestaurantAllowlist(env.FOODUP_RESEND_RESTAURANTS);
+    const enabled = input.enabled === true;
 
-    if (!code || !enabled.has(code)) {
+    if (!code || !enabled) {
       return {
         status: 200,
         body: {
@@ -174,6 +165,5 @@ function createCustomerEmailService({ fetchImpl = global.fetch, env = process.en
 module.exports = {
   ALLOWED_TYPES,
   createCustomerEmailService,
-  parseRestaurantAllowlist,
   safeDisplayName,
 };

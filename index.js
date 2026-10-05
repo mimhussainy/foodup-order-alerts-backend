@@ -230,18 +230,33 @@ app.post("/customer-email", async (req, res) => {
   if (!auth) return;
 
   let restaurantName = code;
+  let emailSettings = {};
   try {
-    const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
+    const [profileData, emailSettingsData] = await Promise.all([
+      redisCommand("GET", k(code, "restaurant_profile")),
+      redisCommand("GET", k(code, "customer_email_settings")),
+    ]);
     if (profileData.result) {
       const profile = JSON.parse(profileData.result);
       if (profile && profile.name) restaurantName = String(profile.name);
     }
+    if (emailSettingsData.result) {
+      const parsed = JSON.parse(emailSettingsData.result);
+      if (parsed && typeof parsed === 'object') emailSettings = parsed;
+    }
   } catch (error) {
-    console.warn(`[customer-email] profile lookup failed for ${code}: ${error?.name || 'error'}`);
+    console.warn(`[customer-email] settings lookup failed for ${code}: ${error?.name || 'error'}`);
+    return res.status(503).json({
+      success: false,
+      handled: true,
+      code: 'email_settings_unavailable',
+      message: 'Customer email settings are temporarily unavailable.',
+    });
   }
 
   const result = await customerEmailService.send({
     restaurantCode: code,
+    enabled: emailSettings.resend_enabled === true,
     restaurantName,
     orderId: req.body?.order_id,
     type: req.body?.type,

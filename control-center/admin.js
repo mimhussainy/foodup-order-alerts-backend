@@ -296,6 +296,7 @@
     $('#drawerCode').textContent = `${r.code}${r.website ? ' · '+r.website : ''}`;
     $('#drawerStatus').innerHTML = `<span class="status-dot ${esc(r.app_status)}"></span> ${esc(statusLabel(r.app_status))}${r.app_minutes_ago != null ? ' · '+esc(r.app_minutes_ago)+' min ago' : ''}`;
     const modules = r.modules || {};
+    const customerEmailSettings = r.customer_email_settings || {};
     const orders = (r.recent_orders || []).slice(0,8);
     $('#drawerContent').innerHTML = `
       ${r.attention?.length ? `<div class="detail-section danger-zone"><div class="detail-section-head"><h3>Needs attention</h3></div><div class="detail-section-body"><div class="attention-issues">${esc(r.attention.join(' · '))}</div></div></div>` : ''}
@@ -316,6 +317,10 @@
       <div class="detail-section"><div class="detail-section-head"><h3>Plan & feature modules</h3><button id="saveModulesBtn" class="btn btn-primary">Save</button></div><div class="detail-section-body"><div class="module-grid">
         ${Object.entries(moduleLabels).map(([key,label]) => `<div class="module-toggle"><span>${esc(label)}</span><label class="switch"><input type="checkbox" data-module="${esc(key)}" ${modules[key] ? 'checked' : ''}><span></span></label></div>`).join('')}
       </div></div></div>
+      <div class="detail-section"><div class="detail-section-head"><h3>Customer email delivery</h3><button id="saveCustomerEmailBtn" class="btn btn-primary">Save</button></div><div class="detail-section-body">
+        <div class="module-toggle"><span>Central FoodUp email via Resend</span><label class="switch"><input id="resendEnabledToggle" type="checkbox" ${customerEmailSettings.resend_enabled ? 'checked' : ''}><span></span></label></div>
+        <p class="restaurant-meta" style="margin:9px 2px 0;line-height:1.55">Default is off. When enabled, this restaurant is allowed to use the centralized FoodUp customer-email endpoint. The WordPress email integration is enabled separately.</p>
+      </div></div>
       <div class="detail-section"><div class="detail-section-head"><h3>Connection management</h3></div><div class="detail-section-body"><div class="actions-row">
         <button id="resetDevicesBtn" class="btn btn-secondary">Reset Orders devices</button>
         <button id="resetPrinterBtn" class="btn btn-secondary">Clear printer assignment</button>
@@ -341,6 +346,13 @@
       try {
         const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method:'PATCH', body: JSON.stringify({ modules }) });
         state.selectedRestaurant = data.restaurant; toast('Feature modules updated'); await refreshAll(); renderRestaurantDrawer();
+      } catch (e) { toast(e.message,'error'); }
+    });
+    $('#saveCustomerEmailBtn').addEventListener('click', async () => {
+      const customer_email_settings = { resend_enabled: $('#resendEnabledToggle').checked };
+      try {
+        const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method:'PATCH', body: JSON.stringify({ customer_email_settings }) });
+        state.selectedRestaurant = data.restaurant; toast('Customer email delivery updated'); await refreshAll(); renderRestaurantDrawer();
       } catch (e) { toast(e.message,'error'); }
     });
     $('#resetDevicesBtn').addEventListener('click', () => confirmationModal('Reset Orders devices', `Disconnect all registered Orders App devices for ${state.selectedRestaurant.name}?`, 'Reset devices', async () => {

@@ -107,7 +107,7 @@ function createControlCenter(app, redisCommand, k, dashPassword) {
   });
 
   async function loadRestaurant(code, includeOrders = false) {
-    const [profileRaw, heartbeatRaw, tokensRaw, ordersRaw, printerRaw, autoRaw, websiteRaw, modulesRaw, storeRaw, courierRaw] = await Promise.all([
+    const [profileRaw, heartbeatRaw, tokensRaw, ordersRaw, printerRaw, autoRaw, websiteRaw, modulesRaw, storeRaw, courierRaw, customerEmailRaw] = await Promise.all([
       redisCommand('GET', k(code, 'restaurant_profile')),
       redisCommand('GET', k(code, 'heartbeat')),
       redisCommand('SMEMBERS', k(code, 'device_tokens')),
@@ -118,6 +118,7 @@ function createControlCenter(app, redisCommand, k, dashPassword) {
       redisCommand('GET', k(code, 'admin_modules')),
       redisCommand('GET', k(code, 'store_status')),
       redisCommand('SMEMBERS', k(code, 'delivery_accounts')),
+      redisCommand('GET', k(code, 'customer_email_settings')),
     ]);
 
     const profile = safeJson(profileRaw.result, {}) || {};
@@ -128,6 +129,11 @@ function createControlCenter(app, redisCommand, k, dashPassword) {
     const websiteHealth = safeJson(websiteRaw.result, null);
     const storedModules = safeJson(modulesRaw.result, null);
     const couriers = courierRaw.result || [];
+    const customerEmailSettingsRaw = safeJson(customerEmailRaw.result, {}) || {};
+    const customerEmailSettings = {
+      resend_enabled: customerEmailSettingsRaw.resend_enabled === true,
+      updated_at: customerEmailSettingsRaw.updated_at || null,
+    };
 
     let appMinutesAgo = null;
     let appStatus = 'never';
@@ -188,6 +194,7 @@ function createControlCenter(app, redisCommand, k, dashPassword) {
       website_health: websiteHealth,
       auto_settings: autoSettings,
       modules,
+      customer_email_settings: customerEmailSettings,
       attention,
       orders_today: todayOrders.length,
       revenue_today: todayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0),
@@ -272,6 +279,14 @@ function createControlCenter(app, redisCommand, k, dashPassword) {
         const modules = {};
         defaults.forEach(key => { modules[key] = !!body.modules[key]; });
         await redisCommand('SET', k(code, 'admin_modules'), JSON.stringify(modules));
+      }
+
+      if (body.customer_email_settings && typeof body.customer_email_settings === 'object') {
+        const customerEmailSettings = {
+          resend_enabled: body.customer_email_settings.resend_enabled === true,
+          updated_at: new Date().toISOString(),
+        };
+        await redisCommand('SET', k(code, 'customer_email_settings'), JSON.stringify(customerEmailSettings));
       }
 
       if (body.owner_pin) {
