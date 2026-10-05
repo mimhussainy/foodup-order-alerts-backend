@@ -1,6 +1,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
+const { adminLoginRateLimitState, recordAdminLoginFailure, clearAdminLoginFailures } = require('./adminLoginRateLimit');
 
 const SESSION_COOKIE = 'foodup_admin_session';
 const SESSION_TTL_SECONDS = 12 * 60 * 60;
@@ -91,11 +92,44 @@ function createControlCenter(app, redisCommand, k, dashPassword) {
     res.json({ success: true, authenticated: verifySessionToken(cookies[SESSION_COOKIE], dashPassword) });
   });
 
-  app.post('/admin/api/login', (req, res) => {
+  app.post('/admin/api/login', async (req, res) => {
+    const ip = String(req.ip || req.socket?.remoteAddress || 'unknown').trim() || 'unknown';
+    let limitState;
+    try {
+      limitState = await adminLoginRateLimitState(redisCommand, ip);
+    } catch (error) {
+      console.warn(`[control-center] login rate-limit lookup failed: ${error?.name || 'error'}`);
+      return res.status(503).json({ success: false, message: 'Login temporarily unavailable' });
+    }
+
+    if (limitState.blocked) {
+      res.setHeader('Retry-After', String(limitState.retryAfter));
+      return res.status(429).json({ success: false, message: 'Too many login attempts. Try again later.' });
+    }
+
     const password = String(req.body?.password || '');
     if (!timingSafeEqualString(password, dashPassword)) {
+      let failure;
+      try {
+        failure = await recordAdminLoginFailure(redisCommand, ip);
+      } catch (error) {
+        console.warn(`[control-center] login rate-limit write failed: ${error?.name || 'error'}`);
+        return res.status(503).json({ success: false, message: 'Login temporarily unavailable' });
+      }
+      if (failure.blocked) {
+        res.setHeader('Retry-After', String(failure.retryAfter));
+        return res.status(429).json({ success: false, message: 'Too many login attempts. Try again later.' });
+      }
       return res.status(401).json({ success: false, message: 'Incorrect password' });
     }
+
+    try {
+      await clearAdminLoginFailures(redisCommand, ip);
+    } catch (error) {
+      console.warn(`[control-center] login rate-limit clear failed: ${error?.name || 'error'}`);
+      return res.status(503).json({ success: false, message: 'Login temporarily unavailable' });
+    }
+
     const token = createSessionToken(dashPassword);
     res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(token)}${cookieOptions(req)}`);
     res.json({ success: true });

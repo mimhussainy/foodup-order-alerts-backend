@@ -1,6 +1,6 @@
 const express = require("express");
 const { createRestaurantSecurity, safeEqual, clientIpFromRequest } = require("./restaurantSecurity");
-const { createCustomerEmailService } = require("./customerEmail");
+const { createCustomerEmailRequestHandler, createCustomerEmailService } = require("./customerEmail");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const app = installAsyncRouteSafety(express());
 app.set('trust proxy', 1);
@@ -124,6 +124,13 @@ const k = (code, key) => `${code}:${key}`;
 
 const restaurantSecurity = createRestaurantSecurity({ redisCommand, k });
 const customerEmailService = createCustomerEmailService({ fetchImpl: fetch, env: process.env, logger: console });
+const customerEmailRequestHandler = createCustomerEmailRequestHandler({
+  restaurantSecurity,
+  redisCommand,
+  k,
+  customerEmailService,
+  logger: console,
+});
 
 async function isValidOwnerPin(code, pin) {
   const stored = await redisCommand("GET", k(code, "pin"));
@@ -220,54 +227,7 @@ function foodupBackendAdminAuthorized(req) {
 // CENTRAL CUSTOMER EMAIL (Resend)
 // -------------------------------------------------------
 
-app.post("/customer-email", async (req, res) => {
-  const code = String(req.body?.restaurant_code || '').trim().toLowerCase();
-  if (!code) {
-    return res.status(400).json({ success: false, handled: true, code: 'restaurant_code_required', message: 'Restaurant code is required.' });
-  }
-
-  const auth = await requireWordPressRequest(req, res, code);
-  if (!auth) return;
-
-  let restaurantName = code;
-  let emailSettings = {};
-  try {
-    const [profileData, emailSettingsData] = await Promise.all([
-      redisCommand("GET", k(code, "restaurant_profile")),
-      redisCommand("GET", k(code, "customer_email_settings")),
-    ]);
-    if (profileData.result) {
-      const profile = JSON.parse(profileData.result);
-      if (profile && profile.name) restaurantName = String(profile.name);
-    }
-    if (emailSettingsData.result) {
-      const parsed = JSON.parse(emailSettingsData.result);
-      if (parsed && typeof parsed === 'object') emailSettings = parsed;
-    }
-  } catch (error) {
-    console.warn(`[customer-email] settings lookup failed for ${code}: ${error?.name || 'error'}`);
-    return res.status(503).json({
-      success: false,
-      handled: true,
-      code: 'email_settings_unavailable',
-      message: 'Customer email settings are temporarily unavailable.',
-    });
-  }
-
-  const result = await customerEmailService.send({
-    restaurantCode: code,
-    enabled: emailSettings.resend_enabled === true,
-    restaurantName,
-    orderId: req.body?.order_id,
-    type: req.body?.type,
-    to: req.body?.to,
-    replyTo: req.body?.reply_to,
-    subject: req.body?.subject,
-    html: req.body?.html,
-  });
-
-  return res.status(result.status).json(result.body);
-});
+app.post("/customer-email", customerEmailRequestHandler);
 
 async function buildLoginSecurityPayload(code, appType, requestedDeviceId, pinChangeRequired = false) {
   const session = await restaurantSecurity.issueSession({ code, app: appType, deviceId: requestedDeviceId });

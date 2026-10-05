@@ -9,6 +9,10 @@ const ALLOWED_TYPES = new Set([
   'refunded',
 ]);
 
+const DEFAULT_RESEND_TIMEOUT_MS = 8_000;
+const DEFAULT_RATE_LIMIT = 300;
+const DEFAULT_RATE_WINDOW_SECONDS = 60 * 60;
+
 function normalizeCode(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -27,7 +31,35 @@ function looksLikeEmail(value) {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function createCustomerEmailService({ fetchImpl = global.fetch, env = process.env, logger = console } = {}) {
+async function consumeRestaurantEmailRateLimit(redisCommand, key, options = {}) {
+  const limit = Math.max(1, Number(options.limit || DEFAULT_RATE_LIMIT));
+  const windowSeconds = Math.max(1, Number(options.windowSeconds || DEFAULT_RATE_WINDOW_SECONDS));
+
+  const created = await redisCommand('SET', key, '1', 'EX', windowSeconds, 'NX');
+  let count = 1;
+  if (created.result !== 'OK') {
+    const incremented = await redisCommand('INCR', key);
+    count = Math.max(0, Number(incremented.result || 0));
+    const ttlCheck = await redisCommand('TTL', key);
+    if (Number(ttlCheck.result) < 0) await redisCommand('EXPIRE', key, windowSeconds);
+  }
+
+  const ttlResult = await redisCommand('TTL', key);
+  const retryAfter = Math.max(1, Number(ttlResult.result || 0)) || windowSeconds;
+  return {
+    allowed: count <= limit,
+    count,
+    limit,
+    retryAfter,
+  };
+}
+
+function createCustomerEmailService({
+  fetchImpl = global.fetch,
+  env = process.env,
+  logger = console,
+  resendTimeoutMs = DEFAULT_RESEND_TIMEOUT_MS,
+} = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('Customer email service requires fetch.');
 
   async function send(input = {}) {
@@ -101,6 +133,8 @@ function createCustomerEmailService({ fetchImpl = global.fetch, env = process.en
     if (replyTo) requestBody.reply_to = replyTo;
 
     const idempotencyKey = `foodup/${code}/${orderId}/${type}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(resendTimeoutMs || DEFAULT_RESEND_TIMEOUT_MS)));
 
     try {
       const response = await fetchImpl('https://api.resend.com/emails', {
@@ -111,6 +145,7 @@ function createCustomerEmailService({ fetchImpl = global.fetch, env = process.en
           'Idempotency-Key': idempotencyKey,
         },
         body: JSON.stringify(requestBody),
+        signal: controller.signal,
       });
 
       const raw = await response.text();
@@ -146,6 +181,18 @@ function createCustomerEmailService({ fetchImpl = global.fetch, env = process.en
         },
       };
     } catch (error) {
+      if (error?.name === 'AbortError') {
+        logger.error(`[customer-email] Resend timed out ${code}/${orderId}/${type}`);
+        return {
+          status: 502,
+          body: {
+            success: false,
+            handled: true,
+            code: 'resend_timeout',
+            message: 'Central email provider timed out.',
+          },
+        };
+      }
       logger.error(`[customer-email] Resend request failed ${code}/${orderId}/${type}: ${error?.name || 'error'}`);
       return {
         status: 502,
@@ -156,14 +203,151 @@ function createCustomerEmailService({ fetchImpl = global.fetch, env = process.en
           message: 'Central email provider could not be reached.',
         },
       };
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
   return { send };
 }
 
+function createCustomerEmailRequestHandler({
+  restaurantSecurity,
+  redisCommand,
+  k,
+  customerEmailService,
+  logger = console,
+  rateLimit = DEFAULT_RATE_LIMIT,
+  rateWindowSeconds = DEFAULT_RATE_WINDOW_SECONDS,
+} = {}) {
+  if (!restaurantSecurity || typeof restaurantSecurity.isStrictWordPressProof !== 'function') {
+    throw new Error('Customer email route requires restaurant security.');
+  }
+  if (typeof redisCommand !== 'function' || typeof k !== 'function') {
+    throw new Error('Customer email route requires Redis and key helpers.');
+  }
+  if (!customerEmailService || typeof customerEmailService.send !== 'function') {
+    throw new Error('Customer email route requires the customer email service.');
+  }
+
+  return async function customerEmailRequestHandler(req, res) {
+    const code = normalizeCode(req.body?.restaurant_code);
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        handled: true,
+        code: 'restaurant_code_required',
+        message: 'Restaurant code is required.',
+      });
+    }
+
+    let strictProof = false;
+    try {
+      strictProof = await restaurantSecurity.isStrictWordPressProof(
+        code,
+        String(req.headers?.['x-foodup-secret'] || '').trim(),
+        String(req.headers?.['x-foodup-client'] || '').trim()
+      );
+    } catch (error) {
+      logger.error(`[customer-email] strict authentication lookup failed for ${code}: ${error?.code || error?.name || 'error'}`);
+      return res.status(503).json({
+        success: false,
+        handled: true,
+        code: 'central_email_auth_unavailable',
+        message: 'Central email authentication is temporarily unavailable.',
+      });
+    }
+
+    if (!strictProof) {
+      return res.status(200).json({
+        success: false,
+        handled: false,
+        code: 'central_email_requires_restaurant_secret',
+        message: 'Central email requires the stored restaurant secret.',
+      });
+    }
+
+    let restaurantName = code;
+    let emailSettings = {};
+    try {
+      const [profileData, emailSettingsData] = await Promise.all([
+        redisCommand('GET', k(code, 'restaurant_profile')),
+        redisCommand('GET', k(code, 'customer_email_settings')),
+      ]);
+      if (profileData.result) {
+        const profile = JSON.parse(profileData.result);
+        if (profile && profile.name) restaurantName = String(profile.name);
+      }
+      if (emailSettingsData.result) {
+        const parsed = JSON.parse(emailSettingsData.result);
+        if (parsed && typeof parsed === 'object') emailSettings = parsed;
+      }
+    } catch (error) {
+      logger.warn(`[customer-email] settings lookup failed for ${code}: ${error?.name || 'error'}`);
+      return res.status(503).json({
+        success: false,
+        handled: true,
+        code: 'email_settings_unavailable',
+        message: 'Customer email settings are temporarily unavailable.',
+      });
+    }
+
+    if (emailSettings.resend_enabled !== true) {
+      const disabled = await customerEmailService.send({ restaurantCode: code, enabled: false });
+      return res.status(disabled.status).json(disabled.body);
+    }
+
+    let limitState;
+    try {
+      limitState = await consumeRestaurantEmailRateLimit(
+        redisCommand,
+        k(code, 'customer_email_rate_limit'),
+        { limit: rateLimit, windowSeconds: rateWindowSeconds }
+      );
+    } catch (error) {
+      logger.error(`[customer-email] rate limit lookup failed for ${code}: ${error?.name || 'error'}`);
+      return res.status(503).json({
+        success: false,
+        handled: true,
+        code: 'central_email_rate_limit_unavailable',
+        message: 'Customer email rate limit is temporarily unavailable.',
+      });
+    }
+
+    if (!limitState.allowed) {
+      res.setHeader('Retry-After', String(limitState.retryAfter));
+      return res.status(429).json({
+        success: false,
+        handled: true,
+        code: 'central_email_rate_limited',
+        message: 'Customer email rate limit exceeded.',
+        retry_after_seconds: limitState.retryAfter,
+      });
+    }
+
+    const result = await customerEmailService.send({
+      restaurantCode: code,
+      enabled: true,
+      restaurantName,
+      orderId: req.body?.order_id,
+      type: req.body?.type,
+      to: req.body?.to,
+      replyTo: req.body?.reply_to,
+      subject: req.body?.subject,
+      html: req.body?.html,
+    });
+
+    return res.status(result.status).json(result.body);
+  };
+}
+
 module.exports = {
   ALLOWED_TYPES,
+  DEFAULT_RATE_LIMIT,
+  DEFAULT_RATE_WINDOW_SECONDS,
+  DEFAULT_RESEND_TIMEOUT_MS,
+  createCustomerEmailRequestHandler,
   createCustomerEmailService,
+  consumeRestaurantEmailRateLimit,
   safeDisplayName,
 };

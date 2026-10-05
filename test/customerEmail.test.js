@@ -1,9 +1,125 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createCustomerEmailService } = require('../customerEmail');
+const crypto = require('crypto');
+const { createRestaurantSecurity } = require('../restaurantSecurity');
+const {
+  createCustomerEmailRequestHandler,
+  createCustomerEmailService,
+} = require('../customerEmail');
 
 function quietLogger() {
   return { log() {}, warn() {}, error() {} };
+}
+
+function makeRedis() {
+  const values = new Map();
+  const expiresAt = new Map();
+
+  function purge(key) {
+    const expiry = expiresAt.get(key);
+    if (expiry !== undefined && expiry <= Date.now()) {
+      values.delete(key);
+      expiresAt.delete(key);
+    }
+  }
+
+  return {
+    values,
+    async command(command, ...args) {
+      const op = String(command).toUpperCase();
+      const key = args[0];
+      if (op === 'GET') {
+        purge(key);
+        return { result: values.get(key) ?? null };
+      }
+      if (op === 'SET') {
+        purge(key);
+        const options = args.slice(2).map(value => String(value).toUpperCase());
+        if (options.includes('NX') && values.has(key)) return { result: null };
+        values.set(key, args[1]);
+        const exIndex = options.indexOf('EX');
+        if (exIndex >= 0) expiresAt.set(key, Date.now() + Number(args[2 + exIndex + 1]) * 1000);
+        return { result: 'OK' };
+      }
+      if (op === 'INCR') {
+        purge(key);
+        const next = Number(values.get(key) || 0) + 1;
+        values.set(key, String(next));
+        return { result: next };
+      }
+      if (op === 'TTL') {
+        purge(key);
+        if (!values.has(key)) return { result: -2 };
+        if (!expiresAt.has(key)) return { result: -1 };
+        return { result: Math.max(0, Math.ceil((expiresAt.get(key) - Date.now()) / 1000)) };
+      }
+      if (op === 'EXPIRE') {
+        if (!values.has(key)) return { result: 0 };
+        expiresAt.set(key, Date.now() + Number(args[1]) * 1000);
+        return { result: 1 };
+      }
+      if (op === 'DEL') {
+        values.delete(key);
+        expiresAt.delete(key);
+        return { result: 1 };
+      }
+      throw new Error(`Unsupported Redis command in test: ${op}`);
+    },
+  };
+}
+
+function makeResponse() {
+  return {
+    statusCode: 200,
+    body: null,
+    headers: {},
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+    setHeader(name, value) { this.headers[String(name).toLowerCase()] = String(value); },
+  };
+}
+
+function makeRouteFixture(options = {}) {
+  const redis = makeRedis();
+  redis.values.set('hothouse:restaurant_profile', JSON.stringify({ name: 'Hot House' }));
+  redis.values.set('hothouse:customer_email_settings', JSON.stringify({ resend_enabled: true }));
+  let sends = 0;
+  const customerEmailService = {
+    async send(input) {
+      sends += 1;
+      return { status: 200, body: { success: true, handled: true, provider: 'resend', input } };
+    },
+  };
+  const restaurantSecurity = {
+    async isStrictWordPressProof(code, secret, client) {
+      return code === 'hothouse' && secret === 'stored-secret' && client === 'wordpress';
+    },
+  };
+  const handler = createCustomerEmailRequestHandler({
+    restaurantSecurity,
+    redisCommand: redis.command.bind(redis),
+    k: (code, key) => `${code}:${key}`,
+    customerEmailService,
+    logger: quietLogger(),
+    rateLimit: options.rateLimit || 300,
+    rateWindowSeconds: 3600,
+  });
+  return { redis, handler, sends: () => sends };
+}
+
+function emailRequest(headers = {}) {
+  return {
+    headers,
+    body: {
+      restaurant_code: 'hothouse',
+      order_id: 965,
+      type: 'accepted',
+      to: 'customer@example.com',
+      reply_to: 'restaurant@example.com',
+      subject: 'Bestellung angenommen',
+      html: '<p>Accepted</p>',
+    },
+  };
 }
 
 test('does not handle restaurants unless central Resend is enabled for that restaurant', async () => {
@@ -63,6 +179,7 @@ test('sends through Resend with deterministic idempotency and FoodUp sender', as
   assert.equal(request.url, 'https://api.resend.com/emails');
   assert.equal(request.options.headers['Idempotency-Key'], 'foodup/hothouse/965/accepted');
   assert.equal(request.options.headers.Authorization, 'Bearer test-key');
+  assert.ok(request.options.signal);
   const body = JSON.parse(request.options.body);
   assert.equal(body.from, 'Hot House via FoodUp <no-reply@foodup.ch>');
   assert.deepEqual(body.to, ['customer@example.com']);
@@ -91,4 +208,143 @@ test('returns a controlled provider failure without leaking provider body', asyn
   assert.equal(result.body.success, false);
   assert.equal(result.body.code, 'resend_send_failed');
   assert.equal(result.body.provider_status, 429);
+  assert.equal(JSON.stringify(result.body).includes('rate limited'), false);
+});
+
+test('aborts a slow Resend request and returns handled timeout before WordPress timeout', async () => {
+  const service = createCustomerEmailService({
+    env: { RESEND_API_KEY: 'test-key' },
+    resendTimeoutMs: 10,
+    fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }),
+    logger: quietLogger(),
+  });
+
+  const result = await service.send({
+    restaurantCode: 'hothouse',
+    enabled: true,
+    restaurantName: 'Hot House',
+    orderId: 965,
+    type: 'received',
+    to: 'customer@example.com',
+    subject: 'Received',
+    html: '<p>Received</p>',
+  });
+
+  assert.equal(result.status, 502);
+  assert.equal(result.body.handled, true);
+  assert.equal(result.body.code, 'resend_timeout');
+});
+
+test('headerless or legacy-only customer-email request is not sent and falls back safely', async () => {
+  const fixture = makeRouteFixture();
+
+  for (const headers of [
+    { 'x-foodup-client': 'wordpress' },
+    { 'x-foodup-client': 'wordpress', 'x-foodup-secret': 'legacy-secret' },
+  ]) {
+    const res = makeResponse();
+    await fixture.handler(emailRequest(headers), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.handled, false);
+    assert.equal(res.body.code, 'central_email_requires_restaurant_secret');
+  }
+  assert.equal(fixture.sends(), 0);
+});
+
+test('wrong restaurant secret is not sent even when transition compatibility would otherwise be available', async () => {
+  const fixture = makeRouteFixture();
+  const res = makeResponse();
+  await fixture.handler(emailRequest({ 'x-foodup-client': 'wordpress', 'x-foodup-secret': 'wrong-secret' }), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.handled, false);
+  assert.equal(res.body.code, 'central_email_requires_restaurant_secret');
+  assert.equal(fixture.sends(), 0);
+});
+
+test('correct stored restaurant secret can send through central Resend route', async () => {
+  const fixture = makeRouteFixture();
+  const res = makeResponse();
+  await fixture.handler(emailRequest({ 'x-foodup-client': 'wordpress', 'x-foodup-secret': 'stored-secret' }), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.success, true);
+  assert.equal(res.body.provider, 'resend');
+  assert.equal(fixture.sends(), 1);
+});
+
+test('customer-email route rate limits authenticated restaurant after configured hourly allowance', async () => {
+  const fixture = makeRouteFixture({ rateLimit: 2 });
+  const headers = { 'x-foodup-client': 'wordpress', 'x-foodup-secret': 'stored-secret' };
+
+  const first = makeResponse();
+  const second = makeResponse();
+  const third = makeResponse();
+  await fixture.handler(emailRequest(headers), first);
+  await fixture.handler(emailRequest(headers), second);
+  await fixture.handler(emailRequest(headers), third);
+
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+  assert.equal(third.statusCode, 429);
+  assert.equal(third.body.handled, true);
+  assert.equal(third.body.code, 'central_email_rate_limited');
+  assert.ok(Number(third.headers['retry-after']) > 0);
+  assert.equal(fixture.sends(), 2);
+});
+
+
+test('customer-email strict auth does not inherit legacy transition compatibility from authorizeWordPress', async () => {
+  const redis = makeRedis();
+  const command = redis.command.bind(redis);
+  const storedSecret = 'stored-restaurant-secret-0123456789abcdef';
+  const legacySecret = 'legacy-shared-secret-0123456789abcdef';
+  const restaurantSecurity = createRestaurantSecurity({
+    redisCommand: command,
+    k: (code, key) => `${code}:${key}`,
+    env: {
+      FOODUP_SECRET_ENCRYPTION_KEY: crypto.randomBytes(32).toString('base64'),
+      FOODUP_LEGACY_SHARED_SECRET: legacySecret,
+      FOODUP_LEGACY_APP_ACCESS_ENABLED: 'true',
+    },
+    logger: quietLogger(),
+  });
+  await restaurantSecurity.setStoredRestaurantSecret('hothouse', storedSecret);
+
+  const transitionAuth = await restaurantSecurity.authorizeWordPress('hothouse', legacySecret, 'wordpress');
+  assert.equal(transitionAuth.ok, true);
+  assert.equal(transitionAuth.source, 'legacy_compat');
+
+  redis.values.set('hothouse:restaurant_profile', JSON.stringify({ name: 'Hot House' }));
+  redis.values.set('hothouse:customer_email_settings', JSON.stringify({ resend_enabled: true }));
+  let sends = 0;
+  const handler = createCustomerEmailRequestHandler({
+    restaurantSecurity,
+    redisCommand: command,
+    k: (code, key) => `${code}:${key}`,
+    customerEmailService: {
+      async send() {
+        sends += 1;
+        return { status: 200, body: { success: true, handled: true, provider: 'resend' } };
+      },
+    },
+    logger: quietLogger(),
+  });
+
+  const legacyRes = makeResponse();
+  await handler(emailRequest({ 'x-foodup-client': 'wordpress', 'x-foodup-secret': legacySecret }), legacyRes);
+  assert.equal(legacyRes.statusCode, 200);
+  assert.equal(legacyRes.body.handled, false);
+  assert.equal(legacyRes.body.code, 'central_email_requires_restaurant_secret');
+  assert.equal(sends, 0);
+
+  const strictRes = makeResponse();
+  await handler(emailRequest({ 'x-foodup-client': 'wordpress', 'x-foodup-secret': storedSecret }), strictRes);
+  assert.equal(strictRes.statusCode, 200);
+  assert.equal(strictRes.body.success, true);
+  assert.equal(sends, 1);
 });
