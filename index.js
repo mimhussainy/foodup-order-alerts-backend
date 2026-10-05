@@ -1478,78 +1478,6 @@ app.post("/mark-delivered", async (req, res) => {
 
   const deliveredAt = new Date().toISOString();
 
-  // WordPress owns the customer-facing delivery state and sends the Delivered
-  // email. Confirm that callback before committing the final FoodUp state so an
-  // old Courier build cannot leave Redis as delivered while WooCommerce misses it.
-  const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
-  let profile = null;
-  try {
-    profile = profileData.result ? JSON.parse(profileData.result) : null;
-  } catch (_) {
-    profile = null;
-  }
-
-  const website = String(profile?.website || '').trim();
-  if (!website) {
-    console.error(`[delivery-callback] WordPress website missing for ${code}/${order_id}`);
-    return res.status(503).json({
-      success: false,
-      code: 'wordpress_website_missing',
-      message: 'Restaurant website is not configured.',
-      wordpress_delivered: false,
-    });
-  }
-
-  const baseUrl = (
-    website.startsWith('http') ? website : `https://${website}`
-  ).replace(/\/+$/, '');
-
-  let wordpressDelivered = false;
-  try {
-    const wpResponse = await restaurantSecurity.fetchWordPress(
-      code,
-      `${baseUrl}/wp-json/foodup/v1/order-delivered`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          order_id,
-          delivery_name,
-          delivered_at: deliveredAt,
-        }),
-      }
-    );
-
-    const wpResult = await wpResponse.json().catch(() => ({}));
-    wordpressDelivered = Boolean(
-      wpResponse.ok && wpResult?.success === true
-    );
-
-    if (!wordpressDelivered) {
-      console.error(
-        `[delivery-callback] WordPress rejected delivered for ${code}/${order_id}: HTTP ${wpResponse.status} ${foodupRedactLogMessage(wpResult?.message || wpResult?.code || '')}`
-      );
-      return res.status(502).json({
-        success: false,
-        code: 'wordpress_delivery_callback_failed',
-        message: 'The restaurant website could not confirm delivery.',
-        wordpress_delivered: false,
-      });
-    }
-
-    console.log(`[delivery-callback] WordPress confirmed delivered for ${code}/${order_id}`);
-  } catch (error) {
-    console.error(
-      `[delivery-callback] WordPress delivered request failed for ${code}/${order_id}: ${foodupRedactLogMessage(error?.message || error)}`
-    );
-    return res.status(502).json({
-      success: false,
-      code: 'wordpress_delivery_callback_failed',
-      message: 'The restaurant website could not confirm delivery.',
-      wordpress_delivered: false,
-    });
-  }
-
 await redisCommand("SET", k(code, `delivered:${order_id}`), JSON.stringify({
     order_id, delivery_name, delivered_at: deliveredAt, ...(order_data || {}),
   }));
@@ -1577,7 +1505,7 @@ await redisCommand("SET", courierKey, JSON.stringify(history));
     order_id,
     'delivered'
   );
-  res.json({ success: true, wordpress_delivered: wordpressDelivered });
+  res.json({ success: true });
 });
 
 app.get("/all-couriers-delivered/:code", async (req, res) => {
