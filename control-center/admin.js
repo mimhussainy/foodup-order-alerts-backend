@@ -297,6 +297,7 @@
     $('#drawerStatus').innerHTML = `<span class="status-dot ${esc(r.app_status)}"></span> ${esc(statusLabel(r.app_status))}${r.app_minutes_ago != null ? ' · '+esc(r.app_minutes_ago)+' min ago' : ''}`;
     const modules = r.modules || {};
     const customerEmailSettings = r.customer_email_settings || {};
+    const failedDeliveredCallbacks = Array.isArray(r.failed_delivered_callbacks) ? r.failed_delivered_callbacks : [];
     const orders = (r.recent_orders || []).slice(0,8);
     $('#drawerContent').innerHTML = `
       ${r.attention?.length ? `<div class="detail-section danger-zone"><div class="detail-section-head"><h3>Needs attention</h3></div><div class="detail-section-body"><div class="attention-issues">${esc(r.attention.join(' · '))}</div></div></div>` : ''}
@@ -320,6 +321,10 @@
       <div class="detail-section"><div class="detail-section-head"><h3>Customer email delivery</h3><button id="saveCustomerEmailBtn" class="btn btn-primary">Save</button></div><div class="detail-section-body">
         <div class="module-toggle"><span>Central FoodUp email via Resend</span><label class="switch"><input id="resendEnabledToggle" type="checkbox" ${customerEmailSettings.resend_enabled ? 'checked' : ''}><span></span></label></div>
         <p class="restaurant-meta" style="margin:9px 2px 0;line-height:1.55">Default is off. When enabled, this restaurant is allowed to use the centralized FoodUp customer-email endpoint. The WordPress email integration is enabled separately.</p>
+      </div></div>
+      <div class="detail-section"><div class="detail-section-head"><h3>Failed delivered callbacks</h3><span class="restaurant-meta">${failedDeliveredCallbacks.length}</span></div><div class="detail-section-body">
+        ${failedDeliveredCallbacks.length ? `<table class="mini-orders">${failedDeliveredCallbacks.map(item => `<tr><td><strong>#${esc(item.order_id)}</strong><br><span class="restaurant-meta">${esc(item.reason || 'callback_failed')}</span></td><td><strong>${esc(item.attempts || 0)} attempt${Number(item.attempts || 0) === 1 ? '' : 's'}</strong><br><span class="restaurant-meta">${esc(item.last_attempt_at ? fmtAgo(item.last_attempt_at) : 'No attempt time')}</span></td><td style="text-align:right"><button class="btn btn-secondary" data-retry-delivered-callback="${esc(item.order_id)}">Retry</button></td></tr>`).join('')}</table>` : '<div class="empty-box">No failed delivered callbacks.</div>'}
+        <p class="restaurant-meta" style="margin:9px 2px 0;line-height:1.55">Permanent failures and callbacks that exhaust their 24-hour retry window are kept for 30 days.</p>
       </div></div>
       <div class="detail-section"><div class="detail-section-head"><h3>Connection management</h3></div><div class="detail-section-body"><div class="actions-row">
         <button id="resetDevicesBtn" class="btn btn-secondary">Reset Orders devices</button>
@@ -354,6 +359,21 @@
         const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method:'PATCH', body: JSON.stringify({ customer_email_settings }) });
         state.selectedRestaurant = data.restaurant; toast('Customer email delivery updated'); await refreshAll(); renderRestaurantDrawer();
       } catch (e) { toast(e.message,'error'); }
+    });
+    $$('[data-retry-delivered-callback]', $('#drawerContent')).forEach(button => {
+      button.addEventListener('click', async () => {
+        const orderId = button.dataset.retryDeliveredCallback;
+        button.disabled = true;
+        try {
+          const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}/delivered-callbacks/${encodeURIComponent(orderId)}/retry`, { method:'POST', body:'{}' });
+          state.selectedRestaurant = data.restaurant;
+          toast(`Delivered callback #${orderId} queued for retry`);
+          renderRestaurantDrawer();
+        } catch (e) {
+          button.disabled = false;
+          toast(e.message,'error');
+        }
+      });
     });
     $('#resetDevicesBtn').addEventListener('click', () => confirmationModal('Reset Orders devices', `Disconnect all registered Orders App devices for ${state.selectedRestaurant.name}?`, 'Reset devices', async () => {
       await api(`/admin/api/restaurants/${encodeURIComponent(code)}/reset-devices`, {method:'POST',body:'{}'}); toast('Orders devices reset'); await refreshAll(); await openRestaurant(code);

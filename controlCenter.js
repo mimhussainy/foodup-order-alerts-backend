@@ -60,7 +60,8 @@ function cookieOptions(req) {
   return `${secure ? '; Secure' : ''}; HttpOnly; SameSite=Lax; Path=/admin; Max-Age=${SESSION_TTL_SECONDS}`;
 }
 
-function createControlCenter(app, redisCommand, k, dashPassword) {
+function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
+  const deliveredCallbackOutbox = options.deliveredCallbackOutbox || null;
   const assetsPath = path.join(__dirname, 'control-center');
   app.use('/admin/assets', express.static(assetsPath, { maxAge: '1h', index: false }));
 
@@ -169,6 +170,15 @@ function createControlCenter(app, redisCommand, k, dashPassword) {
       updated_at: customerEmailSettingsRaw.updated_at || null,
     };
 
+    let failedDeliveredCallbacks = [];
+    if (includeOrders && deliveredCallbackOutbox && typeof deliveredCallbackOutbox.listFailed === 'function') {
+      try {
+        failedDeliveredCallbacks = await deliveredCallbackOutbox.listFailed(code, 50);
+      } catch (error) {
+        console.warn(`[control-center] failed delivered callback lookup failed for ${code}: ${error?.name || 'error'}`);
+      }
+    }
+
     let appMinutesAgo = null;
     let appStatus = 'never';
     if (heartbeat?.last_seen) {
@@ -229,6 +239,7 @@ function createControlCenter(app, redisCommand, k, dashPassword) {
       auto_settings: autoSettings,
       modules,
       customer_email_settings: customerEmailSettings,
+      failed_delivered_callbacks: failedDeliveredCallbacks,
       attention,
       orders_today: todayOrders.length,
       revenue_today: todayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0),
@@ -329,6 +340,27 @@ function createControlCenter(app, redisCommand, k, dashPassword) {
         await redisCommand('SET', k(code, 'pin'), pin);
       }
 
+      res.json({ success: true, restaurant: await loadRestaurant(code, true) });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+
+  app.post('/admin/api/restaurants/:code/delivered-callbacks/:orderId/retry', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    const orderId = String(req.params.orderId || '').trim();
+    if (!code || !orderId) return res.status(400).json({ success: false, message: 'Invalid callback retry request' });
+    if (!deliveredCallbackOutbox || typeof deliveredCallbackOutbox.retryFailed !== 'function') {
+      return res.status(503).json({ success: false, message: 'Delivered callback outbox is unavailable' });
+    }
+    try {
+      const result = await deliveredCallbackOutbox.retryFailed(code, orderId);
+      if (!result?.ok) {
+        const status = result?.reason === 'not_found' ? 404 : 409;
+        return res.status(status).json({ success: false, code: result?.reason || 'retry_failed', message: 'Failed callback could not be re-queued' });
+      }
+      if (typeof deliveredCallbackOutbox.kick === 'function') deliveredCallbackOutbox.kick(code, orderId);
       res.json({ success: true, restaurant: await loadRestaurant(code, true) });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
