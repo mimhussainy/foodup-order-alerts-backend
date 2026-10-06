@@ -2,6 +2,7 @@ const express = require("express");
 const { createRestaurantSecurity, safeEqual, clientIpFromRequest } = require("./restaurantSecurity");
 const { createCustomerEmailRequestHandler, createCustomerEmailService } = require("./customerEmail");
 const { createDeliveredCallbackOutbox } = require("./deliveredCallbackOutbox");
+const { handleAutoActionWordPressFailure } = require("./autoActionPolicy");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const app = installAsyncRouteSafety(express());
 app.set('trust proxy', 1);
@@ -4254,6 +4255,18 @@ async function runAutoActions() {
                 !wpResponse.ok ||
                 wpResult?.success !== true
               ) {
+                const permanentlyHandled = await handleAutoActionWordPressFailure({
+                  redisCommand,
+                  k,
+                  code,
+                  orderId: order.order_id,
+                  action: 'accept',
+                  wpResponse,
+                  wpResult,
+                  logger: console,
+                });
+                if (permanentlyHandled) continue;
+
                 throw new Error(
                   `WP auto-accept failed for ${code}, order ${order.order_id}: HTTP ${wpResponse.status}`
                 );
@@ -4364,6 +4377,18 @@ async function runAutoActions() {
                 !wpResponse.ok ||
                 wpResult?.success !== true
               ) {
+                const permanentlyHandled = await handleAutoActionWordPressFailure({
+                  redisCommand,
+                  k,
+                  code,
+                  orderId: order.order_id,
+                  action: 'reject',
+                  wpResponse,
+                  wpResult,
+                  logger: console,
+                });
+                if (permanentlyHandled) continue;
+
                 throw new Error(
                   `WP auto-reject failed for ${code}, order ${order.order_id}: HTTP ${wpResponse.status}`
                 );
