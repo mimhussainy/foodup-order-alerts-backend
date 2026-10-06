@@ -1,6 +1,7 @@
 const express = require("express");
 const { createRestaurantSecurity, safeEqual, clientIpFromRequest } = require("./restaurantSecurity");
 const { createCustomerEmailRequestHandler, createCustomerEmailService } = require("./customerEmail");
+const { createDeliveredCallbackOutbox } = require("./deliveredCallbackOutbox");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const app = installAsyncRouteSafety(express());
 app.set('trust proxy', 1);
@@ -129,6 +130,12 @@ const customerEmailRequestHandler = createCustomerEmailRequestHandler({
   redisCommand,
   k,
   customerEmailService,
+  logger: console,
+});
+const deliveredCallbackOutbox = createDeliveredCallbackOutbox({
+  redisCommand,
+  k,
+  fetchWordPress: restaurantSecurity.fetchWordPress,
   logger: console,
 });
 
@@ -1520,7 +1527,26 @@ await redisCommand("SET", courierKey, JSON.stringify(history));
     order_id,
     'delivered'
   );
+
+  // Persist the WordPress delivered callback as a separate outbox job only
+  // after the core delivery state has been committed. A Redis/outbox failure
+  // is logged but never turns a successful courier delivery into an app error.
+  try {
+    await deliveredCallbackOutbox.enqueue({
+      restaurant_code: code,
+      order_id,
+      delivery_name,
+      delivered_at: deliveredAt,
+    });
+  } catch (error) {
+    console.error(`[delivered-callback] enqueue failed ${code}/${order_id}: ${error?.message || error}`);
+  }
+
   res.json({ success: true });
+
+  // WordPress is contacted only after the courier has already received success.
+  // The outbox worker retries independently if WordPress is slow or unavailable.
+  deliveredCallbackOutbox.kick(code, order_id);
 });
 
 app.get("/all-couriers-delivered/:code", async (req, res) => {
@@ -4071,6 +4097,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   startWebsiteMonitor(redisCommand, k, alertService);
+  deliveredCallbackOutbox.start();
 });
 
 // -------------------------------------------------------
