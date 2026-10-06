@@ -5,6 +5,8 @@ const { createRestaurantSecurity } = require('../restaurantSecurity');
 const {
   createCustomerEmailRequestHandler,
   createCustomerEmailService,
+  DEFAULT_INVOICE_RESEND_TIMEOUT_MS,
+  resolveResendTimeoutMs,
 } = require('../customerEmail');
 
 function quietLogger() {
@@ -427,7 +429,93 @@ test('rejects an invoice without a valid PDF attachment and never calls Resend',
   assert.equal(calls, 0);
 });
 
-test('rejects attachments on non-invoice lifecycle emails', async () => {
+test('sends a delivered email with the validated PDF receipt attachment', async () => {
+  let request;
+  const service = createCustomerEmailService({
+    env: { RESEND_API_KEY: 'test-key' },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ id: 'delivered-email-123' }) };
+    },
+    logger: quietLogger(),
+  });
+
+  const pdf = Buffer.concat([
+    Buffer.from('%PDF-1.4\n', 'ascii'),
+    Buffer.alloc(200, 65),
+  ]).toString('base64');
+
+  const result = await service.send({
+    restaurantCode: 'hothouse',
+    enabled: true,
+    restaurantName: 'Hot House',
+    orderId: 973,
+    type: 'delivered',
+    to: 'customer@example.com',
+    replyTo: 'restaurant@example.com',
+    subject: 'Bestellung #973 wurde geliefert',
+    html: '<p>Delivered with receipt</p>',
+    attachments: [{ filename: 'foodup-beleg-bestellung-973.pdf', content: pdf }],
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.success, true);
+  assert.equal(request.options.headers['Idempotency-Key'], 'foodup/hothouse/973/delivered');
+  const body = JSON.parse(request.options.body);
+  assert.equal(body.attachments.length, 1);
+  assert.equal(body.attachments[0].filename, 'foodup-beleg-bestellung-973.pdf');
+  assert.equal(body.attachments[0].content, pdf);
+});
+
+test('delivered remains valid without an attachment', async () => {
+  let request;
+  const service = createCustomerEmailService({
+    env: { RESEND_API_KEY: 'test-key' },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ id: 'delivered-no-pdf-123' }) };
+    },
+    logger: quietLogger(),
+  });
+
+  const result = await service.send({
+    restaurantCode: 'hothouse', enabled: true, restaurantName: 'Hot House', orderId: 973,
+    type: 'delivered', to: 'customer@example.com', subject: 'Delivered', html: '<p>Delivered</p>',
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.success, true);
+  const body = JSON.parse(request.options.body);
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'attachments'), false);
+});
+
+test('rejects an invalid delivered PDF attachment and never calls Resend', async () => {
+  let calls = 0;
+  const service = createCustomerEmailService({
+    env: { RESEND_API_KEY: 'test-key' },
+    fetchImpl: async () => { calls += 1; throw new Error('should not run'); },
+    logger: quietLogger(),
+  });
+
+  const result = await service.send({
+    restaurantCode: 'hothouse', enabled: true, restaurantName: 'Hot House', orderId: 973,
+    type: 'delivered', to: 'customer@example.com', subject: 'Delivered', html: '<p>Delivered</p>',
+    attachments: [{ filename: 'receipt.pdf', content: Buffer.from('not a pdf').toString('base64') }],
+  });
+
+  assert.equal(result.status, 400);
+  assert.equal(result.body.handled, true);
+  assert.equal(result.body.code, 'invalid_email_attachment');
+  assert.equal(calls, 0);
+});
+
+test('delivered with an attachment uses the 12-second attachment timeout while plain delivered stays at 8 seconds', () => {
+  assert.equal(DEFAULT_INVOICE_RESEND_TIMEOUT_MS, 12_000);
+  assert.equal(resolveResendTimeoutMs([{ filename: 'receipt.pdf' }]), 12_000);
+  assert.equal(resolveResendTimeoutMs([]), 8_000);
+});
+
+test('rejects attachments on lifecycle emails other than delivered or invoice', async () => {
   let calls = 0;
   const service = createCustomerEmailService({
     env: { RESEND_API_KEY: 'test-key' },

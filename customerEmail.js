@@ -11,6 +11,7 @@ const ALLOWED_TYPES = new Set([
 ]);
 
 const DEFAULT_RESEND_TIMEOUT_MS = 8_000;
+const DEFAULT_INVOICE_RESEND_TIMEOUT_MS = 12_000;
 const DEFAULT_RATE_LIMIT = 300;
 const DEFAULT_RATE_WINDOW_SECONDS = 60 * 60;
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -36,33 +37,43 @@ function looksLikeEmail(value) {
 
 function normalizeAttachments(type, input, orderId) {
   const attachments = Array.isArray(input) ? input : [];
+  const invoice = type === 'invoice';
+  const delivered = type === 'delivered';
 
-  if (type !== 'invoice') {
+  if (!invoice && !delivered) {
     return attachments.length === 0
       ? { ok: true, attachments: [] }
       : { ok: false, code: 'attachments_not_allowed' };
   }
 
-  if (attachments.length !== 1 || !attachments[0] || typeof attachments[0] !== 'object') {
-    return { ok: false, code: 'invoice_pdf_required' };
+  // Invoice always carries one PDF. Delivered normally has no attachment, but
+  // may carry the same single validated PDF when WordPress combines the final
+  // delivery update with the receipt.
+  if (delivered && attachments.length === 0) {
+    return { ok: true, attachments: [] };
   }
 
+  if (attachments.length !== 1 || !attachments[0] || typeof attachments[0] !== 'object') {
+    return { ok: false, code: invoice ? 'invoice_pdf_required' : 'invalid_email_attachment' };
+  }
+
+  const invalidCode = invoice ? 'invoice_pdf_invalid' : 'invalid_email_attachment';
   const attachment = attachments[0];
   const content = String(attachment.content || '').trim();
   let filename = String(attachment.filename || '').trim();
 
   if (!content || content.length > Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 8) {
-    return { ok: false, code: 'invoice_pdf_invalid' };
+    return { ok: false, code: invalidCode };
   }
   if (content.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(content)) {
-    return { ok: false, code: 'invoice_pdf_invalid' };
+    return { ok: false, code: invalidCode };
   }
 
   let bytes;
   try {
     bytes = Buffer.from(content, 'base64');
   } catch (_) {
-    return { ok: false, code: 'invoice_pdf_invalid' };
+    return { ok: false, code: invalidCode };
   }
 
   if (
@@ -71,7 +82,7 @@ function normalizeAttachments(type, input, orderId) {
     bytes.subarray(0, 5).toString('ascii') !== '%PDF-' ||
     bytes.toString('base64').replace(/=+$/, '') !== content.replace(/=+$/, '')
   ) {
-    return { ok: false, code: 'invoice_pdf_invalid' };
+    return { ok: false, code: invalidCode };
   }
 
   filename = filename
@@ -85,7 +96,7 @@ function normalizeAttachments(type, input, orderId) {
     .slice(0, 120);
 
   if (!filename || !/\.pdf$/i.test(filename)) {
-    return { ok: false, code: 'invoice_pdf_invalid' };
+    return { ok: false, code: invalidCode };
   }
 
   return {
@@ -95,6 +106,12 @@ function normalizeAttachments(type, input, orderId) {
       filename,
     }],
   };
+}
+
+function resolveResendTimeoutMs(attachments, resendTimeoutMs = DEFAULT_RESEND_TIMEOUT_MS, attachmentResendTimeoutMs = DEFAULT_INVOICE_RESEND_TIMEOUT_MS) {
+  return Array.isArray(attachments) && attachments.length > 0
+    ? Math.max(1, Number(attachmentResendTimeoutMs || DEFAULT_INVOICE_RESEND_TIMEOUT_MS))
+    : Math.max(1, Number(resendTimeoutMs || DEFAULT_RESEND_TIMEOUT_MS));
 }
 
 async function consumeRestaurantEmailRateLimit(redisCommand, key, options = {}) {
@@ -125,6 +142,7 @@ function createCustomerEmailService({
   env = process.env,
   logger = console,
   resendTimeoutMs = DEFAULT_RESEND_TIMEOUT_MS,
+  invoiceResendTimeoutMs = DEFAULT_INVOICE_RESEND_TIMEOUT_MS,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('Customer email service requires fetch.');
 
@@ -214,7 +232,8 @@ function createCustomerEmailService({
 
     const idempotencyKey = `foodup/${code}/${orderId}/${type}`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(resendTimeoutMs || DEFAULT_RESEND_TIMEOUT_MS)));
+    const timeoutMs = resolveResendTimeoutMs(normalizedAttachments.attachments, resendTimeoutMs, invoiceResendTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetchImpl('https://api.resend.com/emails', {
@@ -427,10 +446,12 @@ module.exports = {
   DEFAULT_RATE_LIMIT,
   DEFAULT_RATE_WINDOW_SECONDS,
   DEFAULT_RESEND_TIMEOUT_MS,
+  DEFAULT_INVOICE_RESEND_TIMEOUT_MS,
   MAX_ATTACHMENT_BYTES,
   createCustomerEmailRequestHandler,
   createCustomerEmailService,
   consumeRestaurantEmailRateLimit,
   normalizeAttachments,
+  resolveResendTimeoutMs,
   safeDisplayName,
 };
