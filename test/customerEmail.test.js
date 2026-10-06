@@ -348,3 +348,132 @@ test('customer-email strict auth does not inherit legacy transition compatibilit
   assert.equal(strictRes.body.success, true);
   assert.equal(sends, 1);
 });
+
+
+test('sends an invoice PDF attachment through Resend with invoice idempotency', async () => {
+  let request;
+  const service = createCustomerEmailService({
+    env: { RESEND_API_KEY: 'test-key' },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ id: 'invoice-email-123' }) };
+    },
+    logger: quietLogger(),
+  });
+
+  const pdf = Buffer.concat([
+    Buffer.from('%PDF-1.4\n', 'ascii'),
+    Buffer.alloc(200, 65),
+  ]).toString('base64');
+
+  const result = await service.send({
+    restaurantCode: 'hothouse',
+    enabled: true,
+    restaurantName: 'Hot House',
+    orderId: 969,
+    type: 'invoice',
+    to: 'customer@example.com',
+    replyTo: 'restaurant@example.com',
+    subject: 'Beleg für Bestellung #969',
+    html: '<p>Ihr Bestellbeleg</p>',
+    attachments: [{
+      filename: 'foodup-beleg-bestellung-969.pdf',
+      content: pdf,
+    }],
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.success, true);
+  assert.equal(request.options.headers['Idempotency-Key'], 'foodup/hothouse/969/invoice');
+
+  const body = JSON.parse(request.options.body);
+  assert.equal(body.attachments.length, 1);
+  assert.equal(body.attachments[0].filename, 'foodup-beleg-bestellung-969.pdf');
+  assert.equal(body.attachments[0].content, pdf);
+});
+
+test('rejects an invoice without a valid PDF attachment and never calls Resend', async () => {
+  let calls = 0;
+  const service = createCustomerEmailService({
+    env: { RESEND_API_KEY: 'test-key' },
+    fetchImpl: async () => {
+      calls += 1;
+      throw new Error('should not run');
+    },
+    logger: quietLogger(),
+  });
+
+  for (const attachments of [
+    [],
+    [{ filename: 'invoice.pdf', content: Buffer.from('not a pdf').toString('base64') }],
+    [{ filename: 'invoice.exe', content: Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(200)]).toString('base64') }],
+  ]) {
+    const result = await service.send({
+      restaurantCode: 'hothouse',
+      enabled: true,
+      restaurantName: 'Hot House',
+      orderId: 969,
+      type: 'invoice',
+      to: 'customer@example.com',
+      subject: 'Invoice',
+      html: '<p>Invoice</p>',
+      attachments,
+    });
+
+    assert.equal(result.status, 400);
+    assert.equal(result.body.handled, true);
+  }
+
+  assert.equal(calls, 0);
+});
+
+test('rejects attachments on non-invoice lifecycle emails', async () => {
+  let calls = 0;
+  const service = createCustomerEmailService({
+    env: { RESEND_API_KEY: 'test-key' },
+    fetchImpl: async () => {
+      calls += 1;
+      throw new Error('should not run');
+    },
+    logger: quietLogger(),
+  });
+
+  const result = await service.send({
+    restaurantCode: 'hothouse',
+    enabled: true,
+    restaurantName: 'Hot House',
+    orderId: 969,
+    type: 'accepted',
+    to: 'customer@example.com',
+    subject: 'Accepted',
+    html: '<p>Accepted</p>',
+    attachments: [{
+      filename: 'invoice.pdf',
+      content: Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(200)]).toString('base64'),
+    }],
+  });
+
+  assert.equal(result.status, 400);
+  assert.equal(result.body.handled, true);
+  assert.equal(result.body.code, 'attachments_not_allowed');
+  assert.equal(calls, 0);
+});
+
+test('strict customer-email route forwards invoice attachment only after stored-secret proof', async () => {
+  const fixture = makeRouteFixture();
+  const headers = { 'x-foodup-client': 'wordpress', 'x-foodup-secret': 'stored-secret' };
+  const request = emailRequest(headers);
+  request.body.type = 'invoice';
+  request.body.attachments = [{
+    filename: 'foodup-beleg-bestellung-969.pdf',
+    content: Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(200)]).toString('base64'),
+  }];
+
+  const res = makeResponse();
+  await fixture.handler(request, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.success, true);
+  assert.equal(res.body.input.type, 'invoice');
+  assert.equal(res.body.input.attachments.length, 1);
+});

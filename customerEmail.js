@@ -7,11 +7,14 @@ const ALLOWED_TYPES = new Set([
   'rejected',
   'delivered',
   'refunded',
+  'invoice',
 ]);
 
 const DEFAULT_RESEND_TIMEOUT_MS = 8_000;
 const DEFAULT_RATE_LIMIT = 300;
 const DEFAULT_RATE_WINDOW_SECONDS = 60 * 60;
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
 
 function normalizeCode(value) {
   return String(value || '').trim().toLowerCase();
@@ -29,6 +32,69 @@ function safeDisplayName(value, fallback = 'FoodUp Restaurant') {
 function looksLikeEmail(value) {
   const email = String(value || '').trim();
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function normalizeAttachments(type, input, orderId) {
+  const attachments = Array.isArray(input) ? input : [];
+
+  if (type !== 'invoice') {
+    return attachments.length === 0
+      ? { ok: true, attachments: [] }
+      : { ok: false, code: 'attachments_not_allowed' };
+  }
+
+  if (attachments.length !== 1 || !attachments[0] || typeof attachments[0] !== 'object') {
+    return { ok: false, code: 'invoice_pdf_required' };
+  }
+
+  const attachment = attachments[0];
+  const content = String(attachment.content || '').trim();
+  let filename = String(attachment.filename || '').trim();
+
+  if (!content || content.length > Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 8) {
+    return { ok: false, code: 'invoice_pdf_invalid' };
+  }
+  if (content.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(content)) {
+    return { ok: false, code: 'invoice_pdf_invalid' };
+  }
+
+  let bytes;
+  try {
+    bytes = Buffer.from(content, 'base64');
+  } catch (_) {
+    return { ok: false, code: 'invoice_pdf_invalid' };
+  }
+
+  if (
+    bytes.length < 100 ||
+    bytes.length > MAX_ATTACHMENT_BYTES ||
+    bytes.subarray(0, 5).toString('ascii') !== '%PDF-' ||
+    bytes.toString('base64').replace(/=+$/, '') !== content.replace(/=+$/, '')
+  ) {
+    return { ok: false, code: 'invoice_pdf_invalid' };
+  }
+
+  filename = filename
+    .replace(/\\/g, '/')
+    .split('/')
+    .pop()
+    .replace(/[\r\n<>:"|?*\x00-\x1F]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^\.+/, '')
+    .slice(0, 120);
+
+  if (!filename || !/\.pdf$/i.test(filename)) {
+    return { ok: false, code: 'invoice_pdf_invalid' };
+  }
+
+  return {
+    ok: true,
+    attachments: [{
+      content: bytes.toString('base64'),
+      filename,
+    }],
+  };
 }
 
 async function consumeRestaurantEmailRateLimit(redisCommand, key, options = {}) {
@@ -123,6 +189,19 @@ function createCustomerEmailService({
       };
     }
 
+    const normalizedAttachments = normalizeAttachments(type, input.attachments, orderId);
+    if (!normalizedAttachments.ok) {
+      return {
+        status: 400,
+        body: {
+          success: false,
+          handled: true,
+          code: normalizedAttachments.code || 'invalid_email_attachment',
+          message: 'Invalid customer email attachment.',
+        },
+      };
+    }
+
     const restaurantName = safeDisplayName(input.restaurantName, code);
     const requestBody = {
       from: `${restaurantName} via FoodUp <no-reply@foodup.ch>`,
@@ -131,6 +210,7 @@ function createCustomerEmailService({
       html,
     };
     if (replyTo) requestBody.reply_to = replyTo;
+    if (normalizedAttachments.attachments.length) requestBody.attachments = normalizedAttachments.attachments;
 
     const idempotencyKey = `foodup/${code}/${orderId}/${type}`;
     const controller = new AbortController();
@@ -335,6 +415,7 @@ function createCustomerEmailRequestHandler({
       replyTo: req.body?.reply_to,
       subject: req.body?.subject,
       html: req.body?.html,
+      attachments: req.body?.attachments,
     });
 
     return res.status(result.status).json(result.body);
@@ -346,8 +427,10 @@ module.exports = {
   DEFAULT_RATE_LIMIT,
   DEFAULT_RATE_WINDOW_SECONDS,
   DEFAULT_RESEND_TIMEOUT_MS,
+  MAX_ATTACHMENT_BYTES,
   createCustomerEmailRequestHandler,
   createCustomerEmailService,
   consumeRestaurantEmailRateLimit,
+  normalizeAttachments,
   safeDisplayName,
 };
