@@ -142,7 +142,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
   });
 
   async function loadRestaurant(code, includeOrders = false) {
-    const [profileRaw, heartbeatRaw, tokensRaw, ordersRaw, printerRaw, autoRaw, websiteRaw, modulesRaw, storeRaw, courierRaw, customerEmailRaw] = await Promise.all([
+    const [profileRaw, heartbeatRaw, tokensRaw, ordersRaw, printerRaw, autoRaw, websiteRaw, modulesRaw, storeRaw, courierRaw, customerEmailRaw, editionRaw] = await Promise.all([
       redisCommand('GET', k(code, 'restaurant_profile')),
       redisCommand('GET', k(code, 'heartbeat')),
       redisCommand('SMEMBERS', k(code, 'device_tokens')),
@@ -154,6 +154,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       redisCommand('GET', k(code, 'store_status')),
       redisCommand('SMEMBERS', k(code, 'delivery_accounts')),
       redisCommand('GET', k(code, 'customer_email_settings')),
+      redisCommand('GET', k(code, 'orders_app_edition')),
     ]);
 
     const profile = safeJson(profileRaw.result, {}) || {};
@@ -233,6 +234,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       heartbeat,
       device_count: tokens.length,
       printer_device_id: printerRaw.result || '',
+      edition: editionRaw.result === 'free' ? 'free' : 'pro',
       courier_count: couriers.length,
       store_status: storeRaw.result || 'open',
       website_health: websiteHealth,

@@ -306,6 +306,7 @@
         <div class="detail-stat"><span>Website</span><strong>${esc(r.website_health?.status || (r.website ? 'Configured' : 'Missing'))}</strong></div>
         <div class="detail-stat"><span>Devices</span><strong>${esc(r.device_count)} registered</strong></div>
         <div class="detail-stat"><span>Printer</span><strong>${esc(r.printer_device_id || 'Not assigned')}</strong></div>
+        <div class="detail-stat"><span>Edition</span><strong>${r.edition === 'free' ? 'FoodUp Free' : 'FoodUp Pro'}</strong></div>
         <div class="detail-stat"><span>Orders today</span><strong>${esc(r.orders_today)}</strong></div>
         <div class="detail-stat"><span>Revenue today</span><strong>${esc(fmtMoney(r.revenue_today))}</strong></div>
       </div></div></div>

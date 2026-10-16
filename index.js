@@ -3,6 +3,7 @@ const { createRestaurantSecurity, safeEqual, clientIpFromRequest } = require("./
 const { createCustomerEmailRequestHandler, createCustomerEmailService } = require("./customerEmail");
 const { createDeliveredCallbackOutbox } = require("./deliveredCallbackOutbox");
 const { handleAutoActionWordPressFailure } = require("./autoActionPolicy");
+const { createOrderAppEdition } = require("./orderAppEdition");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const app = installAsyncRouteSafety(express());
 app.set('trust proxy', 1);
@@ -232,6 +233,44 @@ function foodupBackendAdminAuthorized(req) {
 }
 
 // -------------------------------------------------------
+// FOODUP ORDERS EDITION (Free / Pro)
+// Stored in Redis, written by WordPress. Missing/unclear = Pro.
+// Pro-only routes: FOODUP_EDITION_ENFORCEMENT = off | log_only (default) | enforce
+// -------------------------------------------------------
+
+const orderAppEdition = createOrderAppEdition({ redisCommand, k });
+app.use(orderAppEdition.gate(async (req) => {
+  const token = foodupBearerToken(req);
+  if (!token) return '';
+  const verified = await restaurantSecurity.verifySession({ token });
+  return verified.ok ? String(verified.session?.restaurant_code || '') : '';
+}));
+
+app.post("/orders-app-edition", async (req, res) => {
+  const { restaurant_code, owner_pin, edition } = req.body || {};
+  const code = String(restaurant_code || '').toLowerCase().trim();
+  if (!code) return res.status(400).json({ success: false, message: "Restaurant code required" });
+  if (!await requireWordPressRequest(req, res, code)) return;
+  const storedPin = await redisCommand("GET", k(code, "pin"));
+  if (!storedPin.result || !safeEqual(String(storedPin.result), String(owner_pin || ''))) {
+    return res.json({ success: false, message: "Unauthorized" });
+  }
+  try {
+    const saved = await orderAppEdition.set(code, edition);
+    console.log(`[edition] ${code} set to ${saved}`);
+    res.json({ success: true, edition: saved, enforcement: orderAppEdition.enforcementMode() });
+  } catch (_) {
+    res.status(400).json({ success: false, message: "Edition must be free or pro" });
+  }
+});
+
+app.get("/orders-app-edition/:code", async (req, res) => {
+  const code = String(req.params.code || '').toLowerCase().trim();
+  res.set('Cache-Control', 'no-store');
+  res.json({ success: true, edition: await orderAppEdition.get(code), enforcement: orderAppEdition.enforcementMode() });
+});
+
+// -------------------------------------------------------
 // CENTRAL CUSTOMER EMAIL (Resend)
 // -------------------------------------------------------
 
@@ -254,6 +293,7 @@ async function buildLoginSecurityPayload(code, appType, requestedDeviceId, pinCh
     pin_policy_configured: restaurantSecurity.defaultPinProtectionConfigured(),
     pin_change_required: Boolean(pinChangeRequired),
     pin_warning: pinChangeRequired ? 'Change the default PIN before continuing setup.' : '',
+    edition: await orderAppEdition.get(code),
   };
 }
 
@@ -3120,10 +3160,11 @@ app.post("/accepted-times/:code", async (req, res) => {
 app.get("/auto-settings/:code", async (req, res) => {
   const code = req.params.code.toLowerCase().trim();
   const data = await redisCommand("GET", k(code, "auto_settings"));
+  const edition = await orderAppEdition.get(code);
   if (data.result) {
-    res.json({ success: true, settings: JSON.parse(data.result) });
+    res.json({ success: true, edition, settings: JSON.parse(data.result) });
   } else {
-    res.json({ success: true, settings: {
+    res.json({ success: true, edition, settings: {
       auto_action: 'disabled',
       wait_minutes: 5,
       accept_time: '30 Minutes',
@@ -3251,7 +3292,7 @@ app.post("/heartbeat", async (req, res) => {
   };
 
   await redisCommand("SET", k(code, "heartbeat"), JSON.stringify(heartbeat), "EX", 86400);
-  res.json({ success: true });
+  res.json({ success: true, edition: await orderAppEdition.get(code) });
 });
 
 app.get("/heartbeat/:code", async (req, res) => {
