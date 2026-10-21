@@ -3268,7 +3268,12 @@ const alertService = createAlertService(redisCommand, k);
 const dashPassword = String(process.env.DASHBOARD_PASSWORD || '').trim();
 app.use('/', createMonitoringRoutes(redisCommand, k, dashPassword));
 if (dashPassword) {
-  createControlCenter(app, redisCommand, k, dashPassword, { deliveredCallbackOutbox });
+  createControlCenter(app, redisCommand, k, dashPassword, {
+    deliveredCallbackOutbox,
+    restaurantSecurity,
+    orderAppEdition,
+    invalidateAutoSettings: (code) => { delete autoSettingsCache[code]; },
+  });
 } else {
   console.warn('[control-center] DASHBOARD_PASSWORD is not configured; Control Center is disabled.');
 }

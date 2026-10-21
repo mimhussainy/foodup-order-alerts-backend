@@ -268,7 +268,7 @@
       const analyticsDue = !withAnalytics && (Date.now() - state.lastAnalyticsAt > ANALYTICS_MS || !silent);
       if (analyticsDue || !state.analytics) loadAnalytics();
       if (state.view === 'restaurant' && state.page?.data) {
-        loadRestaurantPage({ silent: true, withAnalytics: !silent || Date.now() - state.page.lastAnalyticsAt > ANALYTICS_MS });
+        loadRestaurantPage({ silent, withAnalytics: !silent || Date.now() - state.page.lastAnalyticsAt > ANALYTICS_MS });
       }
     } catch (error) {
       if (error.message !== 'Authentication required') {
@@ -901,7 +901,6 @@
   }
 
   // ---------- restaurant page (#restaurant/<code>) ----------
-  const MODULE_LABELS = { website_ordering: 'Website Ordering', orders_app: 'Orders App', courier: 'Courier', customer_app: 'Customer App', online_payments: 'Online Payments', auto_handling: 'Automatic Handling', printing: 'Printing / Device' };
 
   function restaurantChartCtx() {
     return {
@@ -945,6 +944,7 @@
       if (analytics?.analytics) { page.analytics = analytics.analytics; page.lastAnalyticsAt = Date.now(); }
       // Never overwrite a form the admin is typing in.
       renderRestaurantPage({ skipSide: silent && page.dirty });
+      if (!silent) loadWordpress(page);
     } catch (error) {
       if (state.page !== page) return;
       if (!page.data) $('#rpHero').innerHTML = `<div class="rp-loading">${esc(error.message)}</div>`;
@@ -1016,22 +1016,18 @@
   }
 
   function renderRestaurantSide(r) {
-    const modules = r.modules || {};
     const email = r.customer_email_settings || {};
     const failed = Array.isArray(r.failed_delivered_callbacks) ? r.failed_delivered_callbacks : [];
     const bad = (r.attention_items || []).length > 0;
     $('#rpSide').innerHTML = `
       ${bad ? `<div class="d-section danger"><div class="d-head"><h3>Needs attention</h3><span class="pill red">${plural(r.attention_items.length, 'issue')}</span></div><div class="d-body"><div class="issue-list" style="margin:0">${r.attention_items.map(i => `<div class="issue ${esc(i.severity)}"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span></div>`).join('')}</div></div></div>` : ''}
-      <div class="d-section"><div class="d-head"><h3>Restaurant profile</h3><button id="saveProfileBtn" class="btn btn-primary" type="button">Save</button></div><div class="d-body"><div class="edit-grid">
+      <div id="rpWp" class="side-stack"></div>
+      <div class="d-section"><div class="d-head"><h3>Connection profile</h3><button id="saveProfileBtn" class="btn btn-primary" type="button">Save</button></div><div class="d-body"><div class="edit-grid">
         <div class="field"><label for="editName">Name</label><input id="editName" value="${esc(r.name)}"></div>
         <div class="field"><label for="editWebsite">Website</label><input id="editWebsite" value="${esc(r.website)}" placeholder="restaurant.ch"></div>
         <div class="field"><label for="editPhone">Phone</label><input id="editPhone" value="${esc(r.phone)}" placeholder="+41 44 000 00 00"></div>
         <div class="field"><label for="editAddress">Address</label><input id="editAddress" value="${esc(r.address)}" placeholder="Street 1, 8000 Zürich"></div>
-      </div></div></div>
-      <div class="d-section"><div class="d-head"><h3>Feature modules</h3><button id="saveModulesBtn" class="btn btn-primary" type="button">Save</button></div><div class="d-body">
-        <div class="module-grid">${Object.entries(MODULE_LABELS).map(([key, label]) => `<label class="module-toggle"><span>${esc(label)}</span><span class="switch"><input type="checkbox" data-module="${esc(key)}" ${modules[key] ? 'checked' : ''}><span></span></span></label>`).join('')}</div>
-        <p class="d-note">These switches are stored for the Control Center (badges and printer warnings). The apps do not enforce them yet.</p>
-      </div></div>
+      </div><p class="d-note">Stored in the FoodUp backend. The website here is where the backend sends order callbacks; the apps show name, phone and address.</p></div></div>
       <div class="d-section"><div class="d-head"><h3>Customer email (Resend, legacy)</h3><button id="saveCustomerEmailBtn" class="btn btn-secondary" type="button">Save</button></div><div class="d-body">
         <label class="module-toggle"><span>Allow central FoodUp email via Resend</span><span class="switch"><input id="resendEnabledToggle" type="checkbox" ${email.resend_enabled ? 'checked' : ''}><span></span></span></label>
         <p class="d-note">Restaurant emails now run through Brevo, set up in FoodUp Ordering → Brevo. This switch only controls the old central Resend endpoint.</p>
@@ -1048,6 +1044,7 @@
       <div class="d-section danger"><div class="d-head"><h3>Danger zone</h3></div><div class="d-body"><p class="d-note" style="margin:0 0 12px">These actions permanently change backend data for this restaurant.</p><div class="actions-row"><button id="clearOrdersBtn" class="btn btn-outline-danger" type="button">${icon('trash')}Clear order history</button><button id="removeRestaurantBtn" class="btn btn-danger" type="button">${icon('trash')}Remove restaurant</button></div></div></div>`;
     state.page.dirty = false;
     bindRestaurantActions();
+    renderWordpress();
   }
 
   function bindRestaurantActions() {
@@ -1068,12 +1065,6 @@
     const busy = (btn, fn) => async () => { btn.disabled = true; try { await fn(); } catch (e) { toast(e.message, 'error'); } finally { btn.disabled = false; } };
     const saveProfile = $('#saveProfileBtn');
     saveProfile.addEventListener('click', busy(saveProfile, () => patch({ name: $('#editName').value, website: $('#editWebsite').value, phone: $('#editPhone').value, address: $('#editAddress').value }, 'Restaurant profile saved')));
-    const saveModules = $('#saveModulesBtn');
-    saveModules.addEventListener('click', busy(saveModules, () => {
-      const modules = {};
-      $$('[data-module]', side).forEach(input => { modules[input.dataset.module] = input.checked; });
-      return patch({ modules }, 'Feature modules updated');
-    }));
     const saveEmail = $('#saveCustomerEmailBtn');
     saveEmail.addEventListener('click', busy(saveEmail, () => patch({ customer_email_settings: { resend_enabled: $('#resendEnabledToggle').checked } }, 'Customer email setting updated')));
     $$('[data-retry-delivered-callback]', side).forEach(button => {
@@ -1106,6 +1097,169 @@
       switchView('restaurants');
       refreshAll({ silent: true });
     }));
+  }
+
+  // ---------- WordPress plugin settings on the restaurant page ----------
+  const WP_REASON_TITLES = {
+    plugin_outdated: 'FoodUp Ordering needs an update',
+    unauthorized: 'WordPress refused the connection',
+    secret_missing: 'Restaurant secret not set up',
+    website_missing: 'No website stored',
+    unreachable: 'WordPress not reachable',
+    timeout: 'WordPress did not answer',
+  };
+
+  async function loadWordpress(page) {
+    page.wp = { ...(page.wp || {}), loading: true };
+    renderWordpress();
+    try {
+      const data = await api(`/admin/api/restaurants/${encodeURIComponent(page.code)}/wordpress`);
+      if (state.page !== page) return;
+      page.wp = data.connected
+        ? { loading: false, connected: true, data: data.wordpress, backend: data.backend }
+        : { loading: false, connected: false, reason: data.reason, message: data.message };
+    } catch (error) {
+      if (state.page !== page) return;
+      page.wp = { loading: false, connected: false, reason: 'error', message: error.message };
+    }
+    if (!page.wpDirty) renderWordpress();
+  }
+
+  function wpField(id, label, value, opts = {}) {
+    return `<div class="field"><label for="${id}">${esc(label)}</label><input id="${id}" type="${opts.type || 'text'}" value="${esc(value ?? '')}" ${opts.placeholder ? `placeholder="${esc(opts.placeholder)}"` : ''} ${opts.min != null ? `min="${opts.min}" max="${opts.max}"` : ''}></div>`;
+  }
+
+  function renderWordpress() {
+    const page = state.page;
+    const host = $('#rpWp');
+    if (!page || !host) return;
+    const wp = page.wp || { loading: true };
+    if (wp.loading && !wp.data) {
+      host.innerHTML = `<div class="d-section"><div class="d-head"><h3>WordPress · FoodUp Ordering</h3><span class="pill grey">Connecting…</span></div><div class="d-body"><div class="muted-sm">Reading the plugin settings from the restaurant's website…</div></div></div>`;
+      return;
+    }
+    if (!wp.connected) {
+      host.innerHTML = `<div class="d-section"><div class="d-head"><h3>WordPress · FoodUp Ordering</h3><span class="pill red">Not connected</span></div><div class="d-body">
+        <div class="issue warning" style="margin:0"><span class="text"><strong>${esc(WP_REASON_TITLES[wp.reason] || 'Connection problem')}</strong><br><span class="where">${esc(wp.message || '')}</span></span></div>
+        <div class="actions-row" style="margin-top:12px"><button id="wpRetryBtn" class="btn btn-secondary" type="button">${icon('refresh')}Try again</button></div>
+      </div></div>`;
+      $('#wpRetryBtn').addEventListener('click', () => loadWordpress(page));
+      return;
+    }
+
+    const d = wp.data;
+    const s = d.settings || {};
+    const f = s.features || {};
+    const info = d.feature_info || {};
+    const oa = s.orders_app || {};
+    const shop = s.shop || {};
+    const brand = (s.branding || {}).brand_color || '#FF6600';
+    const backendEdition = wp.backend?.edition;
+    const editionMismatch = backendEdition && backendEdition !== oa.edition;
+    const featureOrder = ['website_ordering', 'orders_app', 'courier', 'online_payments', 'auto_handling', 'printing', 'marketing', 'monthly_reports', 'table_ordering', 'customer_app'];
+    const featureKeys = featureOrder.filter(key => key in f).concat(Object.keys(f).filter(key => !featureOrder.includes(key)));
+
+    host.innerHTML = `
+      <div class="d-section"><div class="d-head"><h3>WordPress · FoodUp Ordering</h3><span class="pill green"><span class="status-dot online"></span>Connected</span></div><div class="d-body">
+        <div class="wp-meta"><span class="with-icon">${icon('plug')}Plugin ${esc(d.plugin_version || '?')}</span><a class="with-icon" href="${esc(d.site_url || '#')}/wp-admin/" target="_blank" rel="noopener">${icon('external')}wp-admin</a>${wp.loading ? '<span class="muted-sm">refreshing…</span>' : ''}</div>
+        <p class="d-note">These settings are stored in the restaurant's WordPress and saved there directly.</p>
+      </div></div>
+
+      <div class="d-section"><div class="d-head"><h3>Features</h3><button id="wpSaveFeatures" class="btn btn-primary" type="button">Save</button></div><div class="d-body">
+        <div class="module-grid">${featureKeys.map(key => `<label class="module-toggle" title="${esc(info[key]?.description || '')}"><span>${esc(info[key]?.label || key)}</span><span class="switch"><input type="checkbox" data-wp-feature="${esc(key)}" ${f[key] ? 'checked' : ''}><span></span></span></label>`).join('')}</div>
+        <p class="d-note">Real plugin switches (General → Features). Website Ordering is the base module: switching it off turns every other module off.</p>
+      </div></div>
+
+      <div class="d-section"><div class="d-head"><h3>Orders App</h3><button id="wpSaveOrders" class="btn btn-primary" type="button">Save</button></div><div class="d-body">
+        <div class="field"><label>Edition</label><div id="wpEdition" class="segmented" role="tablist" aria-label="Edition"></div></div>
+        ${editionMismatch ? `<p class="d-note warn-note">The apps currently run as ${backendEdition === 'free' ? 'Free' : 'Pro'}. Saving applies the edition shown here.</p>` : ''}
+        <div class="field" style="margin-top:14px"><label>Automatic handling</label><div id="wpAutoAction" class="segmented" role="tablist" aria-label="Automatic handling"></div></div>
+        ${f.auto_handling ? '' : '<p class="d-note warn-note">The Automatic Order Handling feature is off, so these values are stored but not used.</p>'}
+        <div class="edit-grid" style="margin-top:12px">
+          ${wpField('wpAutoWait', 'Wait before acting (minutes)', oa.auto_wait_minutes, { type: 'number', min: 1, max: 60 })}
+          ${wpField('wpAutoAccept', 'Preparation time when accepting', oa.auto_accept_time, { placeholder: '30 Minutes' })}
+          ${wpField('wpAutoReject', 'Reason when rejecting', oa.auto_reject_reason, { placeholder: 'Zu beschäftigt' })}
+        </div>
+        <p class="d-note">Legacy app access: ${d.legacy_secret_enabled ? 'on' : 'off'} (changed in wp-admin only).</p>
+      </div></div>
+
+      <div class="d-section"><div class="d-head"><h3>Shop details</h3><button id="wpSaveShop" class="btn btn-primary" type="button">Save</button></div><div class="d-body"><div class="edit-grid">
+        ${wpField('wpShopName', 'Restaurant name', shop.restaurant_name)}
+        ${wpField('wpShopAddress', 'Address', shop.address, { placeholder: 'Street 1, 8000 Zürich' })}
+        ${wpField('wpShopPhone', 'Phone', shop.contact_phone, { placeholder: '+41 44 000 00 00' })}
+        ${wpField('wpShopEmail', 'Email', shop.contact_email, { type: 'email', placeholder: 'info@restaurant.ch' })}
+        ${wpField('wpShopVat', 'VAT number', shop.vat_number, { placeholder: 'CHE-000.000.000 MWST' })}
+        ${wpField('wpShopReview', 'Google review link', shop.google_review_url, { type: 'url', placeholder: 'https://g.page/r/…' })}
+      </div><p class="d-note">Shown on the website, in emails and on invoices.</p></div></div>
+
+      <div class="d-section"><div class="d-head"><h3>Branding</h3><button id="wpSaveBrand" class="btn btn-primary" type="button">Save</button></div><div class="d-body">
+        <div class="brand-row">
+          <label class="brand-swatch" style="background:${esc(brand)}"><span class="sr-only">Pick brand colour</span><input id="wpBrandPicker" type="color" value="${esc(brand)}"></label>
+          <div class="field" style="flex:1"><label for="wpBrandHex">Brand colour</label><input id="wpBrandHex" value="${esc(brand)}" maxlength="7"></div>
+        </div>
+        <p class="d-note">Used for buttons and accents on the website and in emails.</p>
+      </div></div>`;
+
+    let edition = oa.edition === 'free' ? 'free' : 'pro';
+    let autoAction = ['accept', 'reject'].includes(oa.auto_action) ? oa.auto_action : 'disabled';
+    segmented($('#wpEdition'), [{ value: 'free', label: 'Free' }, { value: 'pro', label: 'Pro' }], edition, v => { edition = v; page.wpDirty = true; });
+    segmented($('#wpAutoAction'), [{ value: 'disabled', label: 'Off' }, { value: 'accept', label: 'Auto accept' }, { value: 'reject', label: 'Auto reject' }], autoAction, v => { autoAction = v; page.wpDirty = true; });
+    requestAnimationFrame(() => { positionThumb($('#wpEdition')); positionThumb($('#wpAutoAction')); });
+
+    const picker = $('#wpBrandPicker');
+    const hex = $('#wpBrandHex');
+    picker.addEventListener('input', () => { hex.value = picker.value.toUpperCase(); picker.parentElement.style.background = picker.value; });
+    hex.addEventListener('input', () => { if (/^#[0-9a-f]{6}$/i.test(hex.value)) { picker.value = hex.value; picker.parentElement.style.background = hex.value; } });
+
+    const save = (btn, changes, message) => async () => {
+      btn.disabled = true;
+      try {
+        const res = await api(`/admin/api/restaurants/${encodeURIComponent(page.code)}/wordpress`, { method: 'PATCH', body: JSON.stringify({ changes }) });
+        if (state.page !== page) return;
+        page.wp = { loading: false, connected: true, data: res.wordpress, backend: res.backend };
+        page.wpDirty = false;
+        toast(message);
+        if (res.warning) toast(res.warning, 'error');
+        renderWordpress();
+        if (changes.features || changes.orders_app) { loadRestaurantPage({ silent: true }); refreshAll({ silent: true }); }
+      } catch (error) {
+        toast(error.message, 'error');
+        btn.disabled = false;
+      }
+    };
+
+    const featuresBtn = $('#wpSaveFeatures');
+    featuresBtn.addEventListener('click', () => {
+      const next = {};
+      $$('[data-wp-feature]', host).forEach(input => { next[input.dataset.wpFeature] = input.checked; });
+      const run = save(featuresBtn, { features: next }, 'Features saved in WordPress');
+      const stopsOrders = (f.website_ordering && !next.website_ordering) || (f.orders_app && !next.orders_app);
+      if (stopsOrders) {
+        confirmationModal('Stop online orders?', next.website_ordering === false
+          ? 'Switching off Website Ordering disables the online shop and every other module. Customers can no longer order on this website.'
+          : 'Switching off the FoodUp Orders App means new orders no longer reach the restaurant’s Orders app or printer.', 'Switch off', run);
+      } else {
+        run();
+      }
+    });
+    const ordersBtn = $('#wpSaveOrders');
+    ordersBtn.addEventListener('click', () => save(ordersBtn, { orders_app: {
+      edition, auto_action: autoAction,
+      auto_wait_minutes: Number($('#wpAutoWait').value || 5),
+      auto_accept_time: $('#wpAutoAccept').value,
+      auto_reject_reason: $('#wpAutoReject').value,
+    } }, 'Orders App settings saved')());
+    const shopBtn = $('#wpSaveShop');
+    shopBtn.addEventListener('click', () => save(shopBtn, { shop: {
+      restaurant_name: $('#wpShopName').value, address: $('#wpShopAddress').value, contact_phone: $('#wpShopPhone').value,
+      contact_email: $('#wpShopEmail').value, vat_number: $('#wpShopVat').value, google_review_url: $('#wpShopReview').value,
+    } }, 'Shop details saved in WordPress')());
+    const brandBtn = $('#wpSaveBrand');
+    brandBtn.addEventListener('click', () => {
+      if (!/^#[0-9a-f]{6}$/i.test(hex.value)) { toast('Enter a colour like #FF6600', 'error'); return; }
+      save(brandBtn, { branding: { brand_color: hex.value.toUpperCase() } }, 'Brand colour saved')();
+    });
+    host.oninput = () => { page.wpDirty = true; };
   }
 
   function findOrder(code, id) {

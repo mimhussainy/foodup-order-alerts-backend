@@ -63,6 +63,9 @@ function cookieOptions(req) {
 
 function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
   const deliveredCallbackOutbox = options.deliveredCallbackOutbox || null;
+  const restaurantSecurity = options.restaurantSecurity || null;
+  const orderAppEdition = options.orderAppEdition || null;
+  const fetchImpl = options.fetchImpl || global.fetch;
   const stats = options.stats || createControlCenterStats({ redisCommand, k });
   if (options.startHistoryRecorder !== false) stats.start();
   const startedAt = Date.now();
@@ -488,6 +491,142 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       }
       await redisCommand('SREM', 'restaurants', code);
       res.json({ success: true, removed_keys: list.length });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+  // ---------- WordPress plugin settings (FoodUp Ordering bridge) ----------
+  // The backend forwards admin requests to the restaurant's own WordPress
+  // (/wp-json/foodup/v1/control-center/settings), signed with that
+  // restaurant's per-restaurant secret. WordPress stays the place where the
+  // plugin settings are stored; the backend only mirrors what the apps need.
+  const WP_TIMEOUT_MS = 15000;
+  const MODULE_KEYS = ['website_ordering', 'orders_app', 'courier', 'customer_app', 'online_payments', 'auto_handling', 'printing'];
+
+  function wordpressBaseUrl(profile) {
+    const website = String(profile?.website || '').trim();
+    if (!website) return '';
+    return (/^https?:\/\//i.test(website) ? website : `https://${website}`).replace(/\/+$/, '');
+  }
+
+  async function wordpressRequest(code, method, changes) {
+    if (!restaurantSecurity || typeof restaurantSecurity.getOutboundWordPressSecret !== 'function') {
+      return { ok: false, reason: 'not_configured', message: 'WordPress bridge is not configured on this backend.' };
+    }
+    const profileRaw = await redisCommand('GET', k(code, 'restaurant_profile'));
+    const base = wordpressBaseUrl(safeJson(profileRaw.result, {}));
+    if (!base) return { ok: false, reason: 'website_missing', message: 'No website is stored for this restaurant.' };
+
+    const credential = await restaurantSecurity.getOutboundWordPressSecret(code);
+    if (credential.source !== 'restaurant' || !credential.secret) {
+      // Never fall back to the old shared secret for settings access.
+      return { ok: false, reason: 'secret_missing', message: 'This restaurant has no per-restaurant secret yet. Open FoodUp Ordering → Orders App in WordPress and press Save & Connect once.' };
+    }
+
+    const url = `${base}/wp-json/foodup/v1/control-center/settings${method === 'GET' ? `?restaurant_code=${encodeURIComponent(code)}` : ''}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WP_TIMEOUT_MS);
+    try {
+      const response = await fetchImpl(url, {
+        method,
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'x-foodup-secret': credential.secret, 'X-FoodUp-Client': 'control-center' },
+        body: method === 'GET' ? undefined : JSON.stringify({ restaurant_code: code, changes }),
+        signal: controller.signal,
+        redirect: 'follow',
+      });
+      let body = {};
+      try { body = await response.json(); } catch (_) {}
+      if (response.ok && body && body.success === true && body.settings) return { ok: true, data: body };
+      if (response.status === 404) return { ok: false, reason: 'plugin_outdated', message: 'This site does not have the Control Center bridge yet. Update FoodUp Ordering to 0.5.234 or newer.' };
+      if (response.status === 401 || response.status === 403) return { ok: false, reason: 'unauthorized', message: 'WordPress refused the restaurant secret. Open FoodUp Ordering → Orders App and press Save & Connect.' };
+      if (response.status === 400) return { ok: false, reason: 'invalid', message: String(body?.message || 'WordPress rejected the values.') };
+      return { ok: false, reason: 'error', message: `WordPress answered with HTTP ${response.status}.` };
+    } catch (error) {
+      if (error?.name === 'AbortError') return { ok: false, reason: 'timeout', message: 'WordPress did not answer within 15 seconds.' };
+      return { ok: false, reason: 'unreachable', message: 'WordPress could not be reached.' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Mirrors the real plugin feature switches into the Control Center badges.
+  async function mirrorModules(code, features) {
+    if (!features || typeof features !== 'object') return;
+    const modules = {};
+    MODULE_KEYS.forEach(key => { modules[key] = features[key] === true; });
+    await redisCommand('SET', k(code, 'admin_modules'), JSON.stringify(modules));
+  }
+
+  // After an admin save: apply what the backend itself needs, exactly like the
+  // plugin's own Save & Connect would (edition + automatic handling), without
+  // touching the printer assignment.
+  async function applyOperational(code, settings) {
+    const applied = {};
+    const orders = settings?.orders_app || {};
+    const features = settings?.features || {};
+    if (orderAppEdition && typeof orderAppEdition.set === 'function' && (orders.edition === 'free' || orders.edition === 'pro')) {
+      applied.edition = await orderAppEdition.set(code, orders.edition);
+    }
+    const autoSettings = {
+      auto_action: features.auto_handling === true ? (orders.auto_action || 'disabled') : 'disabled',
+      wait_minutes: parseInt(orders.auto_wait_minutes, 10) || 5,
+      accept_time: orders.auto_accept_time || '30 Minutes',
+      reject_reason: orders.auto_reject_reason || 'Zu beschäftigt',
+    };
+    await redisCommand('SET', k(code, 'auto_settings'), JSON.stringify(autoSettings));
+    if (typeof options.invalidateAutoSettings === 'function') options.invalidateAutoSettings(code);
+    applied.auto_settings = autoSettings;
+    return applied;
+  }
+
+  async function backendView(code) {
+    const [autoRaw, edition] = await Promise.all([
+      redisCommand('GET', k(code, 'auto_settings')),
+      orderAppEdition && typeof orderAppEdition.get === 'function' ? orderAppEdition.get(code) : Promise.resolve(null),
+    ]);
+    return { edition, auto_settings: safeJson(autoRaw.result, null) };
+  }
+
+  app.get('/admin/api/restaurants/:code/wordpress', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    if (!code) return res.status(400).json({ success: false, message: 'Invalid restaurant code' });
+    try {
+      const result = await wordpressRequest(code, 'GET');
+      if (!result.ok) return res.json({ success: true, connected: false, reason: result.reason, message: result.message });
+      await mirrorModules(code, result.data.settings.features).catch(() => {});
+      res.json({ success: true, connected: true, wordpress: result.data, backend: await backendView(code) });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+  app.patch('/admin/api/restaurants/:code/wordpress', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    if (!code) return res.status(400).json({ success: false, message: 'Invalid restaurant code' });
+    const changes = req.body?.changes;
+    if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+      return res.status(400).json({ success: false, message: 'changes must be an object' });
+    }
+    try {
+      const result = await wordpressRequest(code, 'POST', changes);
+      if (!result.ok) {
+        const status = result.reason === 'invalid' ? 400 : 502;
+        return res.status(status).json({ success: false, reason: result.reason, message: result.message });
+      }
+      const settings = result.data.settings;
+      await mirrorModules(code, settings.features).catch(() => {});
+      let applied = {};
+      let warning = '';
+      if (changes.orders_app || changes.features) {
+        try {
+          applied = await applyOperational(code, settings);
+        } catch (error) {
+          warning = 'Saved in WordPress, but the backend copy (edition / automatic handling) could not be updated. Try saving again.';
+        }
+      }
+      console.log(`[control-center] wordpress settings saved for ${code}: ${Object.keys(changes).join(', ')}`);
+      res.json({ success: true, connected: true, wordpress: result.data, backend: await backendView(code), applied, warning });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
     }
