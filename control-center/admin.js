@@ -740,11 +740,15 @@
     const s = String(o.status || '').toLowerCase().replace(/^wc-/, '');
     if (o.rejected) return { label: 'Rejected', cls: 'red', group: 'void' };
     if (['cancelled', 'canceled', 'refunded', 'failed'].includes(s)) return { label: ORDER_STATUS[s][0], cls: ORDER_STATUS[s][1], group: 'void' };
-    if (o.app_delivered) return { label: String(o.fulfillment_type || '').toLowerCase() === 'delivery' ? 'Delivered' : 'Completed', cls: 'green', group: 'done' };
-    if (s === 'completed' || s === 'delivered') return { label: ORDER_STATUS[s][0], cls: 'green', group: 'done' };
-    if (o.app_accepted) return { label: 'Accepted', cls: 'blue', group: 'active' };
+    if (o.app_delivered) return { label: String(o.fulfillment_type || '').toLowerCase() === 'delivery' ? 'Delivered' : 'Picked up', cls: 'green', group: 'done' };
+    if (s === 'delivered') return { label: 'Delivered', cls: 'green', group: 'done' };
+    // FoodUp Ordering sets WooCommerce to "Completed" the moment the restaurant
+    // accepts, so Completed and the app's own accept record both mean Accepted.
+    if (o.app_accepted || s === 'completed') return { label: 'Accepted', cls: 'blue', group: 'accepted' };
+    if (s === 'processing') return { label: 'New', cls: 'amber', group: 'new' };
+    if (s === 'pending') return { label: 'Awaiting payment', cls: 'amber', group: 'new' };
     const [label, cls] = ORDER_STATUS[s] || [s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, ' ') : '—', 'grey'];
-    return { label, cls, group: 'active' };
+    return { label, cls, group: 'new' };
   }
   function fulfillment(o) {
     const f = String(o.fulfillment_type || '').toLowerCase();
@@ -789,12 +793,13 @@
     const code = $('#ordersRestaurantFilter').value || 'all';
     let list = state.orders.filter(o => code === 'all' || o.restaurant_code === code);
     if (state.search) list = list.filter(o => matchesSearch(`${o.order_id} ${o.restaurant_name} ${o.customer_name} ${o.customer_phone} ${o.status} ${o.payment_method}`));
-    const counts = { all: list.length, active: 0, done: 0, void: 0 };
+    const counts = { all: list.length, new: 0, accepted: 0, done: 0, void: 0 };
     list.forEach(o => { counts[orderStatus(o).group] += 1; });
     segmented($('#orderStatusFilter'), [
       { value: 'all', label: 'All', count: counts.all },
-      { value: 'active', label: 'Active', count: counts.active },
-      { value: 'done', label: 'Completed', count: counts.done },
+      { value: 'new', label: 'New', count: counts.new },
+      { value: 'accepted', label: 'Accepted', count: counts.accepted },
+      { value: 'done', label: 'Delivered', count: counts.done },
       { value: 'void', label: 'Rejected & cancelled', count: counts.void },
     ], state.orderStatus, v => { state.orderStatus = v; renderOrders(); });
     if (state.orderStatus !== 'all') list = list.filter(o => orderStatus(o).group === state.orderStatus);

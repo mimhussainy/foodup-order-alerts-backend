@@ -930,13 +930,22 @@ res.json({ success: true, result });
 app.post("/status-update", async (req, res) => {
   const order = foodupNormalizeOrderFulfillment(req.body);
   const requestedCode = order.restaurant_code?.toLowerCase().trim();
-  if (!requestedCode) return res.json({ success: false });
+  if (!requestedCode) {
+    console.warn(`[status-update] refused: no restaurant_code (order ${order.order_id || '?'}, status ${order.status || '?'})`);
+    return res.json({ success: false });
+  }
   let code = requestedCode;
   if (foodupLooksLikeWordPressRequest(req)) {
-    if (!await requireWordPressRequest(req, res, requestedCode)) return;
+    if (!await requireWordPressRequest(req, res, requestedCode)) {
+      console.warn(`[status-update] refused for ${requestedCode} order ${order.order_id || '?'} (status ${order.status || '?'}): WordPress authentication failed`);
+      return;
+    }
   } else {
     const session = await requireAppSession(req, res, ['orders', 'courier'], requestedCode);
-    if (!session) return;
+    if (!session) {
+      console.warn(`[status-update] refused for ${requestedCode} order ${order.order_id || '?'} (status ${order.status || '?'}): app session invalid`);
+      return;
+    }
     code = session.restaurant_code;
     order.restaurant_code = code;
   }

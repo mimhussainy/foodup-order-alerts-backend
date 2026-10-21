@@ -231,7 +231,9 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       const dt = orderTime(order);
       if (dt && (!lastOrderAt || dt > lastOrderAt)) lastOrderAt = dt;
     }
-    const annotatedOrders = orders.map(order => {
+    // The stored list is ordered by last change (every update moves an order to
+    // the top), so it is re-sorted by order time, newest first.
+    const annotatedOrders = orders.slice().sort((a, b) => (orderTime(b)?.getTime() || 0) - (orderTime(a)?.getTime() || 0)).map(order => {
       const id = String(order.order_id);
       const delivered = appState.delivered.get(id);
       return {
