@@ -178,7 +178,7 @@
   function showLogin() {
     $('#appView').classList.add('hidden');
     $('#loginView').classList.remove('hidden');
-    setTimeout(() => $('#password')?.focus(), 20);
+    setTimeout(() => ($('#username').value ? $('#password') : $('#username'))?.focus(), 20);
   }
   function showApp() {
     $('#loginView').classList.add('hidden');
@@ -1786,12 +1786,15 @@
   }
 
   // ---------- init ----------
+  // Pinch and double-tap zoom are blocked on phones (iOS ignores user-scalable=no).
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach(type => document.addEventListener(type, e => e.preventDefault(), { passive: false }));
+
   function bindStaticEvents() {
     $('#loginForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       $('#loginError').textContent = '';
       try {
-        await api('/admin/api/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) });
+        await api('/admin/api/login', { method: 'POST', body: JSON.stringify({ username: $('#username').value.trim(), password: $('#password').value }) });
         $('#password').value = '';
         showApp();
         route();

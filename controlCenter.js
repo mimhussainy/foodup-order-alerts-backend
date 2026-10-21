@@ -69,6 +69,12 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
   const stats = options.stats || createControlCenterStats({ redisCommand, k });
   if (options.startHistoryRecorder !== false) stats.start();
   const startedAt = Date.now();
+  // Optional admin username (Render env DASHBOARD_USERNAME). While it is not set,
+  // sign-in keeps working with the password alone so a deploy never locks anyone out.
+  const adminUsername = String(options.adminUsername ?? process.env.DASHBOARD_USERNAME ?? '').trim().toLowerCase();
+  if (!adminUsername) console.warn('[control-center] DASHBOARD_USERNAME is not set; sign-in checks the password only.');
+  // Sessions are bound to both values: changing the username or password signs everyone out.
+  const sessionSecret = adminUsername ? `${dashPassword}\n${adminUsername}` : dashPassword;
   const assetsPath = path.join(__dirname, 'control-center');
   app.use('/admin/assets', express.static(assetsPath, { maxAge: '1h', index: false }));
 
@@ -82,7 +88,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
 
   const requireAdmin = (req, res, next) => {
     const cookies = parseCookies(req.headers.cookie);
-    if (verifySessionToken(cookies[SESSION_COOKIE], dashPassword)) return next();
+    if (verifySessionToken(cookies[SESSION_COOKIE], sessionSecret)) return next();
     res.status(401).json({ success: false, message: 'Authentication required' });
   };
 
@@ -97,7 +103,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
 
   app.get('/admin/api/session', (req, res) => {
     const cookies = parseCookies(req.headers.cookie);
-    res.json({ success: true, authenticated: verifySessionToken(cookies[SESSION_COOKIE], dashPassword) });
+    res.json({ success: true, authenticated: verifySessionToken(cookies[SESSION_COOKIE], sessionSecret) });
   });
 
   app.post('/admin/api/login', async (req, res) => {
@@ -116,7 +122,11 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
     }
 
     const password = String(req.body?.password || '');
-    if (!timingSafeEqualString(password, dashPassword)) {
+    const username = String(req.body?.username || '').trim().toLowerCase();
+    // Both comparisons always run, so the response time does not reveal which one failed.
+    const usernameOk = adminUsername ? timingSafeEqualString(username, adminUsername) : true;
+    const passwordOk = timingSafeEqualString(password, dashPassword);
+    if (!usernameOk || !passwordOk) {
       let failure;
       try {
         failure = await recordAdminLoginFailure(redisCommand, ip);
@@ -128,7 +138,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
         res.setHeader('Retry-After', String(failure.retryAfter));
         return res.status(429).json({ success: false, message: 'Too many login attempts. Try again later.' });
       }
-      return res.status(401).json({ success: false, message: 'Incorrect password' });
+      return res.status(401).json({ success: false, message: adminUsername ? 'Incorrect username or password' : 'Incorrect password' });
     }
 
     try {
@@ -138,7 +148,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       return res.status(503).json({ success: false, message: 'Login temporarily unavailable' });
     }
 
-    const token = createSessionToken(dashPassword);
+    const token = createSessionToken(sessionSecret);
     res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(token)}${cookieOptions(req)}`);
     res.json({ success: true });
   });

@@ -51,6 +51,7 @@
 /* ---------- base ---------- */
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
+html { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body { font-family: var(--font); font-size: 14px; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
 button, input, select, textarea { font: inherit; color: inherit; }
 h1, h2, h3 { margin: 0; }
@@ -612,7 +613,7 @@ button.mini-row:hover { background: var(--hover); }
   .seg-btn { height: 36px; padding: 0 13px; }
   .icon-button.sm { width: 40px; height: 40px; }
   .field input, .select-control { height: 44px; font-size: 16px; }
-  .hours-row .time-input, .closure-row input, .zone-row input, .money-input input, .search-wrap input, .modal-body input { font-size: 16px; }
+  .hours-row .time-input, .closure-row input, .zone-row input, .money-input input, .search-wrap input, .modal-body input, .login-card input { font-size: 16px; }
   .hours-row .time-input, .closure-row input, .zone-row input, .money-input input { height: 42px; }
   .switch { width: 44px; height: 26px; }
   .switch span::before { width: 20px; height: 20px; }
