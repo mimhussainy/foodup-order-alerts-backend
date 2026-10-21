@@ -5,10 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#111217">
   <title>FoodUp Control Center</title>
+  <link rel="icon" href="/admin/assets/favicon.ico" sizes="48x48">
+  <link rel="icon" type="image/png" href="/admin/assets/favicon-32x32.png" sizes="32x32">
+  <link rel="icon" type="image/png" href="/admin/assets/icon-192.png" sizes="192x192">
+  <link rel="apple-touch-icon" href="/admin/assets/apple-touch-icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/admin/assets/admin.css?v=3.0.0">
+  <link rel="stylesheet" href="/admin/assets/admin.css?v=3.1.0">
 </head>
 <body>
   <div id="loginView" class="login-view hidden">
@@ -48,6 +52,7 @@
     <main class="main">
       <header class="topbar">
         <div>
+          <button id="backLink" class="back-link hidden" type="button"><span data-icon="arrow-left"></span>Restaurants</button>
           <div class="eyebrow-row"><span class="eyebrow">FoodUp Platform</span><span class="live-chip"><span class="status-dot online live"></span>Live</span></div>
           <h1 id="pageTitle">Overview</h1>
           <p id="pageSub" class="page-sub"></p>
@@ -126,6 +131,28 @@
         </section>
       </section>
 
+      <section id="view-restaurant" class="view">
+        <section id="rpHero" class="panel rp-hero"></section>
+        <div id="rpKpis" class="kpi-grid"></div>
+        <div class="split">
+          <div class="main-stack grow-wide">
+            <section class="panel chart-panel">
+              <div class="panel-head">
+                <div><h2>Orders over time</h2><p id="rpChartSub">Per hour · today</p></div>
+                <div id="rpPeriodSwitch" class="segmented" role="tablist" aria-label="Chart period"></div>
+              </div>
+              <div id="rpChartBody" class="chart-body"></div>
+              <div id="rpChartStats" class="stat-strip"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><h2>Recent orders</h2><p id="rpOrdersSub"></p></div></div>
+              <div class="table-scroll"><div id="rpOrders" class="grid-table orders-table single"></div></div>
+            </section>
+          </div>
+          <div id="rpSide" class="side-stack grow-side rp-side"></div>
+        </div>
+      </section>
+
       <section id="view-orders" class="view">
         <div class="section-toolbar">
           <div id="orderStatusFilter" class="segmented" role="tablist" aria-label="Filter orders by status"></div>
@@ -176,6 +203,6 @@
   </div>
 
   <div id="toastContainer" class="toast-container" aria-live="polite"></div>
-  <script src="/admin/assets/admin.js?v=3.0.0" defer></script>
+  <script src="/admin/assets/admin.js?v=3.1.0" defer></script>
 </body>
 </html>

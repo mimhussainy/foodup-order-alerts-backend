@@ -310,6 +310,7 @@ a.btn { text-decoration: none; }
 .restaurants-table { --cols: 1.7fr 1fr 1.5fr .6fr .5fr .9fr 24px; --min: 760px; }
 .restaurants-table.full { --cols: 1.6fr 1fr 1.4fr 1.5fr .6fr .5fr .9fr .9fr 24px; --min: 1120px; }
 .orders-table { --cols: .7fr 1.1fr 1.1fr .8fr .8fr .9fr .8fr .7fr; --min: 820px; }
+.orders-table.single { --cols: .7fr 1.3fr .9fr 1fr .9fr .8fr .8fr; --min: 700px; }
 .health-table { --cols: 1.5fr 1.5fr 1.2fr .5fr .9fr .8fr; --min: 780px; }
 
 /* heartbeat strip */
@@ -336,6 +337,33 @@ a.btn { text-decoration: none; }
 .att-actions .btn { height: 36px; }
 .healthy-line { display: flex; align-items: center; gap: 8px; padding: 14px 20px; font-size: 13px; color: var(--green-text); }
 .healthy-line .ic { font-size: 16px; }
+
+/* ---------- restaurant page ---------- */
+.back-link { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 8px -2px; padding: 4px 8px 4px 2px; border: 0; border-radius: 8px; background: transparent; color: var(--accent-text); font-size: 13px; font-weight: 600; cursor: pointer; }
+.back-link:hover { background: var(--accent-soft); }
+.back-link .ic { font-size: 16px; }
+.back-link.hidden { display: none; }
+.main-stack { display: flex; flex-direction: column; gap: 18px; }
+.rp-hero { display: flex; flex-wrap: wrap; align-items: center; gap: 18px 28px; padding: 20px 22px; margin-bottom: 18px; }
+.rp-hero .who { display: flex; align-items: center; gap: 16px; flex: 1 1 320px; min-width: 0; }
+.rp-hero .avatar.lg { width: 60px; height: 60px; border-radius: 17px; font-size: 20px; }
+.rp-hero .line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: 13px; color: var(--text-2); }
+.rp-hero .line + .line { margin-top: 8px; }
+.rp-hero .line a { color: var(--accent-text); text-decoration: none; }
+.rp-hero .line a:hover { text-decoration: underline; }
+.rp-hero .line .with-icon .ic { font-size: 15px; }
+.rp-hero .beat-box { flex: 1 1 300px; min-width: 240px; }
+.rp-hero .beat-box .mix-title { margin-bottom: 8px; }
+.rp-hero .hero-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.rp-side { flex-basis: 380px; }
+.rp-side .d-section { margin: 0; background: #ffffff; box-shadow: var(--shadow); border-radius: var(--radius); }
+.rp-side .d-head { background: #ffffff; }
+.rp-side .d-section.danger .d-head { background: #fff7f8; }
+.rp-side .edit-grid, .rp-side .module-grid { grid-template-columns: 1fr; }
+.rp-loading { padding: 60px 20px; text-align: center; color: var(--muted); font-size: 13px; }
+#rpKpis .kpi { flex-basis: 160px; }
+#rpKpis .kpi-value { font-size: 22px; letter-spacing: -.4px; overflow: hidden; text-overflow: ellipsis; }
+.chart-loading { height: 256px; display: grid; place-items: center; }
 
 /* ---------- drawer ---------- */
 .drawer-backdrop { position: fixed; inset: 0; background: rgba(13, 15, 20, .3); backdrop-filter: blur(2px); z-index: 80; animation: cc-fade .2s ease; }

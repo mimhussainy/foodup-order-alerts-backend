@@ -256,7 +256,7 @@ function createControlCenterStats({ redisCommand, k, logger = console, now = () 
     return Object.values(obj).map(v => { try { return JSON.parse(v); } catch (_) { return null; } }).filter(Boolean);
   }
 
-  async function analytics() {
+  async function analytics(options = {}) {
     const nowDate = now();
     const nowParts = zurichParts(nowDate);
     const today = nowParts.day;
@@ -270,7 +270,8 @@ function createControlCenterStats({ redisCommand, k, logger = console, now = () 
     const since = sinceRaw.result ? new Date(sinceRaw.result) : nowDate;
     const sinceDay = zurichParts(since).day;
 
-    const codes = await listCodes();
+    const allCodes = await listCodes();
+    const codes = Array.isArray(options.codes) ? allCodes.filter(c => options.codes.includes(c)) : allCodes;
     const hourlyToday = Array(24).fill(0);
     const hourlyRevenueToday = Array(24).fill(0);
     const hourlyLastWeek = Array(24).fill(0);

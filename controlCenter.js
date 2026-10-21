@@ -303,7 +303,8 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
 
   app.get('/admin/api/analytics', requireAdmin, async (req, res) => {
     try {
-      res.json({ success: true, analytics: await stats.analytics() });
+      const code = req.query.code ? normalizeCode(req.query.code) : '';
+      res.json({ success: true, analytics: await stats.analytics(code ? { codes: [code] } : {}) });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
     }

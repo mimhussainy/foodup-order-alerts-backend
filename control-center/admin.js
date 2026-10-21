@@ -8,9 +8,9 @@
   const ANALYTICS_MS = 5 * 60 * 1000;
   const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  const initialView = location.hash.replace('#', '');
   const state = {
-    view: VIEWS.includes(initialView) ? initialView : 'overview',
+    view: 'overview',
+    page: null,
     overview: null,
     analytics: null,
     orders: [],
@@ -19,13 +19,9 @@
     restaurantFilter: 'all',
     restaurantSort: 'attention',
     orderStatus: 'all',
-    period: 'today',
-    hover: null,
     drawer: null,
-    selectedRestaurant: null,
     firstPaint: true,
     countPending: true,
-    chartAnimated: false,
     lastAnalyticsAt: 0,
     refreshing: false,
   };
@@ -108,6 +104,9 @@
     trash: 'M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3',
     star: 'M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z',
     note: 'M5 4h14v16H5zM8 8h8M8 12h8M8 16h5',
+    'arrow-left': 'M19 12H5M11 6l-6 6 6 6',
+    pin: 'M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11zM12 7.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5z',
+    external: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',
   };
   const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICONS[name] || ''}"></path></svg>`;
   const hydrateIcons = (root = document) => $$('[data-icon]', root).forEach(el => { if (!el.querySelector('svg')) el.innerHTML = icon(el.dataset.icon); });
@@ -183,15 +182,34 @@
     $('#appView').classList.remove('hidden');
   }
 
+  function setActiveView(view, navView) {
+    state.view = view;
+    $$('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
+    $$('.nav-item[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === navView));
+    $('#backLink').classList.toggle('hidden', view !== 'restaurant');
+  }
+
   function switchView(view, updateUrl = true) {
     if (!VIEWS.includes(view)) view = 'overview';
-    state.view = view;
-    if (updateUrl) history.replaceState(null, '', `#${view}`);
-    $$('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
-    $$('.nav-item[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
+    if (updateUrl && location.hash !== `#${view}`) history.pushState(null, '', `#${view}`);
+    setActiveView(view, view);
     $('#pageTitle').textContent = TITLES[view];
+    document.title = 'FoodUp Control Center';
     renderCurrentView();
     requestAnimationFrame(positionAllThumbs);
+  }
+
+  // Routes: #overview, #restaurants, #orders, #health, #restaurant/<code>
+  function parseRoute() {
+    const hash = location.hash.replace(/^#/, '');
+    const m = hash.match(/^restaurant\/([a-z0-9_-]+)$/i);
+    if (m) return { view: 'restaurant', code: decodeURIComponent(m[1]).toLowerCase() };
+    return { view: VIEWS.includes(hash) ? hash : 'overview' };
+  }
+  function route() {
+    const r = parseRoute();
+    if (r.view === 'restaurant') showRestaurantPage(r.code);
+    else switchView(r.view, false);
   }
 
   function renderPageSub() {
@@ -203,6 +221,7 @@
       restaurants: `${plural(s.restaurants || 0, 'restaurant')} connected to FoodUp`,
       orders: 'Latest 100 orders per restaurant',
       health: s.issues ? `${plural(s.issues, 'open issue')} across ${plural(s.attention || 0, 'restaurant')}` : 'No open issues',
+      restaurant: '',
     }[state.view];
     $('#pageSub').textContent = text || '';
   }
@@ -220,6 +239,7 @@
     if (state.view === 'restaurants') renderRestaurants();
     if (state.view === 'orders') renderOrders();
     if (state.view === 'health') renderHealth();
+    if (state.view === 'restaurant') renderRestaurantPage({ skipSide: !!state.page?.dirty });
     renderPageSub();
   }
 
@@ -247,6 +267,9 @@
       if (state.firstPaint) startEntranceMotion();
       const analyticsDue = !withAnalytics && (Date.now() - state.lastAnalyticsAt > ANALYTICS_MS || !silent);
       if (analyticsDue || !state.analytics) loadAnalytics();
+      if (state.view === 'restaurant' && state.page?.data) {
+        loadRestaurantPage({ silent: true, withAnalytics: !silent || Date.now() - state.page.lastAnalyticsAt > ANALYTICS_MS });
+      }
     } catch (error) {
       if (error.message !== 'Authentication required') {
         setBackendStatus(false);
@@ -267,7 +290,7 @@
       state.lastAnalyticsAt = Date.now();
       renderOverview({ analyticsJustArrived: first });
     } catch (error) {
-      if (!state.analytics) renderChart();
+      if (!state.analytics) renderChart(overviewChart);
     }
   }
 
@@ -358,8 +381,7 @@
     return { orders, revenue, rejected, aov: orders ? revenue / orders : 0 };
   }
 
-  function comparisonStart() {
-    const a = state.analytics;
+  function comparisonStart(a = state.analytics) {
     if (!a) return null;
     const sinceDay = swissDay(new Date(a.history_since));
     return dayLabel(addDays(sinceDay, 8));
@@ -445,7 +467,7 @@
   function renderOverview(opts = {}) {
     if (!state.overview) return;
     renderKpis();
-    renderChart(opts.analyticsJustArrived);
+    renderChart(overviewChart, opts.analyticsJustArrived);
     renderShareAndMix();
 
     const all = restaurantsList();
@@ -526,21 +548,28 @@
   }
 
   // ---------- chart ----------
-  function renderChart(animate) {
-    const a = state.analytics;
-    const sub = $('#chartSub');
-    segmented($('#periodSwitch'), [{ value: 'today', label: 'Today' }, { value: 'week', label: '7 days' }], state.period, v => {
-      state.period = v; state.hover = null; renderChart(true);
+  // One renderer for the Overview chart and the restaurant page chart.
+  const overviewChart = {
+    st: { period: 'today', hover: null, animated: false },
+    ids: { sub: '#chartSub', sw: '#periodSwitch', body: '#chartBody', stats: '#chartStats' },
+    analytics: () => state.analytics,
+    single: false,
+  };
+
+  function renderChart(ctx, animate) {
+    const a = ctx.analytics();
+    segmented($(ctx.ids.sw), [{ value: 'today', label: 'Today' }, { value: 'week', label: '7 days' }], ctx.st.period, v => {
+      ctx.st.period = v; ctx.st.hover = null; renderChart(ctx, true);
     });
     if (!a) {
-      sub.textContent = 'Loading…';
-      $('#chartBody').innerHTML = '<div class="loading-box" style="height:256px;display:grid;place-items:center">Loading chart…</div>';
-      $('#chartStats').innerHTML = '';
+      $(ctx.ids.sub).textContent = 'Loading…';
+      $(ctx.ids.body).innerHTML = '<div class="loading-box chart-loading">Loading chart…</div>';
+      $(ctx.ids.stats).innerHTML = '';
       return;
     }
-    const replay = animate || !state.chartAnimated;
-    state.chartAnimated = true;
-    if (state.period === 'week') renderWeekChart(a, replay); else renderTodayChart(a, replay);
+    const replay = animate || !ctx.st.animated;
+    ctx.st.animated = true;
+    if (ctx.st.period === 'week') renderWeekChart(ctx, a, replay); else renderTodayChart(ctx, a, replay);
   }
 
   function hourRange(a) {
@@ -555,7 +584,9 @@
     return { start, end, n: end - start + 1 };
   }
 
-  function renderTodayChart(a, replay) {
+  const statStrip = (rows) => rows.map(([l, v]) => `<div><div class="label">${esc(l)}</div><div class="value">${esc(v)}</div></div>`).join('');
+
+  function renderTodayChart(ctx, a, replay) {
     const { start, end, n } = hourRange(a);
     const today = a.hourly.today.slice(start, a.now_hour + 1);
     const lw = a.hourly.last_week.slice(start, end + 1);
@@ -574,11 +605,12 @@
     const lastLine = showLast ? smoothPath(lw.map((v, i) => [X(i), Y(v)]), top, base) : '';
     const nowLeft = ((a.now_hour - start) + a.now_minute / 60) * step;
     const last = tPts[tPts.length - 1];
+    const body = $(ctx.ids.body);
 
-    $('#chartSub').textContent = showLast ? `Per hour · today vs ${a.last_week_label}${a.last_week_complete ? '' : ' (partial)'}` : 'Per hour · today';
-    $('#chartBody').innerHTML = `
+    $(ctx.ids.sub).textContent = showLast ? `Per hour · today vs ${a.last_week_label}${a.last_week_complete ? '' : ' (partial)'}` : 'Per hour · today';
+    body.innerHTML = `
       <div class="chart-legend"><span class="legend-item"><span class="line-sw"></span>Today</span>${showLast ? `<span class="legend-item"><span class="dash-sw"></span>${esc(a.last_week_label)}</span>` : ''}</div>
-      <div class="chart-area" id="chartArea">
+      <div class="chart-area">
         ${[4, 3, 2, 1, 0].map(g => `<div class="chart-grid-line" style="top:${pct(Y(g * stepY))}"></div><span class="chart-y" style="top:${pct(Y(g * stepY))}">${g * stepY}</span>`).join('')}
         <div class="chart-now" style="left:${Math.min(100, nowLeft).toFixed(2)}%"><span>now</span></div>
         <svg class="chart-svg" viewBox="0 0 720 200" preserveAspectRatio="none" role="img" aria-label="Orders per hour today${showLast ? ' compared with ' + esc(a.last_week_label) : ''}">
@@ -590,20 +622,20 @@
         <div class="chart-hit" style="left:${(-step / 2).toFixed(3)}%;width:${(100 + step).toFixed(3)}%">
           ${Array.from({ length: n }, (_, i) => `<button type="button" data-hour="${i}" aria-label="${start + i}:00, today ${i < today.length ? today[i] : 'no data yet'}${showLast ? ', ' + esc(a.last_week_label) + ' ' + lw[i] : ''}"></button>`).join('')}
         </div>
-        <div id="chartTip"></div>
+        <div class="chart-tip-layer"></div>
       </div>
       <div class="chart-x">${Array.from({ length: n }, (_, i) => i).filter(i => n <= 9 || i % 2 === 0 || i === n - 1).map(i => `<span style="left:${(i * step).toFixed(3)}%">${start + i}:00</span>`).join('')}</div>
-      ${!a.last_week_complete ? `<div class="chart-note">${icon('clock')}History is being collected since ${esc(fmtDateTime(a.history_since))}. Full comparison with last week from ${esc(comparisonStart())}.</div>` : ''}`;
+      ${!a.last_week_complete ? `<div class="chart-note">${icon('clock')}History is being collected since ${esc(fmtDateTime(a.history_since))}. Full comparison with last week from ${esc(comparisonStart(a))}.</div>` : ''}`;
 
-    const hit = $('.chart-hit', $('#chartBody'));
+    const hit = $('.chart-hit', body);
+    const tipLayer = $('.chart-tip-layer', body);
     const renderTip = () => {
-      const tipEl = $('#chartTip');
-      const h = state.hover;
-      if (h === null || h === undefined) { tipEl.innerHTML = ''; return; }
+      const h = ctx.st.hover;
+      if (h === null || h === undefined) { tipLayer.innerHTML = ''; return; }
       const hasToday = h < today.length;
       const left = h * step;
       const right = left > 62;
-      tipEl.innerHTML = `
+      tipLayer.innerHTML = `
         <div class="chart-guide" style="left:${left.toFixed(3)}%"></div>
         ${showLast ? `<span class="chart-dot ghost" style="left:${left.toFixed(3)}%;top:${pct(Y(lw[h]))}"></span>` : ''}
         ${hasToday ? `<span class="chart-dot" style="left:${left.toFixed(3)}%;top:${pct(Y(today[h]))}"></span>` : ''}
@@ -614,27 +646,32 @@
           ${showLast ? `<div><span>${esc(a.last_week_label)}</span><b class="num">${plural(lw[h], 'order')}</b></div>` : ''}
         </div>`;
     };
-    hit.addEventListener('mouseover', e => { const b = e.target.closest('button[data-hour]'); if (!b) return; state.hover = Number(b.dataset.hour); renderTip(); });
-    hit.addEventListener('focusin', e => { const b = e.target.closest('button[data-hour]'); if (!b) return; state.hover = Number(b.dataset.hour); renderTip(); });
-    hit.addEventListener('mouseleave', () => { state.hover = null; renderTip(); });
-    hit.addEventListener('focusout', () => { state.hover = null; renderTip(); });
+    const pick = e => { const b = e.target.closest('button[data-hour]'); if (!b) return; ctx.st.hover = Number(b.dataset.hour); renderTip(); };
+    hit.addEventListener('mouseover', pick);
+    hit.addEventListener('focusin', pick);
+    hit.addEventListener('mouseleave', () => { ctx.st.hover = null; renderTip(); });
+    hit.addEventListener('focusout', () => { ctx.st.hover = null; renderTip(); });
     renderTip();
 
     const peakIdx = today.reduce((best, v, i) => (v > today[best] ? i : best), 0);
-    const busiest = (a.restaurants || []).slice().sort((x, y) => y.orders - x.orders)[0];
-    $('#chartStats').innerHTML = [
-      ['Peak hour', today.length && today[peakIdx] ? `${start + peakIdx}:00 · ${plural(today[peakIdx], 'order')}` : '—'],
-      ['Busiest restaurant', busiest && busiest.orders ? `${restaurantName(busiest.code)} · ${busiest.orders}` : '—'],
-      ['Rejected / cancelled today', `${a.today_totals.rejected}${a.today_totals.rejected ? ' · ' + money(a.today_totals.rejected_revenue) : ''}`],
-    ].map(([l, v]) => `<div><div class="label">${esc(l)}</div><div class="value">${esc(v)}</div></div>`).join('');
+    const peak = ['Peak hour', today.length && today[peakIdx] ? `${start + peakIdx}:00 · ${plural(today[peakIdx], 'order')}` : '—'];
+    const rejected = ['Rejected / cancelled today', `${a.today_totals.rejected}${a.today_totals.rejected ? ' · ' + money(a.today_totals.rejected_revenue) : ''}`];
+    let middle;
+    if (ctx.single) {
+      middle = ['Revenue today', money(a.today_totals.revenue)];
+    } else {
+      const busiest = (a.restaurants || []).slice().sort((x, y) => y.orders - x.orders)[0];
+      middle = ['Busiest restaurant', busiest && busiest.orders ? `${restaurantName(busiest.code)} · ${busiest.orders}` : '—'];
+    }
+    $(ctx.ids.stats).innerHTML = statStrip([peak, middle, rejected]);
   }
 
-  function renderWeekChart(a, replay) {
+  function renderWeekChart(ctx, a, replay) {
     const days = a.daily || [];
     const max = Math.max(1, ...days.map(d => d.orders));
     const anyPartial = days.some((d, i) => !d.complete && i < days.length - 1);
-    $('#chartSub').textContent = 'Per day · last 7 days';
-    $('#chartBody').innerHTML = `
+    $(ctx.ids.sub).textContent = 'Per day · last 7 days';
+    $(ctx.ids.body).innerHTML = `
       <div class="chart-legend"><span class="legend-item"><span class="box-sw"></span>Orders per day</span><span class="legend-item"><span class="box-sw soft"></span>Today so far</span></div>
       <div class="week-bars">${days.map((d, i) => {
         const isToday = i === days.length - 1;
@@ -647,11 +684,11 @@
     const best = days.slice().sort((x, y) => y.orders - x.orders)[0];
     const total = days.reduce((sum, d) => sum + d.orders, 0);
     const revenue = days.reduce((sum, d) => sum + d.revenue, 0);
-    $('#chartStats').innerHTML = [
+    $(ctx.ids.stats).innerHTML = statStrip([
       ['Orders in 7 days', `${total} · ${money(revenue)}`],
       ['Best day', best && best.orders ? `${best.label} · ${plural(best.orders, 'order')}` : '—'],
       ['Avg. per full day', complete.length ? `${Math.round(complete.reduce((s, d) => s + d.orders, 0) / complete.length)} orders` : 'Collecting…'],
-    ].map(([l, v]) => `<div><div class="label">${esc(l)}</div><div class="value">${esc(v)}</div></div>`).join('');
+    ]);
   }
 
   // ---------- share + mix ----------
@@ -712,8 +749,8 @@
     const code = $('#ordersRestaurantFilter')?.value || 'all';
     return state.orders.filter(o => code === 'all' || state.view !== 'orders' || o.restaurant_code === code);
   }
-  function orderRows(list, isOverview) {
-    const head = '<div class="gt-head"><span>Order</span><span>Restaurant</span><span>Customer</span><span>Type</span><span>Payment</span><span>Status</span><span class="right">Total</span><span class="right">Time</span></div>';
+  function orderRows(list, isOverview, single = false) {
+    const head = '<div class="gt-head"><span>Order</span>' + (single ? '' : '<span>Restaurant</span>') + '<span>Customer</span><span>Type</span><span>Payment</span><span>Status</span><span class="right">Total</span><span class="right">Time</span></div>';
     if (!list.length) return head + '<div class="empty-box">No orders found.</div>';
     return head + list.map((o, i) => {
       const st = orderStatus(o);
@@ -721,7 +758,7 @@
       const fresh = isOverview && i === 0 && state.firstPaint;
       return `<button class="gt-row ${fresh ? 'new' : ''}" type="button" data-open-order="${esc(o.restaurant_code)}|${esc(o.order_id)}">
         <span class="strong num">#${esc(o.order_id)}</span>
-        <span>${esc(o.restaurant_name)}</span>
+        ${single ? '' : `<span>${esc(o.restaurant_name)}</span>`}
         <span class="cell-stack"><span class="strong">${esc(o.customer_name || '—')}</span>${o.customer_phone ? `<span class="s">${esc(o.customer_phone)}</span>` : ''}</span>
         <span class="with-icon">${icon(typeIcon)}${esc(type)}</span>
         <span>${esc(o.payment_method || '—')}</span>
@@ -849,66 +886,136 @@
     $('#drawerContent').scrollTop = 0;
     setTimeout(() => $('#drawerClose').focus(), 30);
   }
-  function closeDrawer() {
+  function closeDrawer(restoreFocus = true) {
     $('#drawerBackdrop').classList.add('hidden');
     $('#drawer').classList.add('hidden');
     $('#drawer').setAttribute('aria-hidden', 'true');
     state.drawer = null;
-    state.selectedRestaurant = null;
-    if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
+    if (restoreFocus && lastFocus && document.contains(lastFocus)) lastFocus.focus();
   }
 
-  async function openRestaurant(code) {
-    state.drawer = { type: 'restaurant', code };
-    openDrawerShell();
+  // ---------- restaurant page (#restaurant/<code>) ----------
+  const MODULE_LABELS = { website_ordering: 'Website Ordering', orders_app: 'Orders App', courier: 'Courier', customer_app: 'Customer App', online_payments: 'Online Payments', auto_handling: 'Automatic Handling', printing: 'Printing / Device' };
+
+  function restaurantChartCtx() {
+    return {
+      st: state.page.chart,
+      ids: { sub: '#rpChartSub', sw: '#rpPeriodSwitch', body: '#rpChartBody', stats: '#rpChartStats' },
+      analytics: () => state.page?.analytics,
+      single: true,
+    };
+  }
+
+  function openRestaurant(code) {
+    if (!$('#drawer').classList.contains('hidden')) closeDrawer(false);
+    const target = `#restaurant/${encodeURIComponent(code)}`;
+    if (location.hash !== target) history.pushState(null, '', target);
+    showRestaurantPage(code);
+  }
+
+  async function showRestaurantPage(code) {
+    if (!state.page || state.page.code !== code) {
+      state.page = { code, data: null, analytics: null, chart: { period: 'today', hover: null, animated: false }, dirty: false, lastAnalyticsAt: 0 };
+    }
+    setActiveView('restaurant', 'restaurants');
     const known = restaurantsList().find(r => r.code === code);
-    $('#drawerAvatar').className = 'avatar lg';
-    $('#drawerAvatar').textContent = initials(known?.name || code);
-    $('#drawerTitle').textContent = known?.name || 'Loading…';
-    $('#drawerCode').textContent = code;
-    $('#drawerStatus').innerHTML = '';
-    $('#drawerContent').innerHTML = '<div class="empty-box">Loading restaurant details…</div>';
+    $('#pageTitle').textContent = state.page.data?.name || known?.name || code;
+    renderPageSub();
+    window.scrollTo(0, 0);
+    renderRestaurantPage();
+    await loadRestaurantPage({ withAnalytics: true });
+  }
+
+  async function loadRestaurantPage({ withAnalytics = false, silent = false } = {}) {
+    const page = state.page;
+    if (!page) return;
     try {
-      const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`);
-      if (state.drawer?.code !== code) return;
-      state.selectedRestaurant = data.restaurant;
-      renderRestaurantDrawer();
+      const [detail, analytics] = await Promise.all([
+        api(`/admin/api/restaurants/${encodeURIComponent(page.code)}`),
+        withAnalytics ? api(`/admin/api/analytics?code=${encodeURIComponent(page.code)}`).catch(() => null) : Promise.resolve(null),
+      ]);
+      if (state.page !== page || state.view !== 'restaurant') return;
+      page.data = detail.restaurant;
+      if (analytics?.analytics) { page.analytics = analytics.analytics; page.lastAnalyticsAt = Date.now(); }
+      // Never overwrite a form the admin is typing in.
+      renderRestaurantPage({ skipSide: silent && page.dirty });
     } catch (error) {
-      $('#drawerContent').innerHTML = `<div class="empty-box">${esc(error.message)}</div>`;
+      if (state.page !== page) return;
+      if (!page.data) $('#rpHero').innerHTML = `<div class="rp-loading">${esc(error.message)}</div>`;
+      else if (!silent) toast(error.message, 'error');
     }
   }
 
-  const MODULE_LABELS = { website_ordering: 'Website Ordering', orders_app: 'Orders App', courier: 'Courier', customer_app: 'Customer App', online_payments: 'Online Payments', auto_handling: 'Automatic Handling', printing: 'Printing / Device' };
-
-  function renderRestaurantDrawer() {
-    const r = state.selectedRestaurant;
-    if (!r) return;
+  function renderRestaurantPage({ skipSide = false } = {}) {
+    const page = state.page;
+    if (!page) return;
+    const r = page.data;
+    if (!r) {
+      $('#rpHero').innerHTML = '<div class="rp-loading">Loading restaurant…</div>';
+      $('#rpKpis').innerHTML = '';
+      $('#rpSide').innerHTML = '';
+      $('#rpOrders').innerHTML = '';
+      $('#rpOrdersSub').textContent = '';
+      renderChart(restaurantChartCtx());
+      return;
+    }
+    $('#pageTitle').textContent = r.name;
+    document.title = `${r.name} · FoodUp Control Center`;
     const bad = (r.attention_items || []).length > 0;
-    $('#drawerAvatar').className = `avatar lg ${bad ? 'bad' : ''}`;
-    $('#drawerAvatar').textContent = initials(r.name);
-    $('#drawerTitle').textContent = r.name;
-    $('#drawerCode').innerHTML = `${esc(r.code)}${r.website ? ` · <a href="${esc(/^https?:/.test(r.website) ? r.website : 'https://' + r.website)}" target="_blank" rel="noopener">${esc(r.website)}</a>` : ''}`;
-    $('#drawerStatus').innerHTML = `<span class="status-dot ${esc(r.app_status)} live"></span>${esc(statusLabel(r.app_status))}${r.app_minutes_ago != null ? ' · ' + esc(r.app_minutes_ago) + ' min ago' : ''}`;
+    const websiteUrl = r.website ? (/^https?:/.test(r.website) ? r.website : `https://${r.website}`) : '';
+    const tel = r.phone ? `tel:${String(r.phone).replace(/[^+\d]/g, '')}` : '';
+    const since = r.app_minutes_ago != null ? (r.app_minutes_ago < 1 ? 'last seen just now' : `last seen ${r.app_minutes_ago} min ago`) : 'no heartbeat yet';
+
+    $('#rpHero').innerHTML = `
+      <div class="who">
+        <span class="avatar lg ${bad ? 'bad' : ''}" aria-hidden="true">${esc(initials(r.name))}</span>
+        <div style="min-width:0">
+          <div class="line"><span class="pill ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)} live"></span>Orders App ${esc(statusLabel(r.app_status).toLowerCase())}</span><span>${esc(since)}</span><span class="tag ${r.edition === 'free' ? 'free' : 'pro'}">${r.edition === 'free' ? 'FoodUp Free' : 'FoodUp Pro'}</span></div>
+          <div class="line">
+            <span class="with-icon">${icon('store')}${esc(r.code)}</span>
+            ${websiteUrl ? `<a class="with-icon" href="${esc(websiteUrl)}" target="_blank" rel="noopener">${icon('globe')}${esc(r.website)}</a>` : ''}
+            ${r.phone ? `<span class="with-icon">${icon('phone')}${esc(r.phone)}</span>` : ''}
+            ${r.address ? `<span class="with-icon">${icon('pin')}${esc(r.address)}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="beat-box"><div class="mix-title">Orders App · last 60 minutes</div>${beatsHtml(r.beats)}</div>
+      <div class="hero-actions">
+        ${tel ? `<a class="btn btn-secondary" href="${esc(tel)}">${icon('phone')}Call</a>` : ''}
+        ${websiteUrl ? `<a class="btn btn-secondary" href="${esc(websiteUrl)}" target="_blank" rel="noopener">${icon('external')}Website</a>` : ''}
+      </div>`;
+
+    const a = page.analytics;
+    const orders = a ? a.today_totals.orders : (r.orders_today || 0);
+    const revenue = a ? a.today_totals.revenue : (r.revenue_today || 0);
+    const rejected = a ? a.today_totals.rejected : (r.rejected_today || 0);
+    const tiles = [
+      ['Orders today', String(orders), rejected ? `+${rejected} rejected / cancelled` : 'Swiss calendar day', 'receipt', 'accent'],
+      ['Revenue today', money(revenue), 'excl. rejected & refunded', 'trend', 'amber'],
+      ['Avg. order', money(orders ? revenue / orders : 0), 'value today', 'wallet', 'blue'],
+      ['Last order', r.last_order_at ? fmtAgo(r.last_order_at) : 'None yet', r.last_order_at ? fmtDateTime(r.last_order_at) : '—', 'clock', 'blue'],
+      ['Devices', `${r.device_count || 0}`, r.device_count ? 'registered for push' : 'no push device', 'device', r.device_count ? 'green' : 'red'],
+      ['Printer', r.printer_device_id ? 'Assigned' : 'Missing', r.printer_device_id ? `device ${String(r.printer_device_id).slice(0, 8)}…` : 'no printer assigned', 'printer', r.printer_device_id ? 'green' : 'red'],
+    ];
+    $('#rpKpis').innerHTML = tiles.map(([label, value, note, ic, chip]) => `<div class="kpi"><div class="kpi-top"><span class="kpi-label">${esc(label)}</span><span class="icon-chip ${chip}">${icon(ic)}</span></div><div class="kpi-value">${esc(value)}</div><div class="kpi-note">${esc(note)}</div></div>`).join('');
+
+    renderChart(restaurantChartCtx());
+
+    const list = (r.recent_orders || []).map(o => ({ ...o, restaurant_code: r.code, restaurant_name: r.name }));
+    $('#rpOrdersSub').textContent = list.length ? `Latest ${Math.min(25, list.length)} of ${list.length} stored orders` : '';
+    $('#rpOrders').innerHTML = orderRows(list.slice(0, 25), false, true);
+    bindOpeners($('#rpOrders'));
+
+    if (!skipSide) renderRestaurantSide(r);
+  }
+
+  function renderRestaurantSide(r) {
     const modules = r.modules || {};
     const email = r.customer_email_settings || {};
     const failed = Array.isArray(r.failed_delivered_callbacks) ? r.failed_delivered_callbacks : [];
-    const orders = (r.recent_orders || []).slice(0, 8);
-    const stats = [
-      ['receipt', 'accent', 'Orders today', `${r.orders_today || 0}${r.rejected_today ? ` <span class="muted-sm">+${r.rejected_today} rejected</span>` : ''}`],
-      ['trend', 'amber', 'Revenue today', esc(money(r.revenue_today))],
-      ['clock', 'blue', 'Last order', esc(r.last_order_at ? fmtAgo(r.last_order_at) : 'None yet')],
-      ['star', 'accent', 'Edition', r.edition === 'free' ? 'FoodUp Free' : 'FoodUp Pro'],
-      ['device', r.device_count ? 'green' : 'red', 'Devices', `${esc(r.device_count || 0)} registered`],
-      ['printer', r.printer_device_id ? 'green' : 'red', 'Printer', r.printer_device_id ? 'Assigned' : 'Not assigned'],
-    ];
-
-    $('#drawerContent').innerHTML = `
+    const bad = (r.attention_items || []).length > 0;
+    $('#rpSide').innerHTML = `
       ${bad ? `<div class="d-section danger"><div class="d-head"><h3>Needs attention</h3><span class="pill red">${plural(r.attention_items.length, 'issue')}</span></div><div class="d-body"><div class="issue-list" style="margin:0">${r.attention_items.map(i => `<div class="issue ${esc(i.severity)}"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span></div>`).join('')}</div></div></div>` : ''}
-      <div class="d-section"><div class="d-head"><h3>Today</h3><span class="muted-sm">Swiss time</span></div><div class="d-body">
-        <div class="d-stats">${stats.map(([ic, chip, label, value]) => `<div class="d-stat"><span class="icon-chip ${chip}">${icon(ic)}</span><span class="l">${esc(label)}</span><strong>${value}</strong></div>`).join('')}</div>
-        <div style="margin-top:14px"><div class="mix-title">Orders App · last 60 minutes</div>${beatsHtml(r.beats)}</div>
-        ${r.printer_device_id ? `<p class="d-note">Printer device: <span class="num">${esc(r.printer_device_id)}</span></p>` : ''}
-      </div></div>
       <div class="d-section"><div class="d-head"><h3>Restaurant profile</h3><button id="saveProfileBtn" class="btn btn-primary" type="button">Save</button></div><div class="d-body"><div class="edit-grid">
         <div class="field"><label for="editName">Name</label><input id="editName" value="${esc(r.name)}"></div>
         <div class="field"><label for="editWebsite">Website</label><input id="editWebsite" value="${esc(r.website)}" placeholder="restaurant.ch"></div>
@@ -932,22 +1039,24 @@
         <button id="resetPrinterBtn" class="btn btn-secondary" type="button">${icon('printer')}Clear printer</button>
         <button id="resetPinBtn" class="btn btn-secondary" type="button">${icon('key')}Set new owner PIN</button>
       </div></div></div>
-      <div class="d-section"><div class="d-head"><h3>Recent orders</h3><span class="muted-sm">Last ${orders.length}</span></div><div class="d-body">
-        ${orders.length ? `<div class="mini-list">${orders.map(o => { const st = orderStatus(o); return `<button type="button" class="mini-row" data-open-order="${esc(r.code)}|${esc(o.order_id)}"><span><strong>#${esc(o.order_id)}</strong><span class="s">${esc(o.customer_name || '')} · ${esc(fmtAgo(orderDate(o)))}</span></span><span class="r"><span class="pill ${st.cls}">${esc(st.label)}</span><span class="s num"><strong>${esc(money(o.total, o.currency))}</strong></span></span></button>`; }).join('')}</div>` : '<div class="muted-sm">No recent orders.</div>'}
-      </div></div>
       <div class="d-section danger"><div class="d-head"><h3>Danger zone</h3></div><div class="d-body"><p class="d-note" style="margin:0 0 12px">These actions permanently change backend data for this restaurant.</p><div class="actions-row"><button id="clearOrdersBtn" class="btn btn-outline-danger" type="button">${icon('trash')}Clear order history</button><button id="removeRestaurantBtn" class="btn btn-danger" type="button">${icon('trash')}Remove restaurant</button></div></div></div>`;
-    bindDrawerActions();
-    bindOpeners($('#drawerContent'));
+    state.page.dirty = false;
+    bindRestaurantActions();
   }
 
-  function bindDrawerActions() {
-    const code = state.selectedRestaurant.code;
-    const name = state.selectedRestaurant.name;
+  function bindRestaurantActions() {
+    const page = state.page;
+    const code = page.data.code;
+    const name = page.data.name;
+    const side = $('#rpSide');
+    side.oninput = () => { page.dirty = true; };
     const patch = async (body, message) => {
       const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method: 'PATCH', body: JSON.stringify(body) });
-      state.selectedRestaurant = data.restaurant;
+      if (state.page !== page) return;
+      page.data = data.restaurant;
+      page.dirty = false;
       toast(message);
-      renderRestaurantDrawer();
+      renderRestaurantPage();
       refreshAll({ silent: true });
     };
     const busy = (btn, fn) => async () => { btn.disabled = true; try { await fn(); } catch (e) { toast(e.message, 'error'); } finally { btn.disabled = false; } };
@@ -956,43 +1065,47 @@
     const saveModules = $('#saveModulesBtn');
     saveModules.addEventListener('click', busy(saveModules, () => {
       const modules = {};
-      $$('[data-module]', $('#drawerContent')).forEach(input => { modules[input.dataset.module] = input.checked; });
+      $$('[data-module]', side).forEach(input => { modules[input.dataset.module] = input.checked; });
       return patch({ modules }, 'Feature modules updated');
     }));
     const saveEmail = $('#saveCustomerEmailBtn');
     saveEmail.addEventListener('click', busy(saveEmail, () => patch({ customer_email_settings: { resend_enabled: $('#resendEnabledToggle').checked } }, 'Customer email setting updated')));
-    $$('[data-retry-delivered-callback]', $('#drawerContent')).forEach(button => {
+    $$('[data-retry-delivered-callback]', side).forEach(button => {
       button.addEventListener('click', busy(button, async () => {
         const orderId = button.dataset.retryDeliveredCallback;
         const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}/delivered-callbacks/${encodeURIComponent(orderId)}/retry`, { method: 'POST', body: '{}' });
-        state.selectedRestaurant = data.restaurant;
+        if (state.page !== page) return;
+        page.data = data.restaurant;
         toast(`Delivered callback #${orderId} queued for retry`);
-        renderRestaurantDrawer();
+        renderRestaurantPage();
       }));
     });
     $('#resetDevicesBtn').addEventListener('click', () => confirmationModal('Reset Orders devices', `Disconnect all registered Orders App devices for ${name}? They will need to log in again.`, 'Reset devices', async () => {
       await api(`/admin/api/restaurants/${encodeURIComponent(code)}/reset-devices`, { method: 'POST', body: '{}' });
-      toast('Orders devices reset'); refreshAll({ silent: true }); await openRestaurant(code);
+      toast('Orders devices reset'); refreshAll({ silent: true }); await loadRestaurantPage();
     }));
     $('#resetPrinterBtn').addEventListener('click', () => confirmationModal('Clear printer assignment', `Remove the assigned printer device for ${name}?`, 'Clear printer', async () => {
       await api(`/admin/api/restaurants/${encodeURIComponent(code)}/reset-printer`, { method: 'POST', body: '{}' });
-      toast('Printer assignment cleared'); refreshAll({ silent: true }); await openRestaurant(code);
+      toast('Printer assignment cleared'); refreshAll({ silent: true }); await loadRestaurantPage();
     }));
     $('#resetPinBtn').addEventListener('click', () => inputModal('Set new owner PIN', 'Enter a new owner PIN (at least 4 characters). The current PIN is never shown.', 'New owner PIN', value => patch({ owner_pin: value }, 'Owner PIN updated'), 'password'));
     $('#clearOrdersBtn').addEventListener('click', () => typedConfirmation('Clear order history', `This permanently clears the stored FoodUp backend order history for ${name}. Type ${code} to continue.`, code, async () => {
       await api(`/admin/api/restaurants/${encodeURIComponent(code)}/orders`, { method: 'DELETE', body: JSON.stringify({ confirm: code }) });
-      toast('Order history cleared'); refreshAll({ silent: true }); await openRestaurant(code);
+      toast('Order history cleared'); refreshAll({ silent: true }); await loadRestaurantPage({ withAnalytics: true });
     }));
     $('#removeRestaurantBtn').addEventListener('click', () => typedConfirmation('Remove restaurant', `This permanently removes ${name} from FoodUp Control Center and deletes all backend data stored under this restaurant code. Type ${code} to confirm.`, code, async () => {
       await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method: 'DELETE', body: JSON.stringify({ confirm: code }) });
-      closeDrawer(); toast('Restaurant removed'); refreshAll({ silent: true });
+      state.page = null;
+      toast('Restaurant removed');
+      switchView('restaurants');
+      refreshAll({ silent: true });
     }));
   }
 
   function findOrder(code, id) {
     const fromList = state.orders.find(o => o.restaurant_code === code && String(o.order_id) === String(id));
     if (fromList) return fromList;
-    const r = state.selectedRestaurant;
+    const r = state.page?.data;
     if (r && r.code === code) {
       const o = (r.recent_orders || []).find(x => String(x.order_id) === String(id));
       if (o) return { ...o, restaurant_code: code, restaurant_name: r.name };
@@ -1097,7 +1210,7 @@
         await api('/admin/api/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) });
         $('#password').value = '';
         showApp();
-        switchView(state.view, false);
+        route();
         state.firstPaint = true;
         state.countPending = true;
         await refreshAll();
@@ -1119,8 +1232,10 @@
     });
     $('#restaurantSort').addEventListener('change', (e) => { state.restaurantSort = e.target.value; renderRestaurants(); });
     $('#ordersRestaurantFilter').addEventListener('change', renderOrders);
-    $('#drawerClose').addEventListener('click', closeDrawer);
-    $('#drawerBackdrop').addEventListener('click', closeDrawer);
+    $('#drawerClose').addEventListener('click', () => closeDrawer());
+    $('#drawerBackdrop').addEventListener('click', () => closeDrawer());
+    $('#backLink').addEventListener('click', () => switchView('restaurants'));
+    window.addEventListener('popstate', () => { closeDrawer(false); closeModal(); route(); });
     $('#modalClose').addEventListener('click', closeModal);
     $('#modalBackdrop').addEventListener('click', closeModal);
     document.addEventListener('keydown', (e) => {
@@ -1145,7 +1260,7 @@
       const session = await api('/admin/api/session');
       if (!session.authenticated) return showLogin();
       showApp();
-      switchView(state.view, false);
+      route();
       await refreshAll();
     } catch (_) {
       showLogin();
