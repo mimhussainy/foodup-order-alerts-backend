@@ -1,33 +1,118 @@
+/* FoodUp Control Center 3.0 — frontend (no framework, no external icon font) */
 (() => {
+  'use strict';
+
+  const VIEWS = ['overview', 'restaurants', 'orders', 'health'];
+  const TITLES = { overview: 'Overview', restaurants: 'Restaurants', orders: 'Orders', health: 'Health & Alerts' };
+  const REFRESH_MS = 60 * 1000;
+  const ANALYTICS_MS = 5 * 60 * 1000;
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const initialView = location.hash.replace('#', '');
   const state = {
-    view: ['overview','restaurants','orders','health'].includes(location.hash.replace('#','')) ? location.hash.replace('#','') : 'overview',
+    view: VIEWS.includes(initialView) ? initialView : 'overview',
     overview: null,
-    restaurants: [],
+    analytics: null,
     orders: [],
-    health: null,
+    search: '',
+    overviewFilter: 'all',
     restaurantFilter: 'all',
     restaurantSort: 'attention',
-    search: '',
+    orderStatus: 'all',
+    period: 'today',
+    hover: null,
+    drawer: null,
     selectedRestaurant: null,
+    firstPaint: true,
+    countPending: true,
+    chartAnimated: false,
+    lastAnalyticsAt: 0,
+    refreshing: false,
   };
 
+  // ---------- helpers ----------
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-  const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-  const fmtMoney = (value) => `CHF ${Number(value || 0).toFixed(2)}`;
-  const fmtAgo = (value) => {
-    if (!value) return 'Never';
-    const ms = Date.now() - new Date(value).getTime();
-    const min = Math.max(0, Math.floor(ms / 60000));
-    if (min < 1) return 'Just now';
-    if (min < 60) return `${min}m ago`;
-    if (min < 1440) return `${Math.floor(min / 60)}h ago`;
-    return `${Math.floor(min / 1440)}d ago`;
+  const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+  const chf = (n) => {
+    const parts = (Number(n) || 0).toFixed(2).split('.');
+    return parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, '’') + '.' + parts[1];
   };
-  const statusLabel = status => ({ online:'Online', idle:'Idle', offline:'Offline', never:'Never seen', unknown:'Unknown' }[status] || status || 'Unknown');
-  const initials = name => String(name || 'F').split(/\s+/).slice(0,2).map(x => x[0] || '').join('').toUpperCase();
-  const icon = name => `<i class="ti ti-${name}" aria-hidden="true"></i>`;
+  const money = (n, currency = 'CHF') => `${currency || 'CHF'} ${chf(n)}`;
+  const parseTime = (raw) => {
+    if (!raw) return null;
+    const s = String(raw).trim();
+    const dt = new Date(/([zZ]|[+-]\d{2}:?\d{2})$/.test(s) ? s.replace(' ', 'T') : s.replace(' ', 'T'));
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  };
+  const orderDate = (o) => parseTime(o?.received_at) || parseTime(o?.date_created);
+  const fmtAgo = (value) => {
+    const dt = value instanceof Date ? value : parseTime(value);
+    if (!dt) return 'Never';
+    const min = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 60000));
+    if (min < 1) return 'Just now';
+    if (min < 60) return `${min} min ago`;
+    if (min < 1440) return `${Math.floor(min / 60)} h ago`;
+    return `${Math.floor(min / 1440)} d ago`;
+  };
+  const fmtTime = (value) => {
+    const dt = value instanceof Date ? value : parseTime(value);
+    return dt ? dt.toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Zurich' }) : '—';
+  };
+  const fmtDateTime = (value) => {
+    const dt = value instanceof Date ? value : parseTime(value);
+    return dt ? dt.toLocaleString('de-CH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Zurich' }) : '—';
+  };
+  const fmtDuration = (seconds) => {
+    const s = Math.max(0, Number(seconds) || 0);
+    if (s < 3600) return `${Math.floor(s / 60)} min`;
+    if (s < 86400) return `${Math.floor(s / 3600)} h`;
+    return `${Math.floor(s / 86400)} d ${Math.floor((s % 86400) / 3600)} h`;
+  };
+  const statusLabel = s => ({ online: 'Online', idle: 'Idle', offline: 'Offline', never: 'Never seen', unknown: 'Unknown' }[s] || 'Unknown');
+  const initials = name => String(name || 'F').split(/\s+/).filter(Boolean).slice(0, 2).map(x => x[0]).join('').toUpperCase() || 'F';
+  const pctDelta = (now, base) => (base > 0 ? Math.round(((now - base) / base) * 1000) / 10 : null);
+  const deltaText = d => (d === null ? '' : `${d > 0 ? '+' : d < 0 ? '−' : '±'}${Math.abs(d).toFixed(Math.abs(d) < 10 ? 1 : 0)}%`);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const swissDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Zurich', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+  const dayLabel = (day) => { const [y, m, d] = day.split('-'); return `${d}.${m}.${y}`; };
+  const addDays = (day, n) => { const [y, m, d] = day.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
 
+  const ICONS = {
+    dashboard: 'M4 4h6v8H4zM14 4h6v5h-6zM4 16h6v4H4zM14 13h6v7h-6z',
+    store: 'M3 21h18M5 21V10M19 21V10M3 7l2-4h14l2 4M3 7a3 3 0 0 0 6 0a3 3 0 0 0 6 0a3 3 0 0 0 6 0M9 21v-6h6v6',
+    receipt: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h3',
+    pulse: 'M3 12h4l3-7 4 14 3-7h4',
+    logout: 'M14 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-2M9 12h12M18 9l3 3-3 3',
+    search: 'M10 4a6 6 0 1 0 0 12a6 6 0 1 0 0-12zM20 20l-5.6-5.6',
+    refresh: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7',
+    x: 'M6 6l12 12M18 6L6 18',
+    'arrow-right': 'M5 12h14M13 6l6 6-6 6',
+    chevron: 'M9 6l6 6-6 6',
+    alert: 'M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+    check: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM9 12l2 2 4-4',
+    trend: 'M3 17l6-6 4 4 8-8M14 7h7v7',
+    printer: 'M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M17 9V4H7v5M7 13h10v8H7z',
+    device: 'M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM11 18h2',
+    globe: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9s1.3-6.3 3.8-9z',
+    clock: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 7v5l3 2',
+    bike: 'M5.5 14a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7zM18.5 14a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7zM5.5 17.5L9 10h6l3.5 7.5M9 10L7.5 6H5M15 10l-1.5-4H16',
+    bag: 'M6 8h12l-1 12H7zM9 8V6a3 3 0 0 1 6 0v2',
+    table: 'M4 9h16M6 9v10M18 9v10M8 5h8l2 4H6z',
+    phone: 'M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2',
+    user: 'M12 12a4 4 0 1 0 0-8a4 4 0 1 0 0 8zM4 21a8 8 0 0 1 16 0',
+    wallet: 'M3 7h18v12H3zM3 7l3-3h12l3 3M16 13h2',
+    mail: 'M3 6h18v12H3zM3 6l9 7 9-7',
+    key: 'M15 7a4 4 0 1 1-3.9 5H9l-1 1-1-1-1 1-1-1-1 1v-2l5.1-5.1A4 4 0 0 1 15 7zM16 8h.01',
+    plug: 'M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0zM12 16v5',
+    trash: 'M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3',
+    star: 'M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z',
+    note: 'M5 4h14v16H5zM8 8h8M8 12h8M8 16h5',
+  };
+  const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICONS[name] || ''}"></path></svg>`;
+  const hydrateIcons = (root = document) => $$('[data-icon]', root).forEach(el => { if (!el.querySelector('svg')) el.innerHTML = icon(el.dataset.icon); });
+
+  // ---------- API ----------
   async function api(url, options = {}) {
     const response = await fetch(url, {
       credentials: 'same-origin',
@@ -49,21 +134,1012 @@
     node.className = `toast ${type}`;
     node.textContent = message;
     $('#toastContainer').appendChild(node);
-    setTimeout(() => node.remove(), 3200);
+    setTimeout(() => node.remove(), 3400);
   }
 
+  // ---------- sliding segmented control ----------
+  function segmented(el, options, value, onChange) {
+    const sig = options.map(o => `${o.value}:${o.label}:${o.count ?? ''}`).join('|');
+    if (el.dataset.sig !== sig) {
+      el.dataset.sig = sig;
+      el.innerHTML = '<span class="seg-thumb" aria-hidden="true"></span>' + options.map(o => `<button type="button" class="seg-btn" role="tab" data-value="${esc(o.value)}" aria-selected="false">${esc(o.label)}${o.count != null ? `<span class="seg-count">${esc(o.count)}</span>` : ''}</button>`).join('');
+      el.onclick = (event) => {
+        const btn = event.target.closest('.seg-btn');
+        if (!btn || btn.getAttribute('aria-selected') === 'true') return;
+        selectSegment(el, btn.dataset.value);
+        el._onChange?.(btn.dataset.value);
+      };
+      el.dataset.ready = '';
+    }
+    el._onChange = onChange;
+    selectSegment(el, value);
+  }
+  function selectSegment(el, value) {
+    $$('.seg-btn', el).forEach(b => b.setAttribute('aria-selected', String(b.dataset.value === value)));
+    positionThumb(el);
+  }
+  function positionThumb(el) {
+    const thumb = $('.seg-thumb', el);
+    const active = $('.seg-btn[aria-selected="true"]', el);
+    if (!thumb || !active || !active.offsetWidth) return;
+    if (!el.dataset.ready) {
+      thumb.style.transition = 'none';
+      requestAnimationFrame(() => { thumb.style.transition = ''; });
+      el.dataset.ready = '1';
+    }
+    thumb.style.width = `${active.offsetWidth}px`;
+    thumb.style.transform = `translateX(${active.offsetLeft}px)`;
+  }
+  const positionAllThumbs = () => $$('.segmented').forEach(positionThumb);
+
+  // ---------- views ----------
   function showLogin() {
     $('#appView').classList.add('hidden');
     $('#loginView').classList.remove('hidden');
     setTimeout(() => $('#password')?.focus(), 20);
   }
-
   function showApp() {
     $('#loginView').classList.add('hidden');
     $('#appView').classList.remove('hidden');
   }
 
+  function switchView(view, updateUrl = true) {
+    if (!VIEWS.includes(view)) view = 'overview';
+    state.view = view;
+    if (updateUrl) history.replaceState(null, '', `#${view}`);
+    $$('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
+    $$('.nav-item[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
+    $('#pageTitle').textContent = TITLES[view];
+    renderCurrentView();
+    requestAnimationFrame(positionAllThumbs);
+  }
+
+  function renderPageSub() {
+    const s = state.overview?.summary || {};
+    const now = new Date();
+    const date = now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/Zurich' });
+    const text = {
+      overview: `${date} · updated ${fmtTime(now)}`,
+      restaurants: `${plural(s.restaurants || 0, 'restaurant')} connected to FoodUp`,
+      orders: 'Latest 100 orders per restaurant',
+      health: s.issues ? `${plural(s.issues, 'open issue')} across ${plural(s.attention || 0, 'restaurant')}` : 'No open issues',
+    }[state.view];
+    $('#pageSub').textContent = text || '';
+  }
+
+  function renderAll() {
+    renderSidebar();
+    renderOverview();
+    renderRestaurants();
+    renderOrders();
+    renderHealth();
+    renderPageSub();
+  }
+  function renderCurrentView() {
+    if (state.view === 'overview') renderOverview();
+    if (state.view === 'restaurants') renderRestaurants();
+    if (state.view === 'orders') renderOrders();
+    if (state.view === 'health') renderHealth();
+    renderPageSub();
+  }
+
+  // ---------- data ----------
+  async function refreshAll({ silent = false } = {}) {
+    if (state.refreshing) return;
+    state.refreshing = true;
+    const btn = $('#refreshBtn');
+    btn.disabled = true;
+    btn.classList.add('spinning');
+    try {
+      // First load waits for analytics too, so the entrance motion plays once with final numbers.
+      const withAnalytics = !state.analytics;
+      const [overview, orders, analytics] = await Promise.all([
+        api('/admin/api/overview'),
+        api('/admin/api/orders'),
+        withAnalytics ? api('/admin/api/analytics').catch(() => null) : Promise.resolve(null),
+      ]);
+      state.overview = overview;
+      state.orders = orders.orders || [];
+      if (analytics?.analytics) { state.analytics = analytics.analytics; state.lastAnalyticsAt = Date.now(); }
+      setBackendStatus(true);
+      populateRestaurantFilter();
+      renderAll();
+      if (state.firstPaint) startEntranceMotion();
+      const analyticsDue = !withAnalytics && (Date.now() - state.lastAnalyticsAt > ANALYTICS_MS || !silent);
+      if (analyticsDue || !state.analytics) loadAnalytics();
+    } catch (error) {
+      if (error.message !== 'Authentication required') {
+        setBackendStatus(false);
+        if (!silent) toast(error.message, 'error');
+      }
+    } finally {
+      state.refreshing = false;
+      btn.disabled = false;
+      btn.classList.remove('spinning');
+    }
+  }
+
+  async function loadAnalytics() {
+    try {
+      const data = await api('/admin/api/analytics');
+      const first = !state.analytics;
+      state.analytics = data.analytics;
+      state.lastAnalyticsAt = Date.now();
+      renderOverview({ analyticsJustArrived: first });
+    } catch (error) {
+      if (!state.analytics) renderChart();
+    }
+  }
+
+  function setBackendStatus(ok) {
+    const dot = $('#backendDot');
+    dot.className = `status-dot ${ok ? 'online' : 'offline'} live`;
+    $('#backendLabel').textContent = ok ? 'Backend online' : 'Backend unreachable';
+    $('#lastRefresh').textContent = ok ? `Updated ${fmtTime(new Date())} · auto every 60 s` : 'Retrying automatically';
+  }
+
+  let animateTimer = null;
+  function startEntranceMotion() {
+    if (reduceMotion) { state.firstPaint = false; state.countPending = false; return; }
+    document.body.classList.add('cc-animate');
+    runCountUps($('#kpiTiles'));
+    state.countPending = false;
+    clearTimeout(animateTimer);
+    animateTimer = setTimeout(() => {
+      document.body.classList.remove('cc-animate');
+      state.firstPaint = false;
+    }, 2600);
+  }
+
+  function runCountUps(root) {
+    if (!root || reduceMotion) return;
+    $$('[data-count]', root).forEach(el => {
+      const target = Number(el.dataset.count) || 0;
+      const fmt = el.dataset.fmt;
+      const t0 = performance.now();
+      const step = (t) => {
+        const p = Math.min(1, (t - t0) / 1100);
+        const e = 1 - Math.pow(1 - p, 3);
+        el.textContent = fmt === 'chf' ? money(target * e) : String(Math.round(target * e));
+        if (p < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+  }
+
+  const restaurantsList = () => state.overview?.restaurants || [];
+  const restaurantName = (code) => restaurantsList().find(r => r.code === code)?.name || code;
+  const matchesSearch = (text) => !state.search || String(text).toLowerCase().includes(state.search);
+
+  // ---------- sidebar ----------
+  function renderSidebar() {
+    const s = state.overview?.summary || {};
+    const services = state.overview?.services;
+    $('#navRestaurantCount').textContent = s.restaurants || '';
+    $('#navIssueCount').textContent = s.issues || '';
+    if (!services) { $('#servicesBox').innerHTML = ''; return; }
+    const rows = [
+      { name: 'API', meta: `up ${fmtDuration(services.api_uptime_seconds)}`, ok: true },
+      { name: 'Redis', meta: services.redis_ms == null ? 'error' : `${services.redis_ms} ms`, ok: services.redis_ms != null },
+      { name: 'Websites', meta: services.websites_total ? `${services.websites_up}/${services.websites_total} up` : 'no checks', ok: services.websites_up === services.websites_total },
+      { name: 'Callbacks', meta: `${services.callbacks_failed} failed`, ok: !services.callbacks_failed },
+    ];
+    $('#servicesBox').innerHTML = `<div class="services-title">Services</div>` + rows.map(r => `<div class="service-row"><span class="status-dot ${r.ok ? 'online' : 'offline'} live"></span><span class="name">${esc(r.name)}</span><span class="meta">${esc(r.meta)}</span></div>`).join('');
+  }
+
+  // ---------- overview ----------
+  function sparkPath(values, w = 120, h = 36) {
+    if (!values.length) return { line: '', area: '' };
+    const max = Math.max(...values), min = Math.min(...values);
+    const pts = values.map((v, i) => [values.length === 1 ? w : i * w / (values.length - 1), 3 + (1 - (v - min) / ((max - min) || 1)) * (h - 6)]);
+    const line = smoothPath(pts, 1, h - 1);
+    return { line, area: `${line} L${w} ${h} L0 ${h} Z` };
+  }
+  function smoothPath(pts, lo, hi) {
+    const f = q => `${q[0].toFixed(1)} ${q[1].toFixed(1)}`;
+    if (!pts.length) return '';
+    if (pts.length === 1) return `M0 ${pts[0][1].toFixed(1)} L${f(pts[0])}`;
+    let d = `M${f(pts[0])}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+      const c1 = [p1[0] + (p2[0] - p0[0]) / 6, Math.min(hi, Math.max(lo, p1[1] + (p2[1] - p0[1]) / 6))];
+      const c2 = [p2[0] - (p3[0] - p1[0]) / 6, Math.min(hi, Math.max(lo, p2[1] - (p3[1] - p1[1]) / 6))];
+      d += ` C${f(c1)} ${f(c2)} ${f(p2)}`;
+    }
+    return d;
+  }
+
+  function todayFigures() {
+    const s = state.overview?.summary || {};
+    const a = state.analytics;
+    const orders = a ? a.today_totals.orders : (s.orders_today || 0);
+    const revenue = a ? a.today_totals.revenue : (s.revenue_today || 0);
+    const rejected = a ? a.today_totals.rejected : (s.rejected_today || 0);
+    return { orders, revenue, rejected, aov: orders ? revenue / orders : 0 };
+  }
+
+  function comparisonStart() {
+    const a = state.analytics;
+    if (!a) return null;
+    const sinceDay = swissDay(new Date(a.history_since));
+    return dayLabel(addDays(sinceDay, 8));
+  }
+
+  function renderKpis() {
+    const s = state.overview?.summary;
+    if (!s) return;
+    const a = state.analytics;
+    const t = todayFigures();
+    const counting = state.countPending && !reduceMotion;
+    const canCompare = !!(a && a.last_week_complete);
+    const base = a?.same_time_last_week || { orders: 0, revenue: 0 };
+    const dOrders = canCompare ? pctDelta(t.orders, base.orders) : null;
+    const dRevenue = canCompare ? pctDelta(t.revenue, base.revenue) : null;
+    const baseAov = base.orders ? base.revenue / base.orders : 0;
+    const dAov = canCompare && baseAov ? pctDelta(t.aov, baseAov) : null;
+    const lastWeekLabel = a ? `${a.last_week_label}` : 'last week';
+    const compareNote = canCompare
+      ? `vs ${base.orders} at this time on ${lastWeekLabel}`
+      : (a ? `Comparison with last week from ${comparisonStart()}` : 'Loading trend…');
+    const badge = (d) => (d === null ? '' : `<span class="pill ${d >= 0 ? 'green' : 'amber'}">${deltaText(d)}</span>`);
+
+    const daily = a?.daily || [];
+    const so = sparkPath(daily.map(d => d.orders));
+    const sr = sparkPath(daily.map(d => d.revenue));
+    const aovs = daily.map(d => (d.orders ? d.revenue / d.orders : 0));
+    const aovMax = Math.max(1, ...aovs);
+    const total = s.restaurants || 0;
+    const online = s.online || 0, idle = s.idle || 0, offline = Math.max(0, total - online - idle);
+    const pOn = total ? (online / total) * 100 : 0;
+    const pIdle = total ? ((online + idle) / total) * 100 : 0;
+    const critical = s.critical || 0, warnings = s.warnings || 0;
+    const sevSegments = [...Array(Math.min(critical, 8)).fill('critical'), ...Array(Math.min(warnings, Math.max(0, 8 - critical))).fill('warning')];
+    const affected = restaurantsList().filter(r => (r.attention_items || []).length).map(r => r.name);
+    const valueOrders = counting ? '0' : String(t.orders);
+    const valueRevenue = counting ? money(0) : money(t.revenue);
+
+    $('#kpiTiles').innerHTML = `
+      <div class="kpi anim-rise" style="--d:0ms">
+        <div class="kpi-top"><span class="kpi-label">Orders today</span>${badge(dOrders)}</div>
+        <div class="kpi-value" data-count="${t.orders}">${valueOrders}</div>
+        <svg class="kpi-spark" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"><path d="${so.area}" fill="var(--accent)" fill-opacity=".08"></path><path class="anim-draw" pathLength="1" d="${so.line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>
+        <div class="kpi-note">${esc(compareNote)}</div>
+      </div>
+      <div class="kpi anim-rise" style="--d:70ms">
+        <div class="kpi-top"><span class="kpi-label">Revenue today</span>${badge(dRevenue)}</div>
+        <div class="kpi-value" data-count="${t.revenue}" data-fmt="chf">${valueRevenue}</div>
+        <svg class="kpi-spark" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"><path d="${sr.area}" fill="var(--amber)" fill-opacity=".1"></path><path class="anim-draw" pathLength="1" d="${sr.line}" fill="none" stroke="var(--amber)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>
+        <div class="kpi-note">excl. rejected, cancelled &amp; refunded</div>
+      </div>
+      <div class="kpi anim-rise" style="--d:140ms">
+        <div class="kpi-top"><span class="kpi-label">Avg. order value</span>${dAov === null ? '' : `<span class="pill amber">${deltaText(dAov)}</span>`}</div>
+        <div class="kpi-value">${esc(money(t.aov))}</div>
+        <div class="kpi-bars" aria-hidden="true">${aovs.map((v, i) => `<span class="anim-bar ${i === aovs.length - 1 ? 'now' : ''}" style="height:${Math.round(18 + 82 * (v / aovMax))}%;--d:${300 + i * 60}ms"></span>`).join('')}</div>
+        <div class="kpi-note">last 7 days</div>
+      </div>
+      <div class="kpi kpi-ring anim-rise" style="--d:210ms">
+        <svg viewBox="0 0 36 36" role="img" aria-label="${online} of ${total} restaurants online">
+          <circle cx="18" cy="18" r="15.5" fill="none" stroke="#eef0f4" stroke-width="4"></circle>
+          ${offline ? '<circle class="anim-ring" cx="18" cy="18" r="15.5" fill="none" stroke="var(--red)" stroke-width="4" pathLength="100" stroke-dasharray="100 100"></circle>' : ''}
+          ${idle ? `<circle class="anim-ring" cx="18" cy="18" r="15.5" fill="none" stroke="var(--amber)" stroke-width="4" pathLength="100" stroke-dasharray="${pIdle.toFixed(1)} 100"></circle>` : ''}
+          ${online ? `<circle class="anim-ring" cx="18" cy="18" r="15.5" fill="none" stroke="var(--green)" stroke-width="4" pathLength="100" stroke-dasharray="${pOn.toFixed(1)} 100"></circle>` : ''}
+        </svg>
+        <div>
+          <div class="kpi-label">Orders App</div>
+          <div class="kpi-value" style="margin-top:2px">${online}<small> / ${total} online</small></div>
+          <div class="legend-col">
+            ${idle ? `<span class="legend-item"><span class="legend-sw" style="background:var(--amber)"></span>${idle} idle</span>` : ''}
+            ${offline ? `<span class="legend-item"><span class="legend-sw" style="background:var(--red)"></span>${offline} offline</span>` : ''}
+            ${!idle && !offline ? '<span class="legend-item"><span class="legend-sw" style="background:var(--green)"></span>All online</span>' : ''}
+          </div>
+        </div>
+      </div>
+      <div class="kpi ${s.issues ? 'alert' : ''} anim-rise" style="--d:280ms">
+        <div class="kpi-top"><span class="kpi-label">Open issues</span><span class="icon-chip ${s.issues ? 'red' : 'green'}">${icon(s.issues ? 'alert' : 'check')}</span></div>
+        <div class="kpi-value ${s.issues ? 'red' : ''}">${s.issues || 0}</div>
+        <div class="sev-bar" aria-hidden="true">${(sevSegments.length ? sevSegments : ['', '', '']).map(c => `<span class="${c}"></span>`).join('')}</div>
+        <div class="kpi-note">${s.issues ? `${critical} critical · ${warnings} warning${warnings === 1 ? '' : 's'}${affected.length ? ' · ' + esc(affected.slice(0, 2).join(', ')) : ''}` : 'All restaurants healthy'}</div>
+      </div>`;
+  }
+
+  function renderOverview(opts = {}) {
+    if (!state.overview) return;
+    renderKpis();
+    renderChart(opts.analyticsJustArrived);
+    renderShareAndMix();
+
+    const all = restaurantsList();
+    segmented($('#overviewFilter'), [
+      { value: 'all', label: 'All', count: all.length },
+      { value: 'online', label: 'Online', count: all.filter(r => r.app_status === 'online').length },
+      { value: 'attention', label: 'Needs attention', count: all.filter(r => (r.attention || []).length).length },
+    ], state.overviewFilter, v => { state.overviewFilter = v; renderOverviewRestaurants(); });
+    renderOverviewRestaurants();
+    renderAttention();
+    $('#overviewOrders').innerHTML = orderRows(filteredOrders().slice(0, 6), true);
+    bindOpeners($('#view-overview'));
+  }
+
+  function restaurantFilterFn(filter) {
+    return r => (filter === 'online' ? r.app_status === 'online' : filter === 'attention' ? (r.attention || []).length > 0 : true);
+  }
+
+  function beatsHtml(beats) {
+    const list = (beats && beats.length ? beats : Array(12).fill('n')).slice(-12);
+    const names = { g: 'online', a: 'idle', r: 'offline', n: 'no data' };
+    const aria = `Orders App last 60 minutes: ${list.map(b => names[b] || 'no data').join(', ')}`;
+    return `<span class="beats"><span class="beat-row" role="img" aria-label="${esc(aria)}">${list.map((b, i) => `<span class="${esc(b)} anim-bar" style="--d:${600 + i * 25}ms" title="${(60 - i * 5)}–${(55 - i * 5)} min ago · ${names[b] || 'no data'}"></span>`).join('')}</span><span class="beat-scale"><span>60 min</span><span>now</span></span></span>`;
+  }
+
+  function restaurantRow(r, full) {
+    const bad = (r.attention || []).length > 0;
+    const seen = r.app_minutes_ago != null ? (r.app_minutes_ago < 1 ? 'Just now' : `${r.app_minutes_ago} min ago`) : 'No heartbeat yet';
+    const features = full ? `<span class="feature-badges">${Object.entries(MODULE_SHORT).map(([key, label]) => `<span class="feature-badge ${r.modules?.[key] ? 'on' : ''}">${label}</span>`).join('')}</span>` : '';
+    return `<button class="gt-row" type="button" data-open-restaurant="${esc(r.code)}">
+      <span class="cell-main"><span class="avatar ${bad ? 'bad' : ''}" aria-hidden="true">${esc(initials(r.name))}</span><span style="min-width:0"><span class="t">${esc(r.name)}</span><span class="s">${esc(r.code)} · ${plural(r.device_count || 0, 'device')}</span></span></span>
+      <span class="cell-stack"><span class="pill ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)} ${r.app_status === 'online' || r.app_status === 'offline' ? 'live' : ''}"></span>${esc(statusLabel(r.app_status))}</span><span class="s">${esc(seen)}</span></span>
+      ${beatsHtml(r.beats)}
+      ${features}
+      <span><span class="tag ${r.edition === 'free' ? 'free' : 'pro'}">${r.edition === 'free' ? 'Free' : 'Pro'}</span></span>
+      <span class="right strong num">${esc(r.orders_today || 0)}</span>
+      <span class="right num">${esc(money(r.revenue_today))}</span>
+      ${full ? `<span class="with-icon ${r.printer_device_id ? '' : 'printer-missing'}">${icon('printer')}${r.printer_device_id ? 'Assigned' : 'Not assigned'}</span>` : ''}
+      <span class="chev">${icon('chevron')}</span>
+    </button>`;
+  }
+
+  function restaurantHead(full) {
+    return `<div class="gt-head"><span>Restaurant</span><span>Orders App</span><span>Last 60 min</span>${full ? '<span>Features</span>' : ''}<span>Edition</span><span class="right">Orders</span><span class="right">Revenue</span>${full ? '<span>Printer</span>' : ''}<span></span></div>`;
+  }
+
+  function renderOverviewRestaurants() {
+    const list = restaurantsList()
+      .filter(restaurantFilterFn(state.overviewFilter))
+      .filter(r => matchesSearch(`${r.name} ${r.code} ${r.website}`))
+      .sort(byAttention);
+    $('#overviewRestaurants').innerHTML = restaurantHead(false) + (list.length ? list.map(r => restaurantRow(r, false)).join('') : '<div class="empty-box">No restaurants match this filter.</div>');
+    bindOpeners($('#overviewRestaurants'));
+  }
+
+  function byAttention(a, b) {
+    const crit = r => (r.attention_items || []).filter(i => i.severity === 'critical').length;
+    return crit(b) - crit(a) || (b.attention?.length || 0) - (a.attention?.length || 0) || String(a.name).localeCompare(String(b.name));
+  }
+
+  function renderAttention() {
+    const all = restaurantsList();
+    const list = all.filter(r => (r.attention_items || []).length).filter(r => matchesSearch(`${r.name} ${r.code} ${(r.attention || []).join(' ')}`)).sort(byAttention);
+    const healthy = all.length - all.filter(r => (r.attention_items || []).length).length;
+    const items = list.map(r => {
+      const issues = [...r.attention_items].sort((x, y) => (x.severity === 'critical' ? -1 : 1) - (y.severity === 'critical' ? -1 : 1));
+      const since = r.app_status === 'offline' && r.app_minutes_ago != null ? `${statusLabel(r.app_status)} for ${r.app_minutes_ago} min` : statusLabel(r.app_status);
+      return `<div class="att-item">
+        <div class="att-head"><span class="avatar bad" aria-hidden="true">${esc(initials(r.name))}</span><span><span class="t">${esc(r.name)}</span><span class="s">${esc(since)}</span></span></div>
+        <div class="issue-list">${issues.map((i, idx) => `<div class="issue ${esc(i.severity)} anim-fade" style="--d:${700 + idx * 90}ms"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span></div>`).join('')}</div>
+        <div class="att-actions"><button class="btn btn-primary" type="button" data-open-restaurant="${esc(r.code)}">Open restaurant</button>${r.phone ? `<a class="btn btn-secondary" href="tel:${esc(String(r.phone).replace(/[^+\d]/g, ''))}">${icon('phone')}Call</a>` : ''}</div>
+      </div>`;
+    }).join('');
+    const footer = list.length
+      ? (healthy ? `<div class="healthy-line">${icon('check')}${plural(healthy, 'other restaurant')} healthy</div>` : '')
+      : `<div class="healthy-line">${icon('check')}All ${plural(all.length, 'restaurant')} healthy</div>`;
+    $('#attentionList').innerHTML = items + footer;
+  }
+
+  // ---------- chart ----------
+  function renderChart(animate) {
+    const a = state.analytics;
+    const sub = $('#chartSub');
+    segmented($('#periodSwitch'), [{ value: 'today', label: 'Today' }, { value: 'week', label: '7 days' }], state.period, v => {
+      state.period = v; state.hover = null; renderChart(true);
+    });
+    if (!a) {
+      sub.textContent = 'Loading…';
+      $('#chartBody').innerHTML = '<div class="loading-box" style="height:256px;display:grid;place-items:center">Loading chart…</div>';
+      $('#chartStats').innerHTML = '';
+      return;
+    }
+    const replay = animate || !state.chartAnimated;
+    state.chartAnimated = true;
+    if (state.period === 'week') renderWeekChart(a, replay); else renderTodayChart(a, replay);
+  }
+
+  function hourRange(a) {
+    const today = a.hourly.today, lw = a.hourly.last_week;
+    let start = 10, end = 22;
+    for (let h = 0; h < 24; h++) {
+      if (today[h] || lw[h]) { start = Math.min(start, h); end = Math.max(end, h); }
+    }
+    start = Math.min(start, a.now_hour);
+    end = Math.max(end, a.now_hour);
+    if (end - start < 6) end = Math.min(23, start + 6);
+    return { start, end, n: end - start + 1 };
+  }
+
+  function renderTodayChart(a, replay) {
+    const { start, end, n } = hourRange(a);
+    const today = a.hourly.today.slice(start, a.now_hour + 1);
+    const lw = a.hourly.last_week.slice(start, end + 1);
+    const showLast = lw.some(Boolean);
+    const max = Math.max(4, ...today, ...(showLast ? lw : []));
+    const stepY = Math.ceil(max / 4);
+    const maxV = stepY * 4;
+    const CW = 720, top = 10, base = 190;
+    const X = i => (n === 1 ? 0 : i * CW / (n - 1));
+    const Y = v => base - (v / maxV) * (base - top);
+    const pct = y => `${(y / 200 * 100).toFixed(2)}%`;
+    const step = 100 / (n - 1);
+    const tPts = today.map((v, i) => [X(i), Y(v)]);
+    const todayLine = smoothPath(tPts, top, base);
+    const todayArea = tPts.length ? `${todayLine} L${X(tPts.length - 1).toFixed(1)} ${base} L0 ${base} Z` : '';
+    const lastLine = showLast ? smoothPath(lw.map((v, i) => [X(i), Y(v)]), top, base) : '';
+    const nowLeft = ((a.now_hour - start) + a.now_minute / 60) * step;
+    const last = tPts[tPts.length - 1];
+
+    $('#chartSub').textContent = showLast ? `Per hour · today vs ${a.last_week_label}${a.last_week_complete ? '' : ' (partial)'}` : 'Per hour · today';
+    $('#chartBody').innerHTML = `
+      <div class="chart-legend"><span class="legend-item"><span class="line-sw"></span>Today</span>${showLast ? `<span class="legend-item"><span class="dash-sw"></span>${esc(a.last_week_label)}</span>` : ''}</div>
+      <div class="chart-area" id="chartArea">
+        ${[4, 3, 2, 1, 0].map(g => `<div class="chart-grid-line" style="top:${pct(Y(g * stepY))}"></div><span class="chart-y" style="top:${pct(Y(g * stepY))}">${g * stepY}</span>`).join('')}
+        <div class="chart-now" style="left:${Math.min(100, nowLeft).toFixed(2)}%"><span>now</span></div>
+        <svg class="chart-svg" viewBox="0 0 720 200" preserveAspectRatio="none" role="img" aria-label="Orders per hour today${showLast ? ' compared with ' + esc(a.last_week_label) : ''}">
+          ${showLast ? `<path class="${replay ? 'replay-fade' : ''}" d="${lastLine}" fill="none" stroke="#a4aab5" stroke-width="2" stroke-dasharray="5 5" vector-effect="non-scaling-stroke"></path>` : ''}
+          <path class="${replay ? 'replay-fade' : ''}" d="${todayArea}" fill="var(--accent)" fill-opacity=".09"></path>
+          <path class="anim-draw ${replay ? 'replay' : ''}" pathLength="1" d="${todayLine}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+        </svg>
+        ${last ? `<span class="chart-end status-dot accent live" style="left:${(X(tPts.length - 1) / CW * 100).toFixed(2)}%;top:${pct(last[1])}"></span>` : ''}
+        <div class="chart-hit" style="left:${(-step / 2).toFixed(3)}%;width:${(100 + step).toFixed(3)}%">
+          ${Array.from({ length: n }, (_, i) => `<button type="button" data-hour="${i}" aria-label="${start + i}:00, today ${i < today.length ? today[i] : 'no data yet'}${showLast ? ', ' + esc(a.last_week_label) + ' ' + lw[i] : ''}"></button>`).join('')}
+        </div>
+        <div id="chartTip"></div>
+      </div>
+      <div class="chart-x">${Array.from({ length: n }, (_, i) => i).filter(i => n <= 9 || i % 2 === 0 || i === n - 1).map(i => `<span style="left:${(i * step).toFixed(3)}%">${start + i}:00</span>`).join('')}</div>
+      ${!a.last_week_complete ? `<div class="chart-note">${icon('clock')}History is being collected since ${esc(fmtDateTime(a.history_since))}. Full comparison with last week from ${esc(comparisonStart())}.</div>` : ''}`;
+
+    const hit = $('.chart-hit', $('#chartBody'));
+    const renderTip = () => {
+      const tipEl = $('#chartTip');
+      const h = state.hover;
+      if (h === null || h === undefined) { tipEl.innerHTML = ''; return; }
+      const hasToday = h < today.length;
+      const left = h * step;
+      const right = left > 62;
+      tipEl.innerHTML = `
+        <div class="chart-guide" style="left:${left.toFixed(3)}%"></div>
+        ${showLast ? `<span class="chart-dot ghost" style="left:${left.toFixed(3)}%;top:${pct(Y(lw[h]))}"></span>` : ''}
+        ${hasToday ? `<span class="chart-dot" style="left:${left.toFixed(3)}%;top:${pct(Y(today[h]))}"></span>` : ''}
+        <div class="chart-tip" style="left:${left.toFixed(3)}%;transform:translateX(${right ? 'calc(-100% - 12px)' : '12px'})">
+          <strong>${start + h}:00 – ${start + h + 1}:00</strong>
+          <div><span>Today</span><b class="num">${hasToday ? plural(today[h], 'order') : '—'}</b></div>
+          ${hasToday ? `<div><span>Revenue</span><b class="num">${esc(money(a.hourly.today_revenue[start + h]))}</b></div>` : ''}
+          ${showLast ? `<div><span>${esc(a.last_week_label)}</span><b class="num">${plural(lw[h], 'order')}</b></div>` : ''}
+        </div>`;
+    };
+    hit.addEventListener('mouseover', e => { const b = e.target.closest('button[data-hour]'); if (!b) return; state.hover = Number(b.dataset.hour); renderTip(); });
+    hit.addEventListener('focusin', e => { const b = e.target.closest('button[data-hour]'); if (!b) return; state.hover = Number(b.dataset.hour); renderTip(); });
+    hit.addEventListener('mouseleave', () => { state.hover = null; renderTip(); });
+    hit.addEventListener('focusout', () => { state.hover = null; renderTip(); });
+    renderTip();
+
+    const peakIdx = today.reduce((best, v, i) => (v > today[best] ? i : best), 0);
+    const busiest = (a.restaurants || []).slice().sort((x, y) => y.orders - x.orders)[0];
+    $('#chartStats').innerHTML = [
+      ['Peak hour', today.length && today[peakIdx] ? `${start + peakIdx}:00 · ${plural(today[peakIdx], 'order')}` : '—'],
+      ['Busiest restaurant', busiest && busiest.orders ? `${restaurantName(busiest.code)} · ${busiest.orders}` : '—'],
+      ['Rejected / cancelled today', `${a.today_totals.rejected}${a.today_totals.rejected ? ' · ' + money(a.today_totals.rejected_revenue) : ''}`],
+    ].map(([l, v]) => `<div><div class="label">${esc(l)}</div><div class="value">${esc(v)}</div></div>`).join('');
+  }
+
+  function renderWeekChart(a, replay) {
+    const days = a.daily || [];
+    const max = Math.max(1, ...days.map(d => d.orders));
+    const anyPartial = days.some((d, i) => !d.complete && i < days.length - 1);
+    $('#chartSub').textContent = 'Per day · last 7 days';
+    $('#chartBody').innerHTML = `
+      <div class="chart-legend"><span class="legend-item"><span class="box-sw"></span>Orders per day</span><span class="legend-item"><span class="box-sw soft"></span>Today so far</span></div>
+      <div class="week-bars">${days.map((d, i) => {
+        const isToday = i === days.length - 1;
+        const cls = isToday ? 'today' : (!d.complete ? 'partial' : '');
+        return `<div class="week-col" title="${esc(d.label)} · ${plural(d.orders, 'order')} · ${esc(money(d.revenue))}${!d.complete && !isToday ? ' · partial history' : ''}"><span class="v ${replay ? 'replay-fade' : ''}">${d.orders}</span><span class="bar ${cls} ${replay ? 'replay-bar' : ''}" style="height:${(d.orders / max * 86).toFixed(1)}%;--d:${i * 70}ms"></span></div>`;
+      }).join('')}</div>
+      <div class="week-labels">${days.map((d, i) => `<span class="${i === days.length - 1 ? 'today' : ''}">${esc(d.label)}</span>`).join('')}</div>
+      ${anyPartial ? `<div class="chart-note">${icon('clock')}Striped days are partial: history is collected since ${esc(fmtDateTime(a.history_since))}.</div>` : ''}`;
+    const complete = days.slice(0, -1).filter(d => d.complete);
+    const best = days.slice().sort((x, y) => y.orders - x.orders)[0];
+    const total = days.reduce((sum, d) => sum + d.orders, 0);
+    const revenue = days.reduce((sum, d) => sum + d.revenue, 0);
+    $('#chartStats').innerHTML = [
+      ['Orders in 7 days', `${total} · ${money(revenue)}`],
+      ['Best day', best && best.orders ? `${best.label} · ${plural(best.orders, 'order')}` : '—'],
+      ['Avg. per full day', complete.length ? `${Math.round(complete.reduce((s, d) => s + d.orders, 0) / complete.length)} orders` : 'Collecting…'],
+    ].map(([l, v]) => `<div><div class="label">${esc(l)}</div><div class="value">${esc(v)}</div></div>`).join('');
+  }
+
+  // ---------- share + mix ----------
+  const SHADES = ['var(--accent)', 'var(--accent-2)', 'var(--accent-3)', 'var(--accent-4)'];
+  function renderShareAndMix() {
+    const a = state.analytics;
+    const source = a ? a.restaurants.map(r => ({ code: r.code, revenue: r.revenue, orders: r.orders }))
+      : restaurantsList().map(r => ({ code: r.code, revenue: r.revenue_today || 0, orders: r.orders_today || 0 }));
+    const total = source.reduce((s, r) => s + r.revenue, 0);
+    const max = Math.max(0, ...source.map(r => r.revenue));
+    const sorted = source.slice().sort((x, y) => y.revenue - x.revenue);
+    $('#revenueShare').innerHTML = total > 0 ? sorted.map((r, i) => `
+      <div class="share-row">
+        <div class="top"><span>${esc(restaurantName(r.code))}</span><span class="num"><strong>${esc(money(r.revenue))}</strong> <span class="muted-sm">· ${Math.round(r.revenue / total * 100)}%</span></span></div>
+        <div class="track"><div class="anim-width" style="width:${(r.revenue / max * 100).toFixed(1)}%;background:${SHADES[Math.min(i, SHADES.length - 1)]};--d:${500 + i * 90}ms"></div></div>
+      </div>`).join('') : '<div class="empty-box">No revenue yet today.</div>';
+
+    if (!a) { $('#orderMix').innerHTML = '<div class="empty-box">Loading…</div>'; return; }
+    const F = { delivery: 'Delivery', pickup: 'Pickup', dine_in: 'Dine-in', unknown: 'Unknown' };
+    const groups = [
+      { title: 'Fulfilment', data: Object.entries(a.mix.fulfillment || {}).map(([key, v]) => [F[key] || key, v]) },
+      { title: 'Payment', data: Object.entries(a.mix.payment || {}) },
+    ];
+    const anyOrders = groups[0].data.some(([, v]) => v > 0);
+    $('#orderMix').innerHTML = anyOrders ? groups.map((g, gi) => {
+      const sum = g.data.reduce((s, [, v]) => s + v, 0) || 1;
+      const parts = g.data.sort((x, y) => y[1] - x[1]);
+      return `<div class="mix-block">
+        <div class="mix-title">${esc(g.title)}</div>
+        <div class="stack-bar" aria-hidden="true">${parts.map(([, v], i) => `<span class="anim-width" style="width:${(v / sum * 100).toFixed(1)}%;background:${SHADES[Math.min(i, SHADES.length - 1)]};--d:${600 + gi * 150 + i * 80}ms"></span>`).join('')}</div>
+        <div class="mix-legend">${parts.map(([label, v], i) => `<span><span class="legend-sw" style="background:${SHADES[Math.min(i, SHADES.length - 1)]}"></span>${esc(label)} <strong>${v}</strong></span>`).join('')}</div>
+      </div>`;
+    }).join('') : '<div class="empty-box">No orders yet today.</div>';
+  }
+
+  // ---------- orders ----------
+  const ORDER_STATUS = {
+    pending: ['Pending', 'amber'], processing: ['Processing', 'blue'], 'on-hold': ['On hold', 'amber'],
+    completed: ['Completed', 'green'], cancelled: ['Cancelled', 'red'], canceled: ['Cancelled', 'red'],
+    refunded: ['Refunded', 'grey'], failed: ['Failed', 'red'], delivered: ['Delivered', 'green'],
+  };
+  function orderStatus(o) {
+    if (o.rejected) return { label: 'Rejected', cls: 'red', group: 'void' };
+    const s = String(o.status || '').toLowerCase().replace(/^wc-/, '');
+    const [label, cls] = ORDER_STATUS[s] || [s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, ' ') : '—', 'grey'];
+    const group = ['cancelled', 'canceled', 'refunded', 'failed'].includes(s) ? 'void' : ['completed', 'delivered'].includes(s) ? 'done' : 'active';
+    return { label, cls, group };
+  }
+  function fulfillment(o) {
+    const f = String(o.fulfillment_type || '').toLowerCase();
+    if (f === 'delivery') return ['Delivery', 'bike'];
+    if (f === 'pickup') return ['Pickup', 'bag'];
+    if (f === 'dine_in') return ['Dine-in', 'table'];
+    const m = o.shipping?.method || o.shipping_method || '';
+    return [m || '—', 'bag'];
+  }
+  function filteredOrders() {
+    const code = $('#ordersRestaurantFilter')?.value || 'all';
+    return state.orders.filter(o => code === 'all' || state.view !== 'orders' || o.restaurant_code === code);
+  }
+  function orderRows(list, isOverview) {
+    const head = '<div class="gt-head"><span>Order</span><span>Restaurant</span><span>Customer</span><span>Type</span><span>Payment</span><span>Status</span><span class="right">Total</span><span class="right">Time</span></div>';
+    if (!list.length) return head + '<div class="empty-box">No orders found.</div>';
+    return head + list.map((o, i) => {
+      const st = orderStatus(o);
+      const [type, typeIcon] = fulfillment(o);
+      const fresh = isOverview && i === 0 && state.firstPaint;
+      return `<button class="gt-row ${fresh ? 'new' : ''}" type="button" data-open-order="${esc(o.restaurant_code)}|${esc(o.order_id)}">
+        <span class="strong num">#${esc(o.order_id)}</span>
+        <span>${esc(o.restaurant_name)}</span>
+        <span class="cell-stack"><span class="strong">${esc(o.customer_name || '—')}</span>${o.customer_phone ? `<span class="s">${esc(o.customer_phone)}</span>` : ''}</span>
+        <span class="with-icon">${icon(typeIcon)}${esc(type)}</span>
+        <span>${esc(o.payment_method || '—')}</span>
+        <span><span class="pill ${st.cls}">${esc(st.label)}</span></span>
+        <span class="right strong num">${esc(money(o.total, o.currency))}</span>
+        <span class="right muted-sm">${esc(fmtAgo(orderDate(o)))}</span>
+      </button>`;
+    }).join('');
+  }
+
+  function populateRestaurantFilter() {
+    const select = $('#ordersRestaurantFilter');
+    const current = select.value;
+    select.innerHTML = '<option value="all">All restaurants</option>' + restaurantsList().slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).map(r => `<option value="${esc(r.code)}">${esc(r.name)}</option>`).join('');
+    if ([...select.options].some(o => o.value === current)) select.value = current;
+  }
+
+  function renderOrders() {
+    const code = $('#ordersRestaurantFilter').value || 'all';
+    let list = state.orders.filter(o => code === 'all' || o.restaurant_code === code);
+    if (state.search) list = list.filter(o => matchesSearch(`${o.order_id} ${o.restaurant_name} ${o.customer_name} ${o.customer_phone} ${o.status} ${o.payment_method}`));
+    const counts = { all: list.length, active: 0, done: 0, void: 0 };
+    list.forEach(o => { counts[orderStatus(o).group] += 1; });
+    segmented($('#orderStatusFilter'), [
+      { value: 'all', label: 'All', count: counts.all },
+      { value: 'active', label: 'Active', count: counts.active },
+      { value: 'done', label: 'Completed', count: counts.done },
+      { value: 'void', label: 'Rejected & cancelled', count: counts.void },
+    ], state.orderStatus, v => { state.orderStatus = v; renderOrders(); });
+    if (state.orderStatus !== 'all') list = list.filter(o => orderStatus(o).group === state.orderStatus);
+    $('#ordersCount').textContent = `${list.length} shown`;
+    $('#ordersTable').innerHTML = orderRows(list, false);
+    bindOpeners($('#ordersTable'));
+  }
+
+  // ---------- restaurants view ----------
+  const MODULE_SHORT = { website_ordering: 'Web', orders_app: 'Orders', courier: 'Courier', customer_app: 'App', online_payments: 'Pay', auto_handling: 'Auto', printing: 'Print' };
+  function renderRestaurants() {
+    if (!state.overview) return;
+    const all = restaurantsList();
+    segmented($('#restaurantFilter'), [
+      { value: 'all', label: 'All', count: all.length },
+      { value: 'online', label: 'Online', count: all.filter(r => r.app_status === 'online').length },
+      { value: 'attention', label: 'Needs attention', count: all.filter(r => (r.attention || []).length).length },
+    ], state.restaurantFilter, v => { state.restaurantFilter = v; renderRestaurants(); });
+    let list = all.filter(restaurantFilterFn(state.restaurantFilter)).filter(r => matchesSearch(`${r.name} ${r.code} ${r.website} ${(r.attention || []).join(' ')}`));
+    list.sort((a, b) => {
+      if (state.restaurantSort === 'name') return String(a.name).localeCompare(String(b.name));
+      if (state.restaurantSort === 'orders') return (b.orders_today || 0) - (a.orders_today || 0);
+      if (state.restaurantSort === 'revenue') return (b.revenue_today || 0) - (a.revenue_today || 0);
+      return byAttention(a, b);
+    });
+    $('#restaurantsTable').innerHTML = restaurantHead(true) + (list.length ? list.map(r => restaurantRow(r, true)).join('') : '<div class="empty-box">No restaurants match your filters.</div>');
+    bindOpeners($('#restaurantsTable'));
+  }
+
+  // ---------- health ----------
+  function renderHealth() {
+    if (!state.overview) return;
+    const all = restaurantsList();
+    const s = state.overview.summary || {};
+    const services = state.overview.services || {};
+    const sites = all.filter(r => r.website_health?.status);
+    const down = sites.filter(r => r.website_health.status === 'down').length;
+    const upSites = sites.filter(r => r.website_health.status !== 'down');
+    const avgMs = upSites.length ? Math.round(upSites.reduce((sum, r) => sum + Number(r.website_health.response_ms || 0), 0) / upSites.length) : null;
+    const tiles = [
+      { label: 'Critical issues', value: s.critical || 0, note: s.critical ? 'Needs action now' : 'None', chip: s.critical ? 'red' : 'green', ic: s.critical ? 'alert' : 'check' },
+      { label: 'Warnings', value: s.warnings || 0, note: s.warnings ? 'Check when possible' : 'None', chip: s.warnings ? 'amber' : 'green', ic: s.warnings ? 'alert' : 'check' },
+      { label: 'Orders App online', value: `${s.online || 0}<small> / ${s.restaurants || 0}</small>`, note: `${s.idle || 0} idle · ${s.offline || 0} offline`, chip: s.offline ? 'red' : 'green', ic: 'device', raw: true },
+      { label: 'Websites up', value: `${sites.length - down}<small> / ${sites.length}</small>`, note: avgMs != null ? `avg. response ${avgMs} ms` : 'No checks yet', chip: down ? 'red' : 'green', ic: 'globe', raw: true },
+      { label: 'Failed callbacks', value: services.callbacks_failed || 0, note: services.callbacks_failed ? 'Retry in the restaurant panel' : 'Delivered status synced', chip: services.callbacks_failed ? 'amber' : 'green', ic: 'plug' },
+    ];
+    $('#healthSummary').innerHTML = tiles.map(t => `<div class="kpi"><div class="kpi-top"><span class="kpi-label">${esc(t.label)}</span><span class="icon-chip ${t.chip}">${icon(t.ic)}</span></div><div class="kpi-value">${t.raw ? t.value : esc(t.value)}</div><div class="kpi-note">${esc(t.note)}</div></div>`).join('');
+
+    const list = all.filter(r => matchesSearch(`${r.name} ${r.code} ${(r.attention || []).join(' ')}`)).sort(byAttention);
+    $('#healthTable').innerHTML = '<div class="gt-head"><span>Restaurant</span><span>Orders App · 60 min</span><span>Website</span><span class="center">Devices</span><span>Printer</span><span>Last order</span></div>' + list.map(r => {
+      const wh = r.website_health;
+      const web = wh ? `<span class="cell-stack"><span class="pill ${wh.status === 'down' ? 'red' : 'green'}">${wh.status === 'down' ? 'Down' : 'Up'}${wh.status !== 'down' && wh.response_ms != null ? ' · ' + esc(wh.response_ms) + ' ms' : ''}</span><span class="s">${wh.error ? esc(wh.error) + ' · ' : ''}checked ${esc(fmtAgo(wh.checked_at))}</span></span>` : `<span class="muted-sm">${r.website ? 'Not checked yet' : 'No website'}</span>`;
+      return `<button class="gt-row" type="button" data-open-restaurant="${esc(r.code)}">
+        <span class="cell-main"><span class="avatar ${(r.attention || []).length ? 'bad' : ''}" aria-hidden="true">${esc(initials(r.name))}</span><span style="min-width:0"><span class="t">${esc(r.name)}</span><span class="s"><span class="status-dot ${esc(r.app_status)}"></span> ${esc(statusLabel(r.app_status))}${r.app_minutes_ago != null ? ' · ' + esc(r.app_minutes_ago) + ' min' : ''}</span></span></span>
+        ${beatsHtml(r.beats)}
+        ${web}
+        <span class="center num ${r.device_count ? '' : 'printer-missing'}">${esc(r.device_count || 0)}</span>
+        <span class="with-icon ${r.printer_device_id ? '' : 'printer-missing'}">${icon('printer')}${r.printer_device_id ? 'Assigned' : 'Not assigned'}</span>
+        <span class="muted-sm">${esc(r.last_order_at ? fmtAgo(r.last_order_at) : 'No orders')}</span>
+      </button>`;
+    }).join('');
+
+    const issues = [];
+    all.forEach(r => (r.attention_items || []).forEach(i => issues.push({ ...i, code: r.code, name: r.name })));
+    issues.sort((x, y) => (x.severity === 'critical' ? 0 : 1) - (y.severity === 'critical' ? 0 : 1) || String(x.name).localeCompare(String(y.name)));
+    const shown = issues.filter(i => matchesSearch(`${i.name} ${i.code} ${i.text}`));
+    $('#healthIssues').innerHTML = shown.length
+      ? `<div class="issue-list" style="padding:14px 16px;margin:0">${shown.map(i => `<button type="button" class="issue ${esc(i.severity)}" data-open-restaurant="${esc(i.code)}" style="border:0;text-align:left;cursor:pointer;width:100%"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}<br><span class="where">${esc(i.name)}</span></span>${icon('chevron')}</button>`).join('')}</div>`
+      : `<div class="healthy-line">${icon('check')}No active platform issues</div>`;
+    bindOpeners($('#view-health'));
+  }
+
+  // ---------- openers ----------
+  function bindOpeners(root) {
+    $$('[data-open-restaurant]', root).forEach(node => {
+      if (node._bound) return;
+      node._bound = true;
+      node.addEventListener('click', (event) => { event.stopPropagation(); openRestaurant(node.dataset.openRestaurant); });
+    });
+    $$('[data-open-order]', root).forEach(node => {
+      if (node._bound) return;
+      node._bound = true;
+      node.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const [code, id] = node.dataset.openOrder.split('|');
+        openOrder(code, id);
+      });
+    });
+  }
+
+  // ---------- drawer ----------
+  let lastFocus = null;
+  function openDrawerShell() {
+    if ($('#drawer').classList.contains('hidden')) lastFocus = document.activeElement;
+    $('#drawerBackdrop').classList.remove('hidden');
+    $('#drawer').classList.remove('hidden');
+    $('#drawer').setAttribute('aria-hidden', 'false');
+    $('#drawerContent').scrollTop = 0;
+    setTimeout(() => $('#drawerClose').focus(), 30);
+  }
+  function closeDrawer() {
+    $('#drawerBackdrop').classList.add('hidden');
+    $('#drawer').classList.add('hidden');
+    $('#drawer').setAttribute('aria-hidden', 'true');
+    state.drawer = null;
+    state.selectedRestaurant = null;
+    if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
+  }
+
+  async function openRestaurant(code) {
+    state.drawer = { type: 'restaurant', code };
+    openDrawerShell();
+    const known = restaurantsList().find(r => r.code === code);
+    $('#drawerAvatar').className = 'avatar lg';
+    $('#drawerAvatar').textContent = initials(known?.name || code);
+    $('#drawerTitle').textContent = known?.name || 'Loading…';
+    $('#drawerCode').textContent = code;
+    $('#drawerStatus').innerHTML = '';
+    $('#drawerContent').innerHTML = '<div class="empty-box">Loading restaurant details…</div>';
+    try {
+      const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`);
+      if (state.drawer?.code !== code) return;
+      state.selectedRestaurant = data.restaurant;
+      renderRestaurantDrawer();
+    } catch (error) {
+      $('#drawerContent').innerHTML = `<div class="empty-box">${esc(error.message)}</div>`;
+    }
+  }
+
+  const MODULE_LABELS = { website_ordering: 'Website Ordering', orders_app: 'Orders App', courier: 'Courier', customer_app: 'Customer App', online_payments: 'Online Payments', auto_handling: 'Automatic Handling', printing: 'Printing / Device' };
+
+  function renderRestaurantDrawer() {
+    const r = state.selectedRestaurant;
+    if (!r) return;
+    const bad = (r.attention_items || []).length > 0;
+    $('#drawerAvatar').className = `avatar lg ${bad ? 'bad' : ''}`;
+    $('#drawerAvatar').textContent = initials(r.name);
+    $('#drawerTitle').textContent = r.name;
+    $('#drawerCode').innerHTML = `${esc(r.code)}${r.website ? ` · <a href="${esc(/^https?:/.test(r.website) ? r.website : 'https://' + r.website)}" target="_blank" rel="noopener">${esc(r.website)}</a>` : ''}`;
+    $('#drawerStatus').innerHTML = `<span class="status-dot ${esc(r.app_status)} live"></span>${esc(statusLabel(r.app_status))}${r.app_minutes_ago != null ? ' · ' + esc(r.app_minutes_ago) + ' min ago' : ''}`;
+    const modules = r.modules || {};
+    const email = r.customer_email_settings || {};
+    const failed = Array.isArray(r.failed_delivered_callbacks) ? r.failed_delivered_callbacks : [];
+    const orders = (r.recent_orders || []).slice(0, 8);
+    const stats = [
+      ['receipt', 'accent', 'Orders today', `${r.orders_today || 0}${r.rejected_today ? ` <span class="muted-sm">+${r.rejected_today} rejected</span>` : ''}`],
+      ['trend', 'amber', 'Revenue today', esc(money(r.revenue_today))],
+      ['clock', 'blue', 'Last order', esc(r.last_order_at ? fmtAgo(r.last_order_at) : 'None yet')],
+      ['star', 'accent', 'Edition', r.edition === 'free' ? 'FoodUp Free' : 'FoodUp Pro'],
+      ['device', r.device_count ? 'green' : 'red', 'Devices', `${esc(r.device_count || 0)} registered`],
+      ['printer', r.printer_device_id ? 'green' : 'red', 'Printer', r.printer_device_id ? 'Assigned' : 'Not assigned'],
+    ];
+
+    $('#drawerContent').innerHTML = `
+      ${bad ? `<div class="d-section danger"><div class="d-head"><h3>Needs attention</h3><span class="pill red">${plural(r.attention_items.length, 'issue')}</span></div><div class="d-body"><div class="issue-list" style="margin:0">${r.attention_items.map(i => `<div class="issue ${esc(i.severity)}"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span></div>`).join('')}</div></div></div>` : ''}
+      <div class="d-section"><div class="d-head"><h3>Today</h3><span class="muted-sm">Swiss time</span></div><div class="d-body">
+        <div class="d-stats">${stats.map(([ic, chip, label, value]) => `<div class="d-stat"><span class="icon-chip ${chip}">${icon(ic)}</span><span class="l">${esc(label)}</span><strong>${value}</strong></div>`).join('')}</div>
+        <div style="margin-top:14px"><div class="mix-title">Orders App · last 60 minutes</div>${beatsHtml(r.beats)}</div>
+        ${r.printer_device_id ? `<p class="d-note">Printer device: <span class="num">${esc(r.printer_device_id)}</span></p>` : ''}
+      </div></div>
+      <div class="d-section"><div class="d-head"><h3>Restaurant profile</h3><button id="saveProfileBtn" class="btn btn-primary" type="button">Save</button></div><div class="d-body"><div class="edit-grid">
+        <div class="field"><label for="editName">Name</label><input id="editName" value="${esc(r.name)}"></div>
+        <div class="field"><label for="editWebsite">Website</label><input id="editWebsite" value="${esc(r.website)}" placeholder="restaurant.ch"></div>
+        <div class="field"><label for="editPhone">Phone</label><input id="editPhone" value="${esc(r.phone)}" placeholder="+41 44 000 00 00"></div>
+        <div class="field"><label for="editAddress">Address</label><input id="editAddress" value="${esc(r.address)}" placeholder="Street 1, 8000 Zürich"></div>
+      </div></div></div>
+      <div class="d-section"><div class="d-head"><h3>Feature modules</h3><button id="saveModulesBtn" class="btn btn-primary" type="button">Save</button></div><div class="d-body">
+        <div class="module-grid">${Object.entries(MODULE_LABELS).map(([key, label]) => `<label class="module-toggle"><span>${esc(label)}</span><span class="switch"><input type="checkbox" data-module="${esc(key)}" ${modules[key] ? 'checked' : ''}><span></span></span></label>`).join('')}</div>
+        <p class="d-note">These switches are stored for the Control Center (badges and printer warnings). The apps do not enforce them yet.</p>
+      </div></div>
+      <div class="d-section"><div class="d-head"><h3>Customer email (Resend, legacy)</h3><button id="saveCustomerEmailBtn" class="btn btn-secondary" type="button">Save</button></div><div class="d-body">
+        <label class="module-toggle"><span>Allow central FoodUp email via Resend</span><span class="switch"><input id="resendEnabledToggle" type="checkbox" ${email.resend_enabled ? 'checked' : ''}><span></span></span></label>
+        <p class="d-note">Restaurant emails now run through Brevo, set up in FoodUp Ordering → Brevo. This switch only controls the old central Resend endpoint.</p>
+      </div></div>
+      <div class="d-section"><div class="d-head"><h3>Failed delivered callbacks</h3><span class="pill ${failed.length ? 'amber' : 'green'}">${failed.length}</span></div><div class="d-body">
+        ${failed.length ? `<div class="mini-list">${failed.map(item => `<div class="mini-row"><span><strong>#${esc(item.order_id)}</strong><span class="s">${esc(item.reason || 'callback_failed')} · ${plural(Number(item.attempts || 0), 'attempt')} · ${esc(item.last_attempt_at ? fmtAgo(item.last_attempt_at) : 'no attempt time')}</span></span><button class="btn btn-secondary" type="button" data-retry-delivered-callback="${esc(item.order_id)}">${icon('refresh')}Retry</button></div>`).join('')}</div>` : '<div class="muted-sm">All delivered statuses reached WordPress.</div>'}
+        <p class="d-note">Permanent failures and callbacks that exhaust their 24-hour retry window are kept for 30 days.</p>
+      </div></div>
+      <div class="d-section"><div class="d-head"><h3>Connection management</h3></div><div class="d-body"><div class="actions-row">
+        <button id="resetDevicesBtn" class="btn btn-secondary" type="button">${icon('device')}Reset Orders devices</button>
+        <button id="resetPrinterBtn" class="btn btn-secondary" type="button">${icon('printer')}Clear printer</button>
+        <button id="resetPinBtn" class="btn btn-secondary" type="button">${icon('key')}Set new owner PIN</button>
+      </div></div></div>
+      <div class="d-section"><div class="d-head"><h3>Recent orders</h3><span class="muted-sm">Last ${orders.length}</span></div><div class="d-body">
+        ${orders.length ? `<div class="mini-list">${orders.map(o => { const st = orderStatus(o); return `<button type="button" class="mini-row" data-open-order="${esc(r.code)}|${esc(o.order_id)}"><span><strong>#${esc(o.order_id)}</strong><span class="s">${esc(o.customer_name || '')} · ${esc(fmtAgo(orderDate(o)))}</span></span><span class="r"><span class="pill ${st.cls}">${esc(st.label)}</span><span class="s num"><strong>${esc(money(o.total, o.currency))}</strong></span></span></button>`; }).join('')}</div>` : '<div class="muted-sm">No recent orders.</div>'}
+      </div></div>
+      <div class="d-section danger"><div class="d-head"><h3>Danger zone</h3></div><div class="d-body"><p class="d-note" style="margin:0 0 12px">These actions permanently change backend data for this restaurant.</p><div class="actions-row"><button id="clearOrdersBtn" class="btn btn-outline-danger" type="button">${icon('trash')}Clear order history</button><button id="removeRestaurantBtn" class="btn btn-danger" type="button">${icon('trash')}Remove restaurant</button></div></div></div>`;
+    bindDrawerActions();
+    bindOpeners($('#drawerContent'));
+  }
+
+  function bindDrawerActions() {
+    const code = state.selectedRestaurant.code;
+    const name = state.selectedRestaurant.name;
+    const patch = async (body, message) => {
+      const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method: 'PATCH', body: JSON.stringify(body) });
+      state.selectedRestaurant = data.restaurant;
+      toast(message);
+      renderRestaurantDrawer();
+      refreshAll({ silent: true });
+    };
+    const busy = (btn, fn) => async () => { btn.disabled = true; try { await fn(); } catch (e) { toast(e.message, 'error'); } finally { btn.disabled = false; } };
+    const saveProfile = $('#saveProfileBtn');
+    saveProfile.addEventListener('click', busy(saveProfile, () => patch({ name: $('#editName').value, website: $('#editWebsite').value, phone: $('#editPhone').value, address: $('#editAddress').value }, 'Restaurant profile saved')));
+    const saveModules = $('#saveModulesBtn');
+    saveModules.addEventListener('click', busy(saveModules, () => {
+      const modules = {};
+      $$('[data-module]', $('#drawerContent')).forEach(input => { modules[input.dataset.module] = input.checked; });
+      return patch({ modules }, 'Feature modules updated');
+    }));
+    const saveEmail = $('#saveCustomerEmailBtn');
+    saveEmail.addEventListener('click', busy(saveEmail, () => patch({ customer_email_settings: { resend_enabled: $('#resendEnabledToggle').checked } }, 'Customer email setting updated')));
+    $$('[data-retry-delivered-callback]', $('#drawerContent')).forEach(button => {
+      button.addEventListener('click', busy(button, async () => {
+        const orderId = button.dataset.retryDeliveredCallback;
+        const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}/delivered-callbacks/${encodeURIComponent(orderId)}/retry`, { method: 'POST', body: '{}' });
+        state.selectedRestaurant = data.restaurant;
+        toast(`Delivered callback #${orderId} queued for retry`);
+        renderRestaurantDrawer();
+      }));
+    });
+    $('#resetDevicesBtn').addEventListener('click', () => confirmationModal('Reset Orders devices', `Disconnect all registered Orders App devices for ${name}? They will need to log in again.`, 'Reset devices', async () => {
+      await api(`/admin/api/restaurants/${encodeURIComponent(code)}/reset-devices`, { method: 'POST', body: '{}' });
+      toast('Orders devices reset'); refreshAll({ silent: true }); await openRestaurant(code);
+    }));
+    $('#resetPrinterBtn').addEventListener('click', () => confirmationModal('Clear printer assignment', `Remove the assigned printer device for ${name}?`, 'Clear printer', async () => {
+      await api(`/admin/api/restaurants/${encodeURIComponent(code)}/reset-printer`, { method: 'POST', body: '{}' });
+      toast('Printer assignment cleared'); refreshAll({ silent: true }); await openRestaurant(code);
+    }));
+    $('#resetPinBtn').addEventListener('click', () => inputModal('Set new owner PIN', 'Enter a new owner PIN (at least 4 characters). The current PIN is never shown.', 'New owner PIN', value => patch({ owner_pin: value }, 'Owner PIN updated'), 'password'));
+    $('#clearOrdersBtn').addEventListener('click', () => typedConfirmation('Clear order history', `This permanently clears the stored FoodUp backend order history for ${name}. Type ${code} to continue.`, code, async () => {
+      await api(`/admin/api/restaurants/${encodeURIComponent(code)}/orders`, { method: 'DELETE', body: JSON.stringify({ confirm: code }) });
+      toast('Order history cleared'); refreshAll({ silent: true }); await openRestaurant(code);
+    }));
+    $('#removeRestaurantBtn').addEventListener('click', () => typedConfirmation('Remove restaurant', `This permanently removes ${name} from FoodUp Control Center and deletes all backend data stored under this restaurant code. Type ${code} to confirm.`, code, async () => {
+      await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method: 'DELETE', body: JSON.stringify({ confirm: code }) });
+      closeDrawer(); toast('Restaurant removed'); refreshAll({ silent: true });
+    }));
+  }
+
+  function findOrder(code, id) {
+    const fromList = state.orders.find(o => o.restaurant_code === code && String(o.order_id) === String(id));
+    if (fromList) return fromList;
+    const r = state.selectedRestaurant;
+    if (r && r.code === code) {
+      const o = (r.recent_orders || []).find(x => String(x.order_id) === String(id));
+      if (o) return { ...o, restaurant_code: code, restaurant_name: r.name };
+    }
+    return null;
+  }
+
+  function openOrder(code, id) {
+    const o = findOrder(code, id);
+    if (!o) { toast('Order is no longer in the recent list', 'error'); return; }
+    state.drawer = { type: 'order', code, id };
+    openDrawerShell();
+    const st = orderStatus(o);
+    const [type, typeIcon] = fulfillment(o);
+    const items = Array.isArray(o.items) ? o.items : [];
+    const address = o.shipping?.address || o.shipping_address || '';
+    $('#drawerAvatar').className = 'avatar lg';
+    $('#drawerAvatar').innerHTML = icon('receipt');
+    $('#drawerTitle').textContent = `Order #${o.order_id}`;
+    $('#drawerCode').textContent = `${o.restaurant_name || restaurantName(code)} · ${fmtDateTime(orderDate(o))}`;
+    $('#drawerStatus').innerHTML = `<span class="pill ${st.cls}">${esc(st.label)}</span>`;
+    const telHref = o.customer_phone ? `tel:${String(o.customer_phone).replace(/[^+\d]/g, '')}` : '';
+    $('#drawerContent').innerHTML = `
+      <div class="d-section"><div class="d-head"><h3>Summary</h3></div><div class="d-body"><div class="d-stats">
+        <div class="d-stat"><span class="icon-chip accent">${icon('wallet')}</span><span class="l">Total</span><strong class="num">${esc(money(o.total, o.currency))}</strong></div>
+        <div class="d-stat"><span class="icon-chip blue">${icon(typeIcon)}</span><span class="l">Type</span><strong>${esc(type)}</strong></div>
+        <div class="d-stat"><span class="icon-chip amber">${icon('wallet')}</span><span class="l">Payment</span><strong>${esc(o.payment_method || '—')}</strong></div>
+      </div></div></div>
+      <div class="d-section"><div class="d-head"><h3>Customer</h3>${telHref ? `<a class="btn btn-secondary" href="${esc(telHref)}">${icon('phone')}Call</a>` : ''}</div><div class="d-body"><dl class="kv">
+        <dt>Name</dt><dd>${esc(o.customer_name || '—')}</dd>
+        <dt>Phone</dt><dd>${esc(o.customer_phone || '—')}</dd>
+        <dt>Email</dt><dd>${esc(o.customer_email || '—')}</dd>
+        ${address ? `<dt>Address</dt><dd>${esc(address)}</dd>` : ''}
+        ${o.shipping?.method || o.shipping_method ? `<dt>Shipping</dt><dd>${esc(o.shipping?.method || o.shipping_method)}</dd>` : ''}
+        ${o.table_name || o.table_number ? `<dt>Table</dt><dd>${esc(o.table_name || o.table_number)}</dd>` : ''}
+      </dl></div></div>
+      <div class="d-section"><div class="d-head"><h3>Items</h3><span class="muted-sm">${plural(items.reduce((s, it) => s + Number(it.quantity || 0), 0), 'item')}</span></div><div class="d-body">
+        ${items.length ? items.map(it => `<div class="item-row"><span><strong>${esc(it.quantity || 1)}× ${esc(it.name)}</strong>${it.variation ? ` <span class="muted-sm">${esc(it.variation)}</span>` : ''}${(it.addons || []).length ? `<span class="addons">${it.addons.map(ad => `${esc(ad.label)}${ad.value ? ': ' + esc(ad.value) : ''}`).join(' · ')}</span>` : ''}</span><span class="num">${esc(money(it.total, o.currency))}</span></div>`).join('') : '<div class="muted-sm">No item details stored for this order.</div>'}
+        <div class="item-total"><span>Total</span><span class="num">${esc(money(o.total, o.currency))}</span></div>
+      </div></div>
+      ${o.note ? `<div class="d-section"><div class="d-head"><h3>Customer note</h3></div><div class="d-body">${esc(o.note)}</div></div>` : ''}
+      <div class="d-section"><div class="d-head"><h3>Timeline</h3></div><div class="d-body"><dl class="kv">
+        <dt>Received</dt><dd>${esc(fmtDateTime(o.received_at))}</dd>
+        <dt>Created in shop</dt><dd>${esc(o.date_created ? String(o.date_created).replace('T', ' ').slice(0, 16) : '—')}</dd>
+        ${o.orderable_order_date || o.orderable_order_time ? `<dt>Requested for</dt><dd>${esc([o.orderable_order_date, o.orderable_order_time].filter(Boolean).join(' · '))}</dd>` : ''}
+        <dt>Status</dt><dd>${esc(st.label)}${o.status && !o.rejected ? ` <span class="muted-sm">(${esc(o.status)})</span>` : ''}</dd>
+      </dl></div></div>
+      <div class="actions-row"><button class="btn btn-secondary" type="button" data-open-restaurant="${esc(code)}">${icon('store')}Open ${esc(o.restaurant_name || restaurantName(code))}</button></div>`;
+    bindOpeners($('#drawerContent'));
+  }
+
+  // ---------- modals ----------
+  function openModal(title, html) {
+    $('#modalTitle').textContent = title;
+    $('#modalBody').innerHTML = html;
+    $('#modalBackdrop').classList.remove('hidden');
+    $('#modal').classList.remove('hidden');
+  }
+  function closeModal() {
+    $('#modalBackdrop').classList.add('hidden');
+    $('#modal').classList.add('hidden');
+    $('#modalBody').innerHTML = '';
+  }
+  const modalOpen = () => !$('#modal').classList.contains('hidden');
+  function modalAction(button, action) {
+    return async () => {
+      button.disabled = true;
+      try { await action(); closeModal(); } catch (e) { toast(e.message, 'error'); button.disabled = false; }
+    };
+  }
+  function confirmationModal(title, message, label, action) {
+    openModal(title, `<p>${esc(message)}</p><div class="modal-actions"><button id="cancelModal" class="btn btn-secondary" type="button">Cancel</button><button id="confirmModal" class="btn btn-danger" type="button">${esc(label)}</button></div>`);
+    $('#cancelModal').onclick = closeModal;
+    $('#confirmModal').onclick = modalAction($('#confirmModal'), action);
+    setTimeout(() => $('#cancelModal')?.focus(), 20);
+  }
+  function typedConfirmation(title, message, expected, action) {
+    openModal(title, `<p>${esc(message)}</p><label class="sr-only" for="confirmText">Restaurant code</label><input id="confirmText" autocomplete="off" placeholder="${esc(expected)}"><div class="modal-actions"><button id="cancelModal" class="btn btn-secondary" type="button">Cancel</button><button id="confirmModal" class="btn btn-danger" type="button">Confirm</button></div>`);
+    $('#cancelModal').onclick = closeModal;
+    const run = modalAction($('#confirmModal'), action);
+    $('#confirmModal').onclick = () => ($('#confirmText').value !== expected ? toast('Confirmation code does not match', 'error') : run());
+    setTimeout(() => $('#confirmText')?.focus(), 20);
+  }
+  function inputModal(title, message, placeholder, action, type = 'text') {
+    openModal(title, `<p>${esc(message)}</p><label class="sr-only" for="modalInput">${esc(placeholder)}</label><input id="modalInput" type="${esc(type)}" autocomplete="off" placeholder="${esc(placeholder)}"><div class="modal-actions"><button id="cancelModal" class="btn btn-secondary" type="button">Cancel</button><button id="confirmModal" class="btn btn-primary" type="button">Save</button></div>`);
+    $('#cancelModal').onclick = closeModal;
+    $('#confirmModal').onclick = () => {
+      const value = $('#modalInput').value.trim();
+      if (!value) return toast('Enter a value', 'error');
+      return modalAction($('#confirmModal'), () => action(value))();
+    };
+    $('#modalInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('#confirmModal').click(); });
+    setTimeout(() => $('#modalInput')?.focus(), 20);
+  }
+
+  // ---------- init ----------
+  function bindStaticEvents() {
+    $('#loginForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      $('#loginError').textContent = '';
+      try {
+        await api('/admin/api/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) });
+        $('#password').value = '';
+        showApp();
+        switchView(state.view, false);
+        state.firstPaint = true;
+        state.countPending = true;
+        await refreshAll();
+      } catch (error) {
+        $('#loginError').textContent = error.message;
+      }
+    });
+    $('#logoutBtn').addEventListener('click', async () => {
+      try { await api('/admin/api/logout', { method: 'POST', body: '{}' }); } catch (_) {}
+      showLogin();
+    });
+    $$('.nav-item[data-view]').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
+    $$('[data-jump]').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.jump)));
+    $('#refreshBtn').addEventListener('click', () => refreshAll());
+    let searchTimer = null;
+    $('#globalSearch').addEventListener('input', (e) => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { state.search = e.target.value.trim().toLowerCase(); renderCurrentView(); }, 120);
+    });
+    $('#restaurantSort').addEventListener('change', (e) => { state.restaurantSort = e.target.value; renderRestaurants(); });
+    $('#ordersRestaurantFilter').addEventListener('change', renderOrders);
+    $('#drawerClose').addEventListener('click', closeDrawer);
+    $('#drawerBackdrop').addEventListener('click', closeDrawer);
+    $('#modalClose').addEventListener('click', closeModal);
+    $('#modalBackdrop').addEventListener('click', closeModal);
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (modalOpen()) { closeModal(); return; }
+      if (!$('#drawer').classList.contains('hidden')) closeDrawer();
+    });
+    window.addEventListener('resize', () => requestAnimationFrame(positionAllThumbs));
+    setInterval(() => {
+      if (document.visibilityState !== 'visible' || modalOpen() || $('#appView').classList.contains('hidden')) return;
+      refreshAll({ silent: true });
+    }, REFRESH_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && state.overview && Date.now() - state.lastAnalyticsAt > REFRESH_MS) refreshAll({ silent: true });
+    });
+  }
+
   async function init() {
+    hydrateIcons();
     bindStaticEvents();
     try {
       const session = await api('/admin/api/session');
@@ -74,341 +1150,6 @@
     } catch (_) {
       showLogin();
     }
-  }
-
-  function bindStaticEvents() {
-    $('#loginForm').addEventListener('submit', async event => {
-      event.preventDefault();
-      $('#loginError').textContent = '';
-      try {
-        await api('/admin/api/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) });
-        $('#password').value = '';
-        showApp();
-        switchView(state.view, false);
-        await refreshAll();
-      } catch (error) {
-        $('#loginError').textContent = error.message;
-      }
-    });
-
-    $('#logoutBtn').addEventListener('click', async () => {
-      try { await api('/admin/api/logout', { method: 'POST', body: '{}' }); } catch (_) {}
-      showLogin();
-    });
-
-    $$('.nav-item[data-view]').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
-    $$('[data-jump]').forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.jump)));
-    $('#refreshBtn').addEventListener('click', refreshAll);
-    $('#globalSearch').addEventListener('input', e => { state.search = e.target.value.trim().toLowerCase(); renderCurrentView(); });
-    $$('.filter-pill').forEach(btn => btn.addEventListener('click', () => {
-      $$('.filter-pill').forEach(x => x.classList.remove('active'));
-      btn.classList.add('active');
-      state.restaurantFilter = btn.dataset.status;
-      renderRestaurants();
-    }));
-    $('#restaurantSort').addEventListener('change', e => { state.restaurantSort = e.target.value; renderRestaurants(); });
-    $('#ordersRestaurantFilter').addEventListener('change', renderOrders);
-    $('#drawerClose').addEventListener('click', closeDrawer);
-    $('#drawerBackdrop').addEventListener('click', closeDrawer);
-    $('#modalClose').addEventListener('click', closeModal);
-    $('#modalBackdrop').addEventListener('click', closeModal);
-  }
-
-  async function refreshAll() {
-    $('#refreshBtn').disabled = true;
-    $('#refreshBtn').innerHTML = icon('loader-2'); $('#refreshBtn').classList.add('is-spinning');
-    try {
-      const [overview, orders, health] = await Promise.all([
-        api('/admin/api/overview'),
-        api('/admin/api/orders'),
-        api('/admin/api/health'),
-      ]);
-      state.overview = overview;
-      state.restaurants = overview.restaurants || [];
-      state.orders = orders.orders || [];
-      state.health = health;
-      $('#lastRefresh').textContent = `Updated ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
-      $('#navRestaurantCount').textContent = state.restaurants.length || '';
-      $('#navIssueCount').textContent = health.issues?.length || '';
-      populateRestaurantFilter();
-      renderAll();
-    } catch (error) {
-      toast(error.message, 'error');
-    } finally {
-      $('#refreshBtn').disabled = false;
-      $('#refreshBtn').innerHTML = icon('refresh'); $('#refreshBtn').classList.remove('is-spinning');
-    }
-  }
-
-  function switchView(view, updateUrl = true) {
-    if (!['overview','restaurants','orders','health'].includes(view)) view = 'overview';
-    state.view = view;
-    if (updateUrl) history.replaceState(null, '', `#${view}`);
-    $$('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
-    $$('.nav-item[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
-    $('#pageTitle').textContent = ({overview:'Overview',restaurants:'Restaurants',orders:'Orders',health:'Health & Alerts'}[view] || view);
-    renderCurrentView();
-  }
-
-  function renderAll() {
-    renderOverview(); renderRestaurants(); renderOrders(); renderHealth();
-  }
-  function renderCurrentView() {
-    if (state.view === 'overview') renderOverview();
-    if (state.view === 'restaurants') renderRestaurants();
-    if (state.view === 'orders') renderOrders();
-    if (state.view === 'health') renderHealth();
-  }
-
-  function renderOverview() {
-    if (!state.overview) return;
-    const s = state.overview.summary || {};
-    const cards = [
-      ['Restaurants', s.restaurants, 'purple', 'building-store'],
-      ['Online', s.online, 'green', 'circle-check'],
-      ['Needs attention', s.attention, 'red', 'alert-triangle'],
-      ['Orders today', s.orders_today, 'blue', 'receipt-2'],
-      ['Revenue today', fmtMoney(s.revenue_today), 'amber', 'trending-up'],
-    ];
-    $('#summaryCards').innerHTML = cards.map(([label,value,color,iconName]) => `<div class="summary-card"><div class="summary-top"><span class="summary-icon ${color}">${icon(iconName)}</span></div><div class="summary-value">${esc(value)}</div><div class="summary-label">${esc(label)}</div></div>`).join('');
-
-    const query = state.search;
-    const restaurants = state.restaurants.filter(r => !query || `${r.name} ${r.code} ${r.website}`.toLowerCase().includes(query));
-    $('#overviewRestaurants').innerHTML = restaurants.length ? restaurants
-      .sort((a,b) => (b.attention?.length || 0) - (a.attention?.length || 0) || String(a.name).localeCompare(String(b.name)))
-      .slice(0,8)
-      .map(r => `<div class="compact-row" data-open-restaurant="${esc(r.code)}">
-        <div class="restaurant-name-cell"><div class="restaurant-avatar">${esc(initials(r.name))}</div><div><div class="restaurant-name">${esc(r.name)}</div><div class="restaurant-meta">${esc(r.code)}${r.website ? ' · '+esc(r.website) : ''}</div></div></div>
-        <div><span class="status-badge ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)}"></span>${esc(statusLabel(r.app_status))}</span></div>
-        <div class="metric-cell"><strong>${esc(r.orders_today || 0)}</strong><span>orders</span></div>
-        <div class="metric-cell"><strong>${esc(fmtMoney(r.revenue_today))}</strong><span>today</span></div>
-        <button class="row-action" aria-label="Open restaurant">${icon('chevron-right')}</button>
-      </div>`).join('') : '<div class="empty-box">No restaurants found.</div>';
-
-    const attention = (state.overview.attention || []).filter(r => !query || `${r.name} ${r.code} ${(r.attention||[]).join(' ')}`.toLowerCase().includes(query));
-    $('#attentionList').innerHTML = attention.length ? attention.map(r => `<div class="attention-item" data-open-restaurant="${esc(r.code)}"><div class="attention-title"><span>${esc(r.name)}</span><span class="status-badge ${esc(r.app_status)}">${esc(statusLabel(r.app_status))}</span></div><div class="attention-issues">${esc((r.attention || []).join(' · '))}</div></div>`).join('') : '<div class="empty-box">Everything looks healthy.</div>';
-    bindRestaurantOpeners($('#view-overview'));
-  }
-
-  function getFilteredRestaurants() {
-    let list = [...state.restaurants];
-    const q = state.search;
-    if (q) list = list.filter(r => `${r.name} ${r.code} ${r.website} ${(r.attention||[]).join(' ')}`.toLowerCase().includes(q));
-    if (state.restaurantFilter === 'online') list = list.filter(r => r.app_status === 'online' && !(r.attention || []).length);
-    if (state.restaurantFilter === 'offline') list = list.filter(r => (r.attention || []).length > 0);
-    list.sort((a,b) => {
-      if (state.restaurantSort === 'name') return String(a.name).localeCompare(String(b.name));
-      if (state.restaurantSort === 'orders') return (b.orders_today||0) - (a.orders_today||0);
-      if (state.restaurantSort === 'revenue') return (b.revenue_today||0) - (a.revenue_today||0);
-      return (b.attention?.length||0) - (a.attention?.length||0) || String(a.name).localeCompare(String(b.name));
-    });
-    return list;
-  }
-
-  const moduleShort = {website_ordering:'Web',orders_app:'Orders',courier:'Courier',customer_app:'App',online_payments:'Pay',auto_handling:'Auto',printing:'Print'};
-  function renderFeatureBadges(modules = {}) {
-    return Object.entries(moduleShort).map(([key,label]) => `<span class="feature-badge ${modules[key] ? 'on' : ''}">${label}</span>`).join('');
-  }
-
-  function renderRestaurants() {
-    const list = getFilteredRestaurants();
-    $('#restaurantsTableBody').innerHTML = list.length ? list.map(r => `<tr data-open-restaurant="${esc(r.code)}">
-      <td><div class="restaurant-name-cell"><div class="restaurant-avatar">${esc(initials(r.name))}</div><div><div class="restaurant-name">${esc(r.name)}</div><div class="restaurant-meta">${esc(r.code)}${r.website ? ' · '+esc(r.website) : ''}</div></div></div></td>
-      <td><span class="status-badge ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)}"></span>${esc(statusLabel(r.app_status))}</span></td>
-      <td><div class="feature-badges">${renderFeatureBadges(r.modules)}</div></td>
-      <td><strong>${esc(r.orders_today || 0)}</strong></td><td>${esc(fmtMoney(r.revenue_today))}</td><td>${esc(r.device_count || 0)}</td><td>${r.printer_device_id ? 'Connected' : '—'}</td><td><button class="row-action" aria-label="Open restaurant">${icon('chevron-right')}</button></td>
-    </tr>`).join('') : '<tr><td colspan="8"><div class="empty-box">No restaurants match your filters.</div></td></tr>';
-    bindRestaurantOpeners($('#view-restaurants'));
-  }
-
-  function populateRestaurantFilter() {
-    const select = $('#ordersRestaurantFilter');
-    const current = select.value;
-    select.innerHTML = '<option value="all">All restaurants</option>' + state.restaurants.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name))).map(r => `<option value="${esc(r.code)}">${esc(r.name)}</option>`).join('');
-    if ([...select.options].some(o => o.value === current)) select.value = current;
-  }
-
-  function renderOrders() {
-    const q = state.search;
-    const code = $('#ordersRestaurantFilter')?.value || 'all';
-    let list = state.orders.filter(o => code === 'all' || o.restaurant_code === code);
-    if (q) list = list.filter(o => `${o.order_id} ${o.restaurant_name} ${o.customer_name} ${o.customer_phone} ${o.status}`.toLowerCase().includes(q));
-    $('#ordersCount').textContent = `${list.length} shown`;
-    $('#ordersTableBody').innerHTML = list.length ? list.map(o => {
-      const type = o.shipping?.method || o.shipping_method || '';
-      const time = o.received_at || o.date_created;
-      return `<tr data-open-restaurant="${esc(o.restaurant_code)}"><td><strong>#${esc(o.order_id)}</strong></td><td>${esc(o.restaurant_name)}</td><td><strong>${esc(o.customer_name || '—')}</strong><div class="restaurant-meta">${esc(o.customer_phone || '')}</div></td><td>${esc(type || '—')}</td><td>${esc(o.payment_method || '—')}</td><td><span class="order-status ${esc(o.status)}">${esc(o.status || '—')}</span></td><td><strong>${esc((o.currency || 'CHF')+' '+Number(o.total||0).toFixed(2))}</strong></td><td>${esc(fmtAgo(time))}</td></tr>`;
-    }).join('') : '<tr><td colspan="8"><div class="empty-box">No orders found.</div></td></tr>';
-    bindRestaurantOpeners($('#view-orders'));
-  }
-
-  function renderHealth() {
-    if (!state.health) return;
-    const restaurants = state.health.restaurants || [];
-    const issues = (state.health.issues || []).filter(x => !state.search || `${x.name} ${x.code} ${x.issue}`.toLowerCase().includes(state.search));
-    const websiteDown = restaurants.filter(r => r.website_health?.status === 'down').length;
-    const appProblems = restaurants.filter(r => ['offline','never','unknown'].includes(r.app_status)).length;
-    $('#healthSummary').innerHTML = [
-      ['Open issues', issues.length],['App connectivity', appProblems],['Website problems', websiteDown]
-    ].map(([label,val]) => `<div class="health-card"><strong>${esc(val)}</strong><span>${esc(label)}</span></div>`).join('');
-    $('#healthIssues').innerHTML = issues.length ? issues.map(x => `<div class="health-row" data-open-restaurant="${esc(x.code)}"><div><div class="restaurant-name">${esc(x.name)}</div><div class="restaurant-meta">${esc(x.code)}</div></div><div class="health-issue">${esc(x.issue)}</div><div><span class="status-badge ${esc(x.app_status)}">${esc(statusLabel(x.app_status))}</span></div></div>`).join('') : '<div class="empty-box">No active platform issues.</div>';
-    bindRestaurantOpeners($('#view-health'));
-  }
-
-  function bindRestaurantOpeners(root) {
-    $$('[data-open-restaurant]', root).forEach(node => {
-      node.addEventListener('click', event => {
-        event.stopPropagation();
-        openRestaurant(node.dataset.openRestaurant);
-      });
-    });
-  }
-
-  async function openRestaurant(code) {
-    $('#drawerBackdrop').classList.remove('hidden');
-    $('#restaurantDrawer').classList.remove('hidden');
-    $('#restaurantDrawer').setAttribute('aria-hidden','false');
-    $('#drawerTitle').textContent = 'Loading…';
-    $('#drawerCode').textContent = code;
-    $('#drawerContent').innerHTML = '<div class="empty-box">Loading restaurant details…</div>';
-    try {
-      const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`);
-      state.selectedRestaurant = data.restaurant;
-      renderRestaurantDrawer();
-    } catch (error) {
-      $('#drawerContent').innerHTML = `<div class="empty-box">${esc(error.message)}</div>`;
-    }
-  }
-
-  function closeDrawer() {
-    $('#drawerBackdrop').classList.add('hidden');
-    $('#restaurantDrawer').classList.add('hidden');
-    $('#restaurantDrawer').setAttribute('aria-hidden','true');
-    state.selectedRestaurant = null;
-  }
-
-  const moduleLabels = {website_ordering:'Website Ordering',orders_app:'Orders App',courier:'Courier',customer_app:'Customer App',online_payments:'Online Payments',auto_handling:'Automatic Handling',printing:'Printing / Device'};
-
-  function renderRestaurantDrawer() {
-    const r = state.selectedRestaurant;
-    if (!r) return;
-    $('#drawerTitle').textContent = r.name;
-    $('#drawerCode').textContent = `${r.code}${r.website ? ' · '+r.website : ''}`;
-    $('#drawerStatus').innerHTML = `<span class="status-dot ${esc(r.app_status)}"></span> ${esc(statusLabel(r.app_status))}${r.app_minutes_ago != null ? ' · '+esc(r.app_minutes_ago)+' min ago' : ''}`;
-    const modules = r.modules || {};
-    const customerEmailSettings = r.customer_email_settings || {};
-    const failedDeliveredCallbacks = Array.isArray(r.failed_delivered_callbacks) ? r.failed_delivered_callbacks : [];
-    const orders = (r.recent_orders || []).slice(0,8);
-    $('#drawerContent').innerHTML = `
-      ${r.attention?.length ? `<div class="detail-section danger-zone"><div class="detail-section-head"><h3>Needs attention</h3></div><div class="detail-section-body"><div class="attention-issues">${esc(r.attention.join(' · '))}</div></div></div>` : ''}
-      <div class="detail-section"><div class="detail-section-head"><h3>Operational status</h3></div><div class="detail-section-body"><div class="detail-grid">
-        <div class="detail-stat"><span>Orders App</span><strong>${esc(statusLabel(r.app_status))}</strong></div>
-        <div class="detail-stat"><span>Website</span><strong>${esc(r.website_health?.status || (r.website ? 'Configured' : 'Missing'))}</strong></div>
-        <div class="detail-stat"><span>Devices</span><strong>${esc(r.device_count)} registered</strong></div>
-        <div class="detail-stat"><span>Printer</span><strong>${esc(r.printer_device_id || 'Not assigned')}</strong></div>
-        <div class="detail-stat"><span>Edition</span><strong>${r.edition === 'free' ? 'FoodUp Free' : 'FoodUp Pro'}</strong></div>
-        <div class="detail-stat"><span>Orders today</span><strong>${esc(r.orders_today)}</strong></div>
-        <div class="detail-stat"><span>Revenue today</span><strong>${esc(fmtMoney(r.revenue_today))}</strong></div>
-      </div></div></div>
-      <div class="detail-section"><div class="detail-section-head"><h3>Restaurant profile</h3><button id="saveProfileBtn" class="btn btn-primary">Save</button></div><div class="detail-section-body"><div class="edit-grid">
-        <div class="field"><label>Name</label><input id="editName" value="${esc(r.name)}"></div>
-        <div class="field"><label>Website</label><input id="editWebsite" value="${esc(r.website)}" placeholder="restaurant.ch"></div>
-        <div class="field"><label>Phone</label><input id="editPhone" value="${esc(r.phone)}"></div>
-        <div class="field"><label>Address</label><input id="editAddress" value="${esc(r.address)}"></div>
-      </div></div></div>
-      <div class="detail-section"><div class="detail-section-head"><h3>Plan & feature modules</h3><button id="saveModulesBtn" class="btn btn-primary">Save</button></div><div class="detail-section-body"><div class="module-grid">
-        ${Object.entries(moduleLabels).map(([key,label]) => `<div class="module-toggle"><span>${esc(label)}</span><label class="switch"><input type="checkbox" data-module="${esc(key)}" ${modules[key] ? 'checked' : ''}><span></span></label></div>`).join('')}
-      </div></div></div>
-      <div class="detail-section"><div class="detail-section-head"><h3>Customer email delivery</h3><button id="saveCustomerEmailBtn" class="btn btn-primary">Save</button></div><div class="detail-section-body">
-        <div class="module-toggle"><span>Central FoodUp email via Resend</span><label class="switch"><input id="resendEnabledToggle" type="checkbox" ${customerEmailSettings.resend_enabled ? 'checked' : ''}><span></span></label></div>
-        <p class="restaurant-meta" style="margin:9px 2px 0;line-height:1.55">Default is off. When enabled, this restaurant is allowed to use the centralized FoodUp customer-email endpoint. The WordPress email integration is enabled separately.</p>
-      </div></div>
-      <div class="detail-section"><div class="detail-section-head"><h3>Failed delivered callbacks</h3><span class="restaurant-meta">${failedDeliveredCallbacks.length}</span></div><div class="detail-section-body">
-        ${failedDeliveredCallbacks.length ? `<table class="mini-orders">${failedDeliveredCallbacks.map(item => `<tr><td><strong>#${esc(item.order_id)}</strong><br><span class="restaurant-meta">${esc(item.reason || 'callback_failed')}</span></td><td><strong>${esc(item.attempts || 0)} attempt${Number(item.attempts || 0) === 1 ? '' : 's'}</strong><br><span class="restaurant-meta">${esc(item.last_attempt_at ? fmtAgo(item.last_attempt_at) : 'No attempt time')}</span></td><td style="text-align:right"><button class="btn btn-secondary" data-retry-delivered-callback="${esc(item.order_id)}">Retry</button></td></tr>`).join('')}</table>` : '<div class="empty-box">No failed delivered callbacks.</div>'}
-        <p class="restaurant-meta" style="margin:9px 2px 0;line-height:1.55">Permanent failures and callbacks that exhaust their 24-hour retry window are kept for 30 days.</p>
-      </div></div>
-      <div class="detail-section"><div class="detail-section-head"><h3>Connection management</h3></div><div class="detail-section-body"><div class="actions-row">
-        <button id="resetDevicesBtn" class="btn btn-secondary">Reset Orders devices</button>
-        <button id="resetPrinterBtn" class="btn btn-secondary">Clear printer assignment</button>
-        <button id="resetPinBtn" class="btn btn-secondary">Set new owner PIN</button>
-      </div></div></div>
-      <div class="detail-section"><div class="detail-section-head"><h3>Recent orders</h3><span class="restaurant-meta">Last ${orders.length}</span></div><div class="detail-section-body">${orders.length ? `<table class="mini-orders">${orders.map(o => `<tr><td><strong>#${esc(o.order_id)}</strong><br><span class="restaurant-meta">${esc(o.customer_name || '')}</span></td><td>${esc(o.status || '')}</td><td style="text-align:right"><strong>${esc((o.currency||'CHF')+' '+Number(o.total||0).toFixed(2))}</strong><br><span class="restaurant-meta">${esc(fmtAgo(o.received_at||o.date_created))}</span></td></tr>`).join('')}</table>` : '<div class="empty-box">No recent orders.</div>'}</div></div>
-      <div class="detail-section danger-zone"><div class="detail-section-head"><h3>Danger zone</h3></div><div class="detail-section-body"><p class="restaurant-meta" style="margin-top:0;line-height:1.6">These actions affect backend data for this restaurant.</p><div class="actions-row"><button id="clearOrdersBtn" class="btn btn-outline-danger">Clear order history</button><button id="removeRestaurantBtn" class="btn btn-danger">Remove restaurant</button></div></div></div>
-    `;
-    bindDrawerActions();
-  }
-
-  function bindDrawerActions() {
-    const code = state.selectedRestaurant.code;
-    $('#saveProfileBtn').addEventListener('click', async () => {
-      try {
-        const body = { name: $('#editName').value, website: $('#editWebsite').value, phone: $('#editPhone').value, address: $('#editAddress').value };
-        const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method:'PATCH', body: JSON.stringify(body) });
-        state.selectedRestaurant = data.restaurant; toast('Restaurant profile saved'); await refreshAll(); renderRestaurantDrawer();
-      } catch (e) { toast(e.message,'error'); }
-    });
-    $('#saveModulesBtn').addEventListener('click', async () => {
-      const modules = {}; $$('[data-module]', $('#drawerContent')).forEach(input => modules[input.dataset.module] = input.checked);
-      try {
-        const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method:'PATCH', body: JSON.stringify({ modules }) });
-        state.selectedRestaurant = data.restaurant; toast('Feature modules updated'); await refreshAll(); renderRestaurantDrawer();
-      } catch (e) { toast(e.message,'error'); }
-    });
-    $('#saveCustomerEmailBtn').addEventListener('click', async () => {
-      const customer_email_settings = { resend_enabled: $('#resendEnabledToggle').checked };
-      try {
-        const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method:'PATCH', body: JSON.stringify({ customer_email_settings }) });
-        state.selectedRestaurant = data.restaurant; toast('Customer email delivery updated'); await refreshAll(); renderRestaurantDrawer();
-      } catch (e) { toast(e.message,'error'); }
-    });
-    $$('[data-retry-delivered-callback]', $('#drawerContent')).forEach(button => {
-      button.addEventListener('click', async () => {
-        const orderId = button.dataset.retryDeliveredCallback;
-        button.disabled = true;
-        try {
-          const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}/delivered-callbacks/${encodeURIComponent(orderId)}/retry`, { method:'POST', body:'{}' });
-          state.selectedRestaurant = data.restaurant;
-          toast(`Delivered callback #${orderId} queued for retry`);
-          renderRestaurantDrawer();
-        } catch (e) {
-          button.disabled = false;
-          toast(e.message,'error');
-        }
-      });
-    });
-    $('#resetDevicesBtn').addEventListener('click', () => confirmationModal('Reset Orders devices', `Disconnect all registered Orders App devices for ${state.selectedRestaurant.name}?`, 'Reset devices', async () => {
-      await api(`/admin/api/restaurants/${encodeURIComponent(code)}/reset-devices`, {method:'POST',body:'{}'}); toast('Orders devices reset'); await refreshAll(); await openRestaurant(code);
-    }));
-    $('#resetPrinterBtn').addEventListener('click', () => confirmationModal('Clear printer assignment', `Remove the currently assigned printer device for ${state.selectedRestaurant.name}?`, 'Clear printer', async () => {
-      await api(`/admin/api/restaurants/${encodeURIComponent(code)}/reset-printer`, {method:'POST',body:'{}'}); toast('Printer assignment cleared'); await refreshAll(); await openRestaurant(code);
-    }));
-    $('#resetPinBtn').addEventListener('click', () => inputModal('Set new owner PIN', 'Enter a new owner PIN. The existing PIN is never displayed.', 'New owner PIN', async value => {
-      const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, {method:'PATCH',body:JSON.stringify({owner_pin:value})}); state.selectedRestaurant=data.restaurant; toast('Owner PIN updated');
-    }, 'password'));
-    $('#clearOrdersBtn').addEventListener('click', () => typedConfirmation('Clear order history', `This permanently clears the stored FoodUp backend order history for ${state.selectedRestaurant.name}. Type ${code} to continue.`, code, async () => {
-      await api(`/admin/api/restaurants/${encodeURIComponent(code)}/orders`, {method:'DELETE',body:JSON.stringify({confirm:code})}); toast('Order history cleared'); await refreshAll(); await openRestaurant(code);
-    }));
-    $('#removeRestaurantBtn').addEventListener('click', () => typedConfirmation('Remove restaurant', `This permanently removes ${state.selectedRestaurant.name} from FoodUp Control Center and deletes all backend data stored under this restaurant code. Type ${code} to confirm.`, code, async () => {
-      await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, {method:'DELETE',body:JSON.stringify({confirm:code})}); closeDrawer(); toast('Restaurant removed'); await refreshAll();
-    }));
-  }
-
-  function openModal(title, html) {
-    $('#modalTitle').textContent = title; $('#modalBody').innerHTML = html;
-    $('#modalBackdrop').classList.remove('hidden'); $('#modal').classList.remove('hidden');
-  }
-  function closeModal() { $('#modalBackdrop').classList.add('hidden'); $('#modal').classList.add('hidden'); $('#modalBody').innerHTML=''; }
-  function confirmationModal(title, message, button, action) {
-    openModal(title, `<p>${esc(message)}</p><div class="modal-actions"><button id="cancelModal" class="btn btn-secondary">Cancel</button><button id="confirmModal" class="btn btn-danger">${esc(button)}</button></div>`);
-    $('#cancelModal').onclick=closeModal; $('#confirmModal').onclick=async()=>{try{await action();closeModal();}catch(e){toast(e.message,'error')}};
-  }
-  function typedConfirmation(title, message, expected, action) {
-    openModal(title, `<p>${esc(message)}</p><input id="confirmText" autocomplete="off" placeholder="${esc(expected)}"><div class="modal-actions"><button id="cancelModal" class="btn btn-secondary">Cancel</button><button id="confirmModal" class="btn btn-danger">Confirm</button></div>`);
-    $('#cancelModal').onclick=closeModal; $('#confirmModal').onclick=async()=>{if($('#confirmText').value!==expected)return toast('Confirmation code does not match','error');try{await action();closeModal();}catch(e){toast(e.message,'error')}};
-  }
-  function inputModal(title, message, placeholder, action, type='text') {
-    openModal(title, `<p>${esc(message)}</p><input id="modalInput" type="${esc(type)}" autocomplete="off" placeholder="${esc(placeholder)}"><div class="modal-actions"><button id="cancelModal" class="btn btn-secondary">Cancel</button><button id="confirmModal" class="btn btn-primary">Save</button></div>`);
-    $('#cancelModal').onclick=closeModal; $('#confirmModal').onclick=async()=>{const value=$('#modalInput').value.trim();if(!value)return toast('Enter a value','error');try{await action(value);closeModal();}catch(e){toast(e.message,'error')}}; setTimeout(()=>$('#modalInput')?.focus(),20);
   }
 
   init();

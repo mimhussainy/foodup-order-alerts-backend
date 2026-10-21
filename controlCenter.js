@@ -2,6 +2,7 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const { adminLoginRateLimitState, recordAdminLoginFailure, clearAdminLoginFailures } = require('./adminLoginRateLimit');
+const { createControlCenterStats, zurichParts, orderTime, isVoidOrder } = require('./controlCenterStats');
 
 const SESSION_COOKIE = 'foodup_admin_session';
 const SESSION_TTL_SECONDS = 12 * 60 * 60;
@@ -62,6 +63,9 @@ function cookieOptions(req) {
 
 function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
   const deliveredCallbackOutbox = options.deliveredCallbackOutbox || null;
+  const stats = options.stats || createControlCenterStats({ redisCommand, k });
+  if (options.startHistoryRecorder !== false) stats.start();
+  const startedAt = Date.now();
   const assetsPath = path.join(__dirname, 'control-center');
   app.use('/admin/assets', express.static(assetsPath, { maxAge: '1h', index: false }));
 
@@ -187,22 +191,34 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       appStatus = appMinutesAgo < 10 ? 'online' : appMinutesAgo < 30 ? 'idle' : 'offline';
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayOrders = orders.filter(order => {
-      const raw = order.received_at || order.date_created;
-      if (!raw) return false;
-      const dt = new Date(String(raw).replace(' ', 'T'));
-      return !Number.isNaN(dt.getTime()) && dt >= today;
+    // "Today" is the Swiss calendar day (Render runs on UTC). Cancelled,
+    // refunded, failed and app-rejected orders do not count as orders/revenue.
+    const [rejectedIds, beats] = await Promise.all([
+      stats.rejectedIdsFor(code, orders).catch(error => {
+        console.warn(`[control-center] rejected lookup failed for ${code}: ${error?.name || 'error'}`);
+        return new Set();
+      }),
+      stats.getBeats(code, heartbeat, 12).catch(error => {
+        console.warn(`[control-center] heartbeat history failed for ${code}: ${error?.name || 'error'}`);
+        return [];
+      }),
+    ]);
+    const todayDay = zurichParts(new Date()).day;
+    const todayAll = orders.filter(order => {
+      const dt = orderTime(order);
+      return dt && zurichParts(dt).day === todayDay;
     });
+    const todayOrders = todayAll.filter(order => !isVoidOrder(order, rejectedIds));
+    const rejectedToday = todayAll.length - todayOrders.length;
 
     let lastOrderAt = null;
     for (const order of orders) {
-      const raw = order.received_at || order.date_created;
-      if (!raw) continue;
-      const dt = new Date(String(raw).replace(' ', 'T'));
-      if (!Number.isNaN(dt.getTime()) && (!lastOrderAt || dt > lastOrderAt)) lastOrderAt = dt;
+      const dt = orderTime(order);
+      if (dt && (!lastOrderAt || dt > lastOrderAt)) lastOrderAt = dt;
     }
+    const annotatedOrders = orders.map(order => (rejectedIds.has(String(order.order_id))
+      ? { ...order, rejected: true }
+      : order));
 
     const modules = storedModules || {
       website_ordering: !!profile.website,
@@ -214,13 +230,14 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       printing: !!printerRaw.result,
     };
 
-    const attention = [];
-    if (appStatus === 'offline') attention.push('Orders app offline');
-    if (appStatus === 'never') attention.push('Orders app never seen');
-    if (!profile.website) attention.push('Website missing');
-    if (websiteHealth?.status === 'down') attention.push('Website down');
-    if (modules.orders_app && tokens.length === 0) attention.push('No push device');
-    if (modules.printing && !printerRaw.result) attention.push('Printer not assigned');
+    const attentionItems = [];
+    if (appStatus === 'offline') attentionItems.push({ text: 'Orders app offline', severity: 'critical' });
+    if (appStatus === 'never') attentionItems.push({ text: 'Orders app never seen', severity: 'critical' });
+    if (websiteHealth?.status === 'down') attentionItems.push({ text: 'Website down', severity: 'critical' });
+    if (!profile.website) attentionItems.push({ text: 'Website missing', severity: 'warning' });
+    if (modules.orders_app && tokens.length === 0) attentionItems.push({ text: 'No push device', severity: 'warning' });
+    if (modules.printing && !printerRaw.result) attentionItems.push({ text: 'Printer not assigned', severity: 'warning' });
+    const attention = attentionItems.map(item => item.text);
 
     return {
       code,
@@ -243,10 +260,13 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       customer_email_settings: customerEmailSettings,
       failed_delivered_callbacks: failedDeliveredCallbacks,
       attention,
+      attention_items: attentionItems,
+      beats,
       orders_today: todayOrders.length,
       revenue_today: todayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0),
+      rejected_today: rejectedToday,
       last_order_at: lastOrderAt ? lastOrderAt.toISOString() : null,
-      recent_orders: includeOrders ? orders : orders.slice(0, 8),
+      recent_orders: includeOrders ? annotatedOrders : annotatedOrders.slice(0, 8),
     };
   }
 
@@ -256,10 +276,38 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
     return Promise.all(codes.map(async code => {
       try { return await loadRestaurant(code, includeOrders); }
       catch (error) {
-        return { code, name: code, app_status: 'unknown', attention: ['Backend read failed'], error: error.message, orders_today: 0, revenue_today: 0, modules: {} };
+        return { code, name: code, app_status: 'unknown', attention: ['Backend read failed'], attention_items: [{ text: 'Backend read failed', severity: 'critical' }], beats: [], error: error.message, orders_today: 0, revenue_today: 0, rejected_today: 0, modules: {} };
       }
     }));
   }
+
+  async function loadServices(restaurants) {
+    const services = { api_uptime_seconds: Math.floor((Date.now() - startedAt) / 1000), redis_ms: null, callbacks_failed: 0, websites_up: 0, websites_total: 0 };
+    try {
+      const t0 = Date.now();
+      await redisCommand('PING');
+      services.redis_ms = Date.now() - t0;
+    } catch (_) {}
+    for (const r of restaurants) {
+      if (r.website_health?.status) {
+        services.websites_total += 1;
+        if (r.website_health.status !== 'down') services.websites_up += 1;
+      }
+    }
+    if (deliveredCallbackOutbox && typeof deliveredCallbackOutbox.listFailed === 'function') {
+      const counts = await Promise.all(restaurants.map(r => deliveredCallbackOutbox.listFailed(r.code, 50).then(list => list.length).catch(() => 0)));
+      services.callbacks_failed = counts.reduce((sum, n) => sum + n, 0);
+    }
+    return services;
+  }
+
+  app.get('/admin/api/analytics', requireAdmin, async (req, res) => {
+    try {
+      res.json({ success: true, analytics: await stats.analytics() });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
 
   app.get('/admin/api/overview', requireAdmin, async (req, res) => {
     try {
@@ -267,16 +315,25 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       const todayOrders = restaurants.reduce((sum, r) => sum + Number(r.orders_today || 0), 0);
       const revenue = restaurants.reduce((sum, r) => sum + Number(r.revenue_today || 0), 0);
       const online = restaurants.filter(r => r.app_status === 'online').length;
+      const idle = restaurants.filter(r => r.app_status === 'idle').length;
       const attentionRestaurants = restaurants.filter(r => (r.attention || []).length > 0);
+      const allItems = restaurants.flatMap(r => r.attention_items || []);
       res.json({
         success: true,
         summary: {
           restaurants: restaurants.length,
           online,
+          idle,
+          offline: restaurants.length - online - idle,
           attention: attentionRestaurants.length,
+          issues: allItems.length,
+          critical: allItems.filter(i => i.severity === 'critical').length,
+          warnings: allItems.filter(i => i.severity !== 'critical').length,
           orders_today: todayOrders,
           revenue_today: revenue,
+          rejected_today: restaurants.reduce((sum, r) => sum + Number(r.rejected_today || 0), 0),
         },
+        services: await loadServices(restaurants),
         attention: attentionRestaurants
           .sort((a, b) => (b.attention?.length || 0) - (a.attention?.length || 0))
           .slice(0, 8),
@@ -434,11 +491,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
           orders.push({ ...order, restaurant_code: restaurant.code, restaurant_name: restaurant.name });
         }
       }
-      orders.sort((a, b) => {
-        const aa = new Date(String(a.received_at || a.date_created || 0).replace(' ', 'T')).getTime() || 0;
-        const bb = new Date(String(b.received_at || b.date_created || 0).replace(' ', 'T')).getTime() || 0;
-        return bb - aa;
-      });
+      orders.sort((a, b) => (orderTime(b)?.getTime() || 0) - (orderTime(a)?.getTime() || 0));
       res.json({ success: true, orders: orders.slice(0, 300) });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
