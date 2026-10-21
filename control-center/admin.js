@@ -763,12 +763,25 @@
     return state.orders.filter(o => code === 'all' || state.view !== 'orders' || o.restaurant_code === code);
   }
   function orderRows(list, isOverview, single = false) {
-    const head = '<div class="gt-head"><span>Order</span>' + (single ? '' : '<span>Restaurant</span>') + '<span>Customer</span><span>Type</span><span>Payment</span><span>Status</span><span class="right">Total</span><span class="right">Time</span></div>';
+    // The restaurant page has a narrower column, so it uses 5 columns:
+    // the time sits under the order number and the payment under the type.
+    const head = single
+      ? '<div class="gt-head"><span>Order</span><span>Customer</span><span>Type</span><span>Status</span><span class="right">Total</span></div>'
+      : '<div class="gt-head"><span>Order</span><span>Restaurant</span><span>Customer</span><span>Type</span><span>Payment</span><span>Status</span><span class="right">Total</span><span class="right">Time</span></div>';
     if (!list.length) return head + '<div class="empty-box">No orders found.</div>';
     return head + list.map((o, i) => {
       const st = orderStatus(o);
       const [type, typeIcon] = fulfillment(o);
       const fresh = isOverview && i === 0 && state.firstPaint;
+      if (single) {
+        return `<button class="gt-row o-row" type="button" data-open-order="${esc(o.restaurant_code)}|${esc(o.order_id)}">
+        <span class="cell-stack c-id"><span class="strong num">#${esc(o.order_id)}</span><span class="s">${esc(fmtAgo(orderDate(o)))}</span></span>
+        <span class="cell-stack c-cust"><span class="strong">${esc(o.customer_name || '—')}</span>${o.customer_phone ? `<span class="s">${esc(o.customer_phone)}</span>` : ''}</span>
+        <span class="cell-stack c-type"><span class="with-icon">${icon(typeIcon)}${esc(type)}</span><span class="s">${esc(o.payment_method || '—')}</span></span>
+        <span class="c-status"><span class="pill ${st.cls}">${esc(st.label)}</span></span>
+        <span class="right strong num c-total">${esc(money(o.total, o.currency))}</span>
+      </button>`;
+      }
       return `<button class="gt-row o-row ${fresh ? 'new' : ''}" type="button" data-open-order="${esc(o.restaurant_code)}|${esc(o.order_id)}">
         <span class="strong num c-id">#${esc(o.order_id)}</span>
         ${single ? '' : `<span class="c-rest">${esc(o.restaurant_name)}</span>`}

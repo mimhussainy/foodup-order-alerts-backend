@@ -311,7 +311,8 @@ a.btn { text-decoration: none; }
 .restaurants-table { --cols: 1.7fr 1fr 1.5fr .6fr .5fr .9fr 24px; --min: 760px; }
 .restaurants-table.full { --cols: 1.6fr 1fr 1.4fr 1.5fr .6fr .5fr .9fr .9fr 24px; --min: 1120px; }
 .orders-table { --cols: .7fr 1.1fr 1.1fr .8fr .8fr .9fr .8fr .7fr; --min: 820px; }
-.orders-table.single { --cols: .7fr 1.3fr .9fr 1fr .9fr .8fr .8fr; --min: 700px; }
+.orders-table.single { --cols: .8fr 1.5fr 1.2fr 1fr .9fr; --min: 500px; }
+.c-total { white-space: nowrap; }
 .health-table { --cols: 1.5fr 1.5fr 1.2fr .5fr .9fr .8fr; --min: 780px; }
 
 /* heartbeat strip */
@@ -358,7 +359,6 @@ a.btn { text-decoration: none; }
 .rp-hero .hero-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .rp-side { flex-basis: 340px; }
 #view-restaurant .grow-wide { flex-basis: 520px; }
-#view-restaurant .orders-table.single { --min: 640px; }
 .rp-side .d-section { margin: 0; background: #ffffff; box-shadow: var(--shadow); border-radius: var(--radius); }
 .rp-side .d-head { background: #ffffff; }
 .rp-side .d-section.danger .d-head { background: #fff7f8; }
@@ -639,7 +639,9 @@ button.mini-row:hover { background: var(--hover); }
   .o-row .c-status { grid-area: status; justify-self: end; }
   .o-row .c-rest { grid-area: rest; font-size: 12px; color: var(--muted); }
   .o-row .c-time { grid-area: time; }
-  .orders-table.single .o-row { grid-template-areas: "id cust total" "type pay status" ". . time"; }
+  .orders-table.single .o-row { grid-template-areas: "id cust total" "type type status"; }
+  .orders-table.single .o-row .c-id .strong { color: var(--muted); }
+  .orders-table.single .o-row .c-type { flex-direction: row; align-items: center; gap: 10px; }
 
   .r-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "main rev" "status orders" "beats beats" "feat feat" "printer ed"; }
   .restaurants-table:not(.full) .r-row { grid-template-areas: "main rev" "status orders" "beats beats" "ed ed"; }
