@@ -111,3 +111,17 @@ test('analytics counts Swiss today, excludes void orders and only writes cc_ key
   const written = r.calls.filter(c => ['SET', 'HSET', 'DEL', 'RPUSH', 'LPUSH'].includes(c[0])).map(c => c[1]);
   assert.ok(written.every(key => key === 'cc:history_since' || /:cc_orders:/.test(key)), written.join(','));
 });
+
+test('app state reads accepted, delivered and rejected records without writing', async () => {
+  const r = fakeRedis();
+  r.strings.set('grillhouse:accepted_time:13311', JSON.stringify({ status: 'accepted' }));
+  r.strings.set('grillhouse:delivered:13311', JSON.stringify({ order_id: '13311', delivery_name: 'Aziz', delivered_at: '2026-10-21T10:40:00Z' }));
+  r.strings.set('grillhouse:rejected_time:13300', '2026-10-21T10:00:00Z');
+  const stats = createControlCenterStats({ redisCommand: r.redisCommand, k, logger: { warn() {} } });
+  const state = await stats.appStateFor('grillhouse', [{ order_id: 13311, status: 'pending' }, { order_id: 13300 }, { order_id: 13299 }]);
+  assert.ok(state.accepted.has('13311'));
+  assert.equal(state.delivered.get('13311').delivery_name, 'Aziz');
+  assert.ok(state.rejected.has('13300'));
+  assert.equal(state.delivered.has('13299'), false);
+  assert.ok(r.calls.every(c => c[0] === 'MGET'));
+});

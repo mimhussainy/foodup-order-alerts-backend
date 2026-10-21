@@ -193,16 +193,17 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
 
     // "Today" is the Swiss calendar day (Render runs on UTC). Cancelled,
     // refunded, failed and app-rejected orders do not count as orders/revenue.
-    const [rejectedIds, beats] = await Promise.all([
-      stats.rejectedIdsFor(code, orders).catch(error => {
-        console.warn(`[control-center] rejected lookup failed for ${code}: ${error?.name || 'error'}`);
-        return new Set();
+    const [appState, beats] = await Promise.all([
+      stats.appStateFor(code, orders).catch(error => {
+        console.warn(`[control-center] app state lookup failed for ${code}: ${error?.name || 'error'}`);
+        return { rejected: new Set(), accepted: new Set(), delivered: new Map() };
       }),
       stats.getBeats(code, heartbeat, 12).catch(error => {
         console.warn(`[control-center] heartbeat history failed for ${code}: ${error?.name || 'error'}`);
         return [];
       }),
     ]);
+    const rejectedIds = appState.rejected;
     const todayDay = zurichParts(new Date()).day;
     const todayAll = orders.filter(order => {
       const dt = orderTime(order);
@@ -216,9 +217,18 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       const dt = orderTime(order);
       if (dt && (!lastOrderAt || dt > lastOrderAt)) lastOrderAt = dt;
     }
-    const annotatedOrders = orders.map(order => (rejectedIds.has(String(order.order_id))
-      ? { ...order, rejected: true }
-      : order));
+    const annotatedOrders = orders.map(order => {
+      const id = String(order.order_id);
+      const delivered = appState.delivered.get(id);
+      return {
+        ...order,
+        rejected: rejectedIds.has(id) || undefined,
+        app_accepted: appState.accepted.has(id) || undefined,
+        app_delivered: delivered ? true : undefined,
+        delivered_by: delivered?.delivery_name || undefined,
+        delivered_at: delivered?.delivered_at || undefined,
+      };
+    });
 
     const modules = storedModules || {
       website_ordering: !!profile.website,

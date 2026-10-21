@@ -730,12 +730,18 @@
     completed: ['Completed', 'green'], cancelled: ['Cancelled', 'red'], canceled: ['Cancelled', 'red'],
     refunded: ['Refunded', 'grey'], failed: ['Failed', 'red'], delivered: ['Delivered', 'green'],
   };
+  // Most advanced state wins. The stored WooCommerce status is only updated when
+  // WordPress reports a change, so app actions (accept / deliver / reject) are
+  // read from the backend's own records as well.
   function orderStatus(o) {
-    if (o.rejected) return { label: 'Rejected', cls: 'red', group: 'void' };
     const s = String(o.status || '').toLowerCase().replace(/^wc-/, '');
+    if (o.rejected) return { label: 'Rejected', cls: 'red', group: 'void' };
+    if (['cancelled', 'canceled', 'refunded', 'failed'].includes(s)) return { label: ORDER_STATUS[s][0], cls: ORDER_STATUS[s][1], group: 'void' };
+    if (o.app_delivered) return { label: String(o.fulfillment_type || '').toLowerCase() === 'delivery' ? 'Delivered' : 'Completed', cls: 'green', group: 'done' };
+    if (s === 'completed' || s === 'delivered') return { label: ORDER_STATUS[s][0], cls: 'green', group: 'done' };
+    if (o.app_accepted) return { label: 'Accepted', cls: 'blue', group: 'active' };
     const [label, cls] = ORDER_STATUS[s] || [s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, ' ') : '—', 'grey'];
-    const group = ['cancelled', 'canceled', 'refunded', 'failed'].includes(s) ? 'void' : ['completed', 'delivered'].includes(s) ? 'done' : 'active';
-    return { label, cls, group };
+    return { label, cls, group: 'active' };
   }
   function fulfillment(o) {
     const f = String(o.fulfillment_type || '').toLowerCase();
@@ -1151,7 +1157,9 @@
         <dt>Received</dt><dd>${esc(fmtDateTime(o.received_at))}</dd>
         <dt>Created in shop</dt><dd>${esc(o.date_created ? String(o.date_created).replace('T', ' ').slice(0, 16) : '—')}</dd>
         ${o.orderable_order_date || o.orderable_order_time ? `<dt>Requested for</dt><dd>${esc([o.orderable_order_date, o.orderable_order_time].filter(Boolean).join(' · '))}</dd>` : ''}
-        <dt>Status</dt><dd>${esc(st.label)}${o.status && !o.rejected ? ` <span class="muted-sm">(${esc(o.status)})</span>` : ''}</dd>
+        <dt>Status</dt><dd>${esc(st.label)}</dd>
+        ${o.delivered_at ? `<dt>${String(o.fulfillment_type || '').toLowerCase() === 'delivery' ? 'Delivered' : 'Completed'}</dt><dd>${esc(fmtDateTime(o.delivered_at))}${o.delivered_by && o.delivered_by !== 'Owner' ? ' · ' + esc(o.delivered_by) : ''}</dd>` : ''}
+        <dt>Shop status</dt><dd>${esc(o.status || '—')} <span class="muted-sm">· last reported by WooCommerce</span></dd>
       </dl></div></div>
       <div class="actions-row"><button class="btn btn-secondary" type="button" data-open-restaurant="${esc(code)}">${icon('store')}Open ${esc(o.restaurant_name || restaurantName(code))}</button></div>`;
     bindOpeners($('#drawerContent'));

@@ -139,6 +139,30 @@ function createControlCenterStats({ redisCommand, k, logger = console, now = () 
     return set;
   }
 
+  // What the apps did with each order. The orders list only holds the last
+  // WooCommerce status that WordPress pushed; accept / deliver / reject are
+  // stored in separate keys by the app routes and are not written back into it.
+  async function appStateFor(code, orders) {
+    const ids = orders.map(o => String(o?.order_id || '')).filter(Boolean);
+    const out = { rejected: new Set(), accepted: new Set(), delivered: new Map() };
+    if (!ids.length) return out;
+    const keys = [];
+    ids.forEach(id => keys.push(k(code, `rejected_time:${id}`), k(code, `accepted_time:${id}`), k(code, `delivered:${id}`)));
+    const res = await redisCommand('MGET', ...keys);
+    const values = res.result || [];
+    ids.forEach((id, i) => {
+      if (values[i * 3]) out.rejected.add(id);
+      if (values[i * 3 + 1]) out.accepted.add(id);
+      const deliveredRaw = values[i * 3 + 2];
+      if (deliveredRaw) {
+        let info = {};
+        try { info = JSON.parse(deliveredRaw) || {}; } catch (_) {}
+        out.delivered.set(id, { delivery_name: String(info.delivery_name || ''), delivered_at: info.delivered_at || null });
+      }
+    });
+    return out;
+  }
+
   async function loadOrders(code) {
     const res = await redisCommand('LRANGE', k(code, 'orders'), 0, 99);
     return parseJsonList(res.result);
@@ -349,7 +373,7 @@ function createControlCenterStats({ redisCommand, k, logger = console, now = () 
     };
   }
 
-  return { start, stop, tick, snapshotRestaurant, recordBeat, getBeats, analytics, rejectedIdsFor };
+  return { start, stop, tick, snapshotRestaurant, recordBeat, getBeats, analytics, rejectedIdsFor, appStateFor };
 }
 
 module.exports = {
