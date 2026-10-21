@@ -9,10 +9,15 @@
   <link rel="icon" type="image/png" href="/admin/assets/favicon-32x32.png" sizes="32x32">
   <link rel="icon" type="image/png" href="/admin/assets/icon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="/admin/assets/apple-touch-icon.png">
+  <link rel="manifest" href="/admin/assets/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="FoodUp CC">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/admin/assets/admin.css?v=3.2.0">
+  <link rel="stylesheet" href="/admin/assets/admin.css?v=3.3.0">
 </head>
 <body>
   <div id="loginView" class="login-view hidden">
@@ -144,9 +149,17 @@
               <div id="rpChartBody" class="chart-body"></div>
               <div id="rpChartStats" class="stat-strip"></div>
             </section>
-            <section class="panel">
+            <section class="panel rp-orders-panel">
               <div class="panel-head"><div><h2>Recent orders</h2><p id="rpOrdersSub"></p></div></div>
               <div class="table-scroll"><div id="rpOrders" class="grid-table orders-table single"></div></div>
+              <button id="rpOrdersMore" class="more-button" type="button">Show all recent orders</button>
+            </section>
+            <section id="rpMenuPanel" class="panel menu-panel">
+              <div class="panel-head">
+                <div class="title-inline"><span class="icon-chip accent" data-icon="menu"></span><div><h2>Menu &amp; prices</h2><p id="rpMenuSub">From the restaurant's WooCommerce</p></div></div>
+                <button id="rpMenuSave" class="btn btn-primary" type="button" hidden disabled>Save changes</button>
+              </div>
+              <div id="rpMenu"></div>
             </section>
           </div>
           <div id="rpSide" class="side-stack grow-side rp-side"></div>
@@ -203,6 +216,6 @@
   </div>
 
   <div id="toastContainer" class="toast-container" aria-live="polite"></div>
-  <script src="/admin/assets/admin.js?v=3.2.0" defer></script>
+  <script src="/admin/assets/admin.js?v=3.3.0" defer></script>
 </body>
 </html>

@@ -1,0 +1,15 @@
+{
+  "name": "FoodUp Control Center",
+  "short_name": "FoodUp CC",
+  "description": "Restaurants, orders and platform health for FoodUp.",
+  "start_url": "/admin",
+  "scope": "/admin",
+  "display": "standalone",
+  "background_color": "#f4f5f8",
+  "theme_color": "#111217",
+  "icons": [
+    { "src": "/admin/assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/admin/assets/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/admin/assets/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

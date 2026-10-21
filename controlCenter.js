@@ -149,7 +149,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
   });
 
   async function loadRestaurant(code, includeOrders = false) {
-    const [profileRaw, heartbeatRaw, tokensRaw, ordersRaw, printerRaw, autoRaw, websiteRaw, modulesRaw, storeRaw, courierRaw, customerEmailRaw, editionRaw] = await Promise.all([
+    const [profileRaw, heartbeatRaw, tokensRaw, ordersRaw, printerRaw, autoRaw, websiteRaw, modulesRaw, storeRaw, courierRaw, customerEmailRaw, editionRaw, iosPinRaw] = await Promise.all([
       redisCommand('GET', k(code, 'restaurant_profile')),
       redisCommand('GET', k(code, 'heartbeat')),
       redisCommand('SMEMBERS', k(code, 'device_tokens')),
@@ -162,6 +162,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       redisCommand('SMEMBERS', k(code, 'delivery_accounts')),
       redisCommand('GET', k(code, 'customer_email_settings')),
       redisCommand('GET', k(code, 'orders_app_edition')),
+      redisCommand('EXISTS', k(code, 'ios_pin')),
     ]);
 
     const profile = safeJson(profileRaw.result, {}) || {};
@@ -267,6 +268,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       edition: editionRaw.result === 'free' ? 'free' : 'pro',
       courier_count: couriers.length,
       store_status: storeRaw.result || 'open',
+      ios_pin_set: Number(iosPinRaw?.result || 0) > 0,
       website_health: websiteHealth,
       auto_settings: autoSettings,
       modules,
@@ -386,11 +388,14 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       const profile = safeJson(profileRaw.result, {}) || {};
       const body = req.body || {};
       const allowedProfile = ['name', 'website', 'phone', 'address'];
+      const profileTouched = allowedProfile.some(field => Object.prototype.hasOwnProperty.call(body, field));
       for (const field of allowedProfile) {
         if (Object.prototype.hasOwnProperty.call(body, field)) profile[field] = String(body[field] || '').trim();
       }
-      profile.updated_at = new Date().toISOString();
-      await redisCommand('SET', k(code, 'restaurant_profile'), JSON.stringify(profile));
+      if (profileTouched) {
+        profile.updated_at = new Date().toISOString();
+        await redisCommand('SET', k(code, 'restaurant_profile'), JSON.stringify(profile));
+      }
 
       if (body.modules && typeof body.modules === 'object') {
         const defaults = ['website_ordering','orders_app','courier','customer_app','online_payments','auto_handling','printing'];
@@ -411,6 +416,21 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
         const pin = String(body.owner_pin).trim();
         if (pin.length < 4) return res.status(400).json({ success: false, message: 'Owner PIN must be at least 4 characters' });
         await redisCommand('SET', k(code, 'pin'), pin);
+      }
+
+      if (body.ios_pin) {
+        const pin = String(body.ios_pin).trim();
+        if (pin.length < 4) return res.status(400).json({ success: false, message: 'iOS PIN must be at least 4 characters' });
+        if (restaurantSecurity && typeof restaurantSecurity.isKnownDefaultPin === 'function' && restaurantSecurity.isKnownDefaultPin(pin)) {
+          return res.status(400).json({ success: false, message: 'Choose a PIN that is not a default PIN' });
+        }
+        await redisCommand('SET', k(code, 'ios_pin'), pin);
+      }
+
+      // Same key the Orders app switch writes; WordPress picks it up within ~30 s.
+      if (typeof body.store_open === 'boolean') {
+        await redisCommand('SET', k(code, 'store_status'), body.store_open ? 'open' : 'closed');
+        console.log(`[control-center] store ${body.store_open ? 'opened' : 'closed'} for ${code}`);
       }
 
       res.json({ success: true, restaurant: await loadRestaurant(code, true) });
@@ -510,7 +530,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
     return (/^https?:\/\//i.test(website) ? website : `https://${website}`).replace(/\/+$/, '');
   }
 
-  async function wordpressRequest(code, method, changes) {
+  async function wordpressRequest(code, method, payload, path = '/control-center/settings', minVersion = '0.5.234') {
     if (!restaurantSecurity || typeof restaurantSecurity.getOutboundWordPressSecret !== 'function') {
       return { ok: false, reason: 'not_configured', message: 'WordPress bridge is not configured on this backend.' };
     }
@@ -524,21 +544,22 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       return { ok: false, reason: 'secret_missing', message: 'This restaurant has no per-restaurant secret yet. Open FoodUp Ordering → Orders App in WordPress and press Save & Connect once.' };
     }
 
-    const url = `${base}/wp-json/foodup/v1/control-center/settings${method === 'GET' ? `?restaurant_code=${encodeURIComponent(code)}` : ''}`;
+    const url = `${base}/wp-json/foodup/v1${path}${method === 'GET' ? `?restaurant_code=${encodeURIComponent(code)}` : ''}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), WP_TIMEOUT_MS);
     try {
       const response = await fetchImpl(url, {
         method,
         headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'x-foodup-secret': credential.secret, 'X-FoodUp-Client': 'control-center' },
-        body: method === 'GET' ? undefined : JSON.stringify({ restaurant_code: code, changes }),
+        body: method === 'GET' ? undefined : JSON.stringify({ restaurant_code: code, ...(payload || {}) }),
         signal: controller.signal,
         redirect: 'follow',
       });
       let body = {};
       try { body = await response.json(); } catch (_) {}
-      if (response.ok && body && body.success === true && body.settings) return { ok: true, data: body };
-      if (response.status === 404) return { ok: false, reason: 'plugin_outdated', message: 'This site does not have the Control Center bridge yet. Update FoodUp Ordering to 0.5.234 or newer.' };
+      if (response.ok && body && body.success === true) return { ok: true, data: body };
+      if (response.status === 404) return { ok: false, reason: 'plugin_outdated', message: `This site does not have this part of the Control Center bridge yet. Update FoodUp Ordering to ${minVersion} or newer.` };
+      if (response.status === 409) return { ok: false, reason: 'unavailable', message: String(body?.message || 'This feature is not available on the site.') };
       if (response.status === 401 || response.status === 403) return { ok: false, reason: 'unauthorized', message: 'WordPress refused the restaurant secret. Open FoodUp Ordering → Orders App and press Save & Connect.' };
       if (response.status === 400) return { ok: false, reason: 'invalid', message: String(body?.message || 'WordPress rejected the values.') };
       return { ok: false, reason: 'error', message: `WordPress answered with HTTP ${response.status}.` };
@@ -609,7 +630,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       return res.status(400).json({ success: false, message: 'changes must be an object' });
     }
     try {
-      const result = await wordpressRequest(code, 'POST', changes);
+      const result = await wordpressRequest(code, 'POST', { changes });
       if (!result.ok) {
         const status = result.reason === 'invalid' ? 400 : 502;
         return res.status(status).json({ success: false, reason: result.reason, message: result.message });
@@ -627,6 +648,119 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       }
       console.log(`[control-center] wordpress settings saved for ${code}: ${Object.keys(changes).join(', ')}`);
       res.json({ success: true, connected: true, wordpress: result.data, backend: await backendView(code), applied, warning });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+
+  app.get('/admin/api/restaurants/:code/wordpress/products', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    if (!code) return res.status(400).json({ success: false, message: 'Invalid restaurant code' });
+    try {
+      const result = await wordpressRequest(code, 'GET', null, '/control-center/products', '0.5.238');
+      if (!result.ok) return res.json({ success: true, available: false, reason: result.reason, message: result.message });
+      res.json({ success: true, available: true, ...result.data });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+  app.patch('/admin/api/restaurants/:code/wordpress/products', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    const updates = req.body?.updates;
+    if (!code) return res.status(400).json({ success: false, message: 'Invalid restaurant code' });
+    if (!Array.isArray(updates) || !updates.length || updates.length > 500) {
+      return res.status(400).json({ success: false, message: 'updates must be a list of 1–500 changes' });
+    }
+    try {
+      const result = await wordpressRequest(code, 'POST', { updates }, '/control-center/products', '0.5.238');
+      if (!result.ok) return res.status(result.reason === 'invalid' ? 400 : 502).json({ success: false, reason: result.reason, message: result.message });
+      console.log(`[control-center] ${updates.length} product change(s) saved for ${code}`);
+      res.json({ success: true, available: true, ...result.data });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+  // ---------- Courier accounts (same Redis records as the Orders app) ----------
+  const COURIER_NAME = /^[\p{L}\p{N} ._-]{1,40}$/u;
+  function courierKey(code, username) {
+    return k(code, `delivery_account:${String(username || '').trim().toLowerCase()}`);
+  }
+  async function loadCouriers(code) {
+    const members = await redisCommand('SMEMBERS', k(code, 'delivery_accounts'));
+    const names = (members.result || []).filter(Boolean);
+    if (!names.length) return [];
+    const values = await redisCommand('MGET', ...names.map(name => courierKey(code, name)));
+    return (values.result || []).map((raw, i) => {
+      const account = safeJson(raw, null);
+      if (!account) return null;
+      // Passwords are never sent to the browser.
+      return { username: account.username || names[i], key: names[i], phone: account.phone || '', created_at: account.created_at || null };
+    }).filter(Boolean).sort((a, b) => String(a.username).localeCompare(String(b.username)));
+  }
+
+  app.get('/admin/api/restaurants/:code/couriers', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    if (!code) return res.status(400).json({ success: false, message: 'Invalid restaurant code' });
+    try {
+      res.json({ success: true, couriers: await loadCouriers(code) });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+  app.post('/admin/api/restaurants/:code/couriers', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+    const phone = String(req.body?.phone || '').trim().slice(0, 40);
+    if (!code) return res.status(400).json({ success: false, message: 'Invalid restaurant code' });
+    if (!COURIER_NAME.test(username)) return res.status(400).json({ success: false, message: 'Username: 1–40 letters, numbers, spaces, dots, dashes' });
+    if (password.length < 4) return res.status(400).json({ success: false, message: 'Password must be at least 4 characters' });
+    try {
+      const existing = await redisCommand('GET', courierKey(code, username));
+      if (existing.result) return res.status(409).json({ success: false, message: 'A courier with this username already exists' });
+      await redisCommand('SET', courierKey(code, username), JSON.stringify({ username, password, phone, created_at: new Date().toISOString() }));
+      await redisCommand('SADD', k(code, 'delivery_accounts'), username.toLowerCase());
+      console.log(`[control-center] courier added for ${code}`);
+      res.json({ success: true, couriers: await loadCouriers(code) });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+  app.patch('/admin/api/restaurants/:code/couriers/:username', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    const username = String(req.params.username || '').trim();
+    if (!code || !username) return res.status(400).json({ success: false, message: 'Invalid courier' });
+    try {
+      const raw = await redisCommand('GET', courierKey(code, username));
+      const account = safeJson(raw.result, null);
+      if (!account) return res.status(404).json({ success: false, message: 'Courier not found' });
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'password')) {
+        const password = String(req.body.password || '');
+        if (password.length < 4) return res.status(400).json({ success: false, message: 'Password must be at least 4 characters' });
+        account.password = password;
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'phone')) account.phone = String(req.body.phone || '').trim().slice(0, 40);
+      await redisCommand('SET', courierKey(code, username), JSON.stringify(account));
+      res.json({ success: true, couriers: await loadCouriers(code) });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+  app.delete('/admin/api/restaurants/:code/couriers/:username', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    const username = String(req.params.username || '').trim().toLowerCase();
+    if (!code || !username) return res.status(400).json({ success: false, message: 'Invalid courier' });
+    try {
+      await redisCommand('DEL', courierKey(code, username));
+      await redisCommand('SREM', k(code, 'delivery_accounts'), username);
+      console.log(`[control-center] courier removed for ${code}`);
+      res.json({ success: true, couriers: await loadCouriers(code) });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
     }

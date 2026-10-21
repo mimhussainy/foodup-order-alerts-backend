@@ -107,6 +107,9 @@
     'arrow-left': 'M19 12H5M11 6l-6 6 6 6',
     pin: 'M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11zM12 7.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5z',
     external: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',
+    plus: 'M12 5v14M5 12h14',
+    lock: 'M6 11h12v10H6zM8 11V8a4 4 0 0 1 8 0v3M12 15v2',
+    menu: 'M4 6h16M4 12h16M4 18h16',
   };
   const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICONS[name] || ''}"></path></svg>`;
   const hydrateIcons = (root = document) => $$('[data-icon]', root).forEach(el => { if (!el.querySelector('svg')) el.innerHTML = icon(el.dataset.icon); });
@@ -424,13 +427,13 @@
       <div class="kpi anim-rise" style="--d:0ms">
         <div class="kpi-top"><span class="kpi-label">Orders today</span>${badge(dOrders)}</div>
         <div class="kpi-value" data-count="${t.orders}">${valueOrders}</div>
-        <svg class="kpi-spark" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"><path d="${so.area}" fill="var(--accent)" fill-opacity=".08"></path><path class="anim-draw" pathLength="1" d="${so.line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>
+        <svg class="kpi-spark anim-reveal" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"><path d="${so.area}" fill="var(--accent)" fill-opacity=".08"></path><path d="${so.line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>
         <div class="kpi-note">${esc(compareNote)}</div>
       </div>
       <div class="kpi anim-rise" style="--d:70ms">
         <div class="kpi-top"><span class="kpi-label">Revenue today</span>${badge(dRevenue)}</div>
         <div class="kpi-value" data-count="${t.revenue}" data-fmt="chf">${valueRevenue}</div>
-        <svg class="kpi-spark" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"><path d="${sr.area}" fill="var(--amber)" fill-opacity=".1"></path><path class="anim-draw" pathLength="1" d="${sr.line}" fill="none" stroke="var(--amber)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>
+        <svg class="kpi-spark anim-reveal" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"><path d="${sr.area}" fill="var(--amber)" fill-opacity=".1"></path><path d="${sr.line}" fill="none" stroke="var(--amber)" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>
         <div class="kpi-note">excl. rejected, cancelled &amp; refunded</div>
       </div>
       <div class="kpi anim-rise" style="--d:140ms">
@@ -497,16 +500,16 @@
     const bad = (r.attention || []).length > 0;
     const seen = r.app_minutes_ago != null ? (r.app_minutes_ago < 1 ? 'Just now' : `${r.app_minutes_ago} min ago`) : 'No heartbeat yet';
     const features = full ? `<span class="feature-badges">${Object.entries(MODULE_SHORT).map(([key, label]) => `<span class="feature-badge ${r.modules?.[key] ? 'on' : ''}">${label}</span>`).join('')}</span>` : '';
-    return `<button class="gt-row" type="button" data-open-restaurant="${esc(r.code)}">
-      <span class="cell-main"><span class="avatar ${bad ? 'bad' : ''}" aria-hidden="true">${esc(initials(r.name))}</span><span style="min-width:0"><span class="t">${esc(r.name)}</span><span class="s">${esc(r.code)} · ${plural(r.device_count || 0, 'device')}</span></span></span>
-      <span class="cell-stack"><span class="pill ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)} ${r.app_status === 'online' || r.app_status === 'offline' ? 'live' : ''}"></span>${esc(statusLabel(r.app_status))}</span><span class="s">${esc(seen)}</span></span>
-      ${beatsHtml(r.beats)}
-      ${features}
-      <span><span class="tag ${r.edition === 'free' ? 'free' : 'pro'}">${r.edition === 'free' ? 'Free' : 'Pro'}</span></span>
-      <span class="right strong num">${esc(r.orders_today || 0)}</span>
-      <span class="right num">${esc(money(r.revenue_today))}</span>
-      ${full ? `<span class="with-icon ${r.printer_device_id ? '' : 'printer-missing'}">${icon('printer')}${r.printer_device_id ? 'Assigned' : 'Not assigned'}</span>` : ''}
-      <span class="chev">${icon('chevron')}</span>
+    return `<button class="gt-row r-row" type="button" data-open-restaurant="${esc(r.code)}">
+      <span class="cell-main c-main"><span class="avatar ${bad ? 'bad' : ''}" aria-hidden="true">${esc(initials(r.name))}</span><span style="min-width:0"><span class="t">${esc(r.name)}</span><span class="s">${esc(r.code)} · ${plural(r.device_count || 0, 'device')}</span></span></span>
+      <span class="cell-stack c-status"><span class="pill ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)} ${r.app_status === 'online' || r.app_status === 'offline' ? 'live' : ''}"></span>${esc(statusLabel(r.app_status))}</span><span class="s">${esc(seen)}</span></span>
+      <span class="c-beats">${beatsHtml(r.beats)}</span>
+      ${features ? `<span class="c-feat">${features}</span>` : ''}
+      <span class="c-ed"><span class="tag ${r.edition === 'free' ? 'free' : 'pro'}">${r.edition === 'free' ? 'Free' : 'Pro'}</span></span>
+      <span class="right strong num c-orders" data-unit="${(r.orders_today || 0) === 1 ? 'order' : 'orders'}">${esc(r.orders_today || 0)}</span>
+      <span class="right num c-rev">${esc(money(r.revenue_today))}</span>
+      ${full ? `<span class="with-icon c-printer ${r.printer_device_id ? '' : 'printer-missing'}">${icon('printer')}${r.printer_device_id ? 'Assigned' : 'Not assigned'}</span>` : ''}
+      <span class="chev c-chev">${icon('chevron')}</span>
     </button>`;
   }
 
@@ -613,10 +616,10 @@
       <div class="chart-area">
         ${[4, 3, 2, 1, 0].map(g => `<div class="chart-grid-line" style="top:${pct(Y(g * stepY))}"></div><span class="chart-y" style="top:${pct(Y(g * stepY))}">${g * stepY}</span>`).join('')}
         <div class="chart-now" style="left:${Math.min(100, nowLeft).toFixed(2)}%"><span>now</span></div>
-        <svg class="chart-svg" viewBox="0 0 720 200" preserveAspectRatio="none" role="img" aria-label="Orders per hour today${showLast ? ' compared with ' + esc(a.last_week_label) : ''}">
+        <svg class="chart-svg anim-reveal ${replay ? 'replay' : ''}" viewBox="0 0 720 200" preserveAspectRatio="none" role="img" aria-label="Orders per hour today${showLast ? ' compared with ' + esc(a.last_week_label) : ''}">
           ${showLast ? `<path class="${replay ? 'replay-fade' : ''}" d="${lastLine}" fill="none" stroke="#a4aab5" stroke-width="2" stroke-dasharray="5 5" vector-effect="non-scaling-stroke"></path>` : ''}
           <path class="${replay ? 'replay-fade' : ''}" d="${todayArea}" fill="var(--accent)" fill-opacity=".09"></path>
-          <path class="anim-draw ${replay ? 'replay' : ''}" pathLength="1" d="${todayLine}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+          <path d="${todayLine}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
         </svg>
         ${last ? `<span class="chart-end status-dot accent live" style="left:${(X(tPts.length - 1) / CW * 100).toFixed(2)}%;top:${pct(last[1])}"></span>` : ''}
         <div class="chart-hit" style="left:${(-step / 2).toFixed(3)}%;width:${(100 + step).toFixed(3)}%">
@@ -762,15 +765,15 @@
       const st = orderStatus(o);
       const [type, typeIcon] = fulfillment(o);
       const fresh = isOverview && i === 0 && state.firstPaint;
-      return `<button class="gt-row ${fresh ? 'new' : ''}" type="button" data-open-order="${esc(o.restaurant_code)}|${esc(o.order_id)}">
-        <span class="strong num">#${esc(o.order_id)}</span>
-        ${single ? '' : `<span>${esc(o.restaurant_name)}</span>`}
-        <span class="cell-stack"><span class="strong">${esc(o.customer_name || '—')}</span>${o.customer_phone ? `<span class="s">${esc(o.customer_phone)}</span>` : ''}</span>
-        <span class="with-icon">${icon(typeIcon)}${esc(type)}</span>
-        <span>${esc(o.payment_method || '—')}</span>
-        <span><span class="pill ${st.cls}">${esc(st.label)}</span></span>
-        <span class="right strong num">${esc(money(o.total, o.currency))}</span>
-        <span class="right muted-sm">${esc(fmtAgo(orderDate(o)))}</span>
+      return `<button class="gt-row o-row ${fresh ? 'new' : ''}" type="button" data-open-order="${esc(o.restaurant_code)}|${esc(o.order_id)}">
+        <span class="strong num c-id">#${esc(o.order_id)}</span>
+        ${single ? '' : `<span class="c-rest">${esc(o.restaurant_name)}</span>`}
+        <span class="cell-stack c-cust"><span class="strong">${esc(o.customer_name || '—')}</span>${o.customer_phone ? `<span class="s">${esc(o.customer_phone)}</span>` : ''}</span>
+        <span class="with-icon c-type">${icon(typeIcon)}${esc(type)}</span>
+        <span class="c-pay">${esc(o.payment_method || '—')}</span>
+        <span class="c-status"><span class="pill ${st.cls}">${esc(st.label)}</span></span>
+        <span class="right strong num c-total">${esc(money(o.total, o.currency))}</span>
+        <span class="right muted-sm c-time">${esc(fmtAgo(orderDate(o)))}</span>
       </button>`;
     }).join('');
   }
@@ -844,13 +847,13 @@
     $('#healthTable').innerHTML = '<div class="gt-head"><span>Restaurant</span><span>Orders App · 60 min</span><span>Website</span><span class="center">Devices</span><span>Printer</span><span>Last order</span></div>' + list.map(r => {
       const wh = r.website_health;
       const web = wh ? `<span class="cell-stack"><span class="pill ${wh.status === 'down' ? 'red' : 'green'}">${wh.status === 'down' ? 'Down' : 'Up'}${wh.status !== 'down' && wh.response_ms != null ? ' · ' + esc(wh.response_ms) + ' ms' : ''}</span><span class="s">${wh.error ? esc(wh.error) + ' · ' : ''}checked ${esc(fmtAgo(wh.checked_at))}</span></span>` : `<span class="muted-sm">${r.website ? 'Not checked yet' : 'No website'}</span>`;
-      return `<button class="gt-row" type="button" data-open-restaurant="${esc(r.code)}">
-        <span class="cell-main"><span class="avatar ${(r.attention || []).length ? 'bad' : ''}" aria-hidden="true">${esc(initials(r.name))}</span><span style="min-width:0"><span class="t">${esc(r.name)}</span><span class="s"><span class="status-dot ${esc(r.app_status)}"></span> ${esc(statusLabel(r.app_status))}${r.app_minutes_ago != null ? ' · ' + esc(r.app_minutes_ago) + ' min' : ''}</span></span></span>
-        ${beatsHtml(r.beats)}
-        ${web}
-        <span class="center num ${r.device_count ? '' : 'printer-missing'}">${esc(r.device_count || 0)}</span>
-        <span class="with-icon ${r.printer_device_id ? '' : 'printer-missing'}">${icon('printer')}${r.printer_device_id ? 'Assigned' : 'Not assigned'}</span>
-        <span class="muted-sm">${esc(r.last_order_at ? fmtAgo(r.last_order_at) : 'No orders')}</span>
+      return `<button class="gt-row h-row" type="button" data-open-restaurant="${esc(r.code)}">
+        <span class="cell-main c-main"><span class="avatar ${(r.attention || []).length ? 'bad' : ''}" aria-hidden="true">${esc(initials(r.name))}</span><span style="min-width:0"><span class="t">${esc(r.name)}</span><span class="s"><span class="status-dot ${esc(r.app_status)}"></span> ${esc(statusLabel(r.app_status))}${r.app_minutes_ago != null ? ' · ' + esc(r.app_minutes_ago) + ' min' : ''}</span></span></span>
+        <span class="c-beats">${beatsHtml(r.beats)}</span>
+        <span class="c-web">${web}</span>
+        <span class="center num c-dev ${r.device_count ? '' : 'printer-missing'}" data-unit="${(r.device_count || 0) === 1 ? 'device' : 'devices'}">${esc(r.device_count || 0)}</span>
+        <span class="with-icon c-printer ${r.printer_device_id ? '' : 'printer-missing'}">${icon('printer')}${r.printer_device_id ? 'Assigned' : 'Not assigned'}</span>
+        <span class="muted-sm c-last">${esc(r.last_order_at ? fmtAgo(r.last_order_at) : 'No orders')}</span>
       </button>`;
     }).join('');
 
@@ -920,7 +923,7 @@
 
   async function showRestaurantPage(code) {
     if (!state.page || state.page.code !== code) {
-      state.page = { code, data: null, analytics: null, chart: { period: 'today', hover: null, animated: false }, dirty: false, lastAnalyticsAt: 0 };
+      state.page = { code, data: null, analytics: null, chart: { period: 'today', hover: null, animated: false }, dirty: false, lastAnalyticsAt: 0, couriers: null, wp: null, menu: null };
     }
     setActiveView('restaurant', 'restaurants');
     const known = restaurantsList().find(r => r.code === code);
@@ -944,13 +947,42 @@
       if (analytics?.analytics) { page.analytics = analytics.analytics; page.lastAnalyticsAt = Date.now(); }
       // Never overwrite a form the admin is typing in.
       renderRestaurantPage({ skipSide: silent && page.dirty });
-      if (!silent) loadWordpress(page);
+      if (!silent) { loadWordpress(page); loadCouriers(page); }
     } catch (error) {
       if (state.page !== page) return;
       if (!page.data) $('#rpHero').innerHTML = `<div class="rp-loading">${esc(error.message)}</div>`;
       else if (!silent) toast(error.message, 'error');
     }
   }
+
+  // Collapsible restaurant-page sections; the open/closed choice is remembered per browser.
+  const SECTION_DEFAULT_OPEN = { attention: true, wp_status: true, hours: !window.matchMedia('(max-width: 760px)').matches };
+  let sectionMemory = {};
+  try { sectionMemory = JSON.parse(localStorage.getItem('cc_sections') || '{}') || {}; } catch (_) { sectionMemory = {}; }
+  const sectionOpen = (id) => (id in sectionMemory ? !!sectionMemory[id] : !!SECTION_DEFAULT_OPEN[id]);
+  function rememberSections(root) {
+    $$('details[data-sec]', root).forEach(el => {
+      el.addEventListener('toggle', () => {
+        sectionMemory[el.dataset.sec] = el.open;
+        try { localStorage.setItem('cc_sections', JSON.stringify(sectionMemory)); } catch (_) {}
+        if (el.open) requestAnimationFrame(() => $$('.segmented', el).forEach(positionThumb));
+      });
+    });
+  }
+  function section(id, title, badge, body, opts = {}) {
+    const foot = opts.saveId ? `<div class="d-foot">${opts.footExtra || ''}<button id="${opts.saveId}" class="btn ${opts.saveClass || 'btn-primary'}" type="button">${esc(opts.saveLabel || 'Save')}</button></div>` : '';
+    return `<details class="d-section ${opts.danger ? 'danger' : ''}" data-sec="${id}" ${sectionOpen(id) ? 'open' : ''}>
+      <summary class="d-head"><h3>${opts.icon ? icon(opts.icon) : ''}${esc(title)}</h3><span class="d-head-right">${badge || ''}<span class="d-chev">${icon('chevron')}</span></span></summary>
+      <div class="d-body">${body}${foot}</div>
+    </details>`;
+  }
+
+  const STORE_REASON = {
+    open: 'Open now · within opening hours',
+    outside_opening_hours: 'Outside opening hours · preorders only',
+    scheduled_closure: 'Closed by a scheduled closure',
+    manually_closed: 'Closed manually',
+  };
 
   function renderRestaurantPage({ skipSide = false } = {}) {
     const page = state.page;
@@ -962,34 +994,14 @@
       $('#rpSide').innerHTML = '';
       $('#rpOrders').innerHTML = '';
       $('#rpOrdersSub').textContent = '';
+      $('#rpOrdersMore').hidden = true;
+      $('#rpMenu').innerHTML = '';
       renderChart(restaurantChartCtx());
       return;
     }
     $('#pageTitle').textContent = r.name;
     document.title = `${r.name} · FoodUp Control Center`;
-    const bad = (r.attention_items || []).length > 0;
-    const websiteUrl = r.website ? (/^https?:/.test(r.website) ? r.website : `https://${r.website}`) : '';
-    const tel = r.phone ? `tel:${String(r.phone).replace(/[^+\d]/g, '')}` : '';
-    const since = r.app_minutes_ago != null ? (r.app_minutes_ago < 1 ? 'last seen just now' : `last seen ${r.app_minutes_ago} min ago`) : 'no heartbeat yet';
-
-    $('#rpHero').innerHTML = `
-      <div class="who">
-        <span class="avatar lg ${bad ? 'bad' : ''}" aria-hidden="true">${esc(initials(r.name))}</span>
-        <div style="min-width:0">
-          <div class="line"><span class="pill ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)} live"></span>Orders App ${esc(statusLabel(r.app_status).toLowerCase())}</span><span>${esc(since)}</span><span class="tag ${r.edition === 'free' ? 'free' : 'pro'}">${r.edition === 'free' ? 'FoodUp Free' : 'FoodUp Pro'}</span></div>
-          <div class="line">
-            <span class="with-icon">${icon('store')}${esc(r.code)}</span>
-            ${websiteUrl ? `<a class="with-icon" href="${esc(websiteUrl)}" target="_blank" rel="noopener">${icon('globe')}${esc(r.website)}</a>` : ''}
-            ${r.phone ? `<span class="with-icon">${icon('phone')}${esc(r.phone)}</span>` : ''}
-            ${r.address ? `<span class="with-icon">${icon('pin')}${esc(r.address)}</span>` : ''}
-          </div>
-        </div>
-      </div>
-      <div class="beat-box"><div class="mix-title">Orders App · last 60 minutes</div>${beatsHtml(r.beats)}</div>
-      <div class="hero-actions">
-        ${tel ? `<a class="btn btn-secondary" href="${esc(tel)}">${icon('phone')}Call</a>` : ''}
-        ${websiteUrl ? `<a class="btn btn-secondary" href="${esc(websiteUrl)}" target="_blank" rel="noopener">${icon('external')}Website</a>` : ''}
-      </div>`;
+    renderHero();
 
     const a = page.analytics;
     const orders = a ? a.today_totals.orders : (r.orders_today || 0);
@@ -1010,41 +1022,158 @@
     const list = (r.recent_orders || []).map(o => ({ ...o, restaurant_code: r.code, restaurant_name: r.name }));
     $('#rpOrdersSub').textContent = list.length ? `Latest ${Math.min(25, list.length)} of ${list.length} stored orders` : '';
     $('#rpOrders').innerHTML = orderRows(list.slice(0, 25), false, true);
+    $('#rpOrders').classList.toggle('show-all', !!page.showAllOrders);
+    const more = $('#rpOrdersMore');
+    more.hidden = list.length <= 8;
+    more.textContent = page.showAllOrders ? 'Show fewer' : `Show all ${Math.min(25, list.length)} orders`;
+    more.onclick = () => { page.showAllOrders = !page.showAllOrders; renderRestaurantPage({ skipSide: true }); };
     bindOpeners($('#rpOrders'));
 
     if (!skipSide) renderRestaurantSide(r);
+    renderMenu();
+  }
+
+  function renderHero() {
+    const page = state.page;
+    const r = page?.data;
+    if (!r) return;
+    const bad = (r.attention_items || []).length > 0;
+    const websiteUrl = r.website ? (/^https?:/.test(r.website) ? r.website : `https://${r.website}`) : '';
+    const tel = r.phone ? `tel:${String(r.phone).replace(/[^+\d]/g, '')}` : '';
+    const since = r.app_minutes_ago != null ? (r.app_minutes_ago < 1 ? 'last seen just now' : `last seen ${r.app_minutes_ago} min ago`) : 'no heartbeat yet';
+    const storeOpen = r.store_status !== 'closed';
+    const availability = page.wp?.data?.availability;
+    let storeNote = storeOpen ? 'Customers can order' : 'Closed for customers until you open again';
+    if (availability) {
+      storeNote = STORE_REASON[availability.reason] || storeNote;
+      if (availability.reason === 'scheduled_closure' && availability.active_closure) {
+        storeNote = `Closed${availability.active_closure.reason ? ': ' + availability.active_closure.reason : ''} until ${dayLabel(availability.active_closure.end)}`;
+      }
+    }
+
+    $('#rpHero').innerHTML = `
+      <div class="who">
+        <span class="avatar lg ${bad ? 'bad' : ''}" aria-hidden="true">${esc(initials(r.name))}</span>
+        <div style="min-width:0">
+          <div class="line"><span class="pill ${esc(r.app_status)}"><span class="status-dot ${esc(r.app_status)} live"></span>Orders App ${esc(statusLabel(r.app_status).toLowerCase())}</span><span>${esc(since)}</span><span class="tag ${r.edition === 'free' ? 'free' : 'pro'}">${r.edition === 'free' ? 'FoodUp Free' : 'FoodUp Pro'}</span></div>
+          <div class="line">
+            <span class="with-icon">${icon('store')}${esc(r.code)}</span>
+            ${websiteUrl ? `<a class="with-icon" href="${esc(websiteUrl)}" target="_blank" rel="noopener">${icon('globe')}${esc(r.website)}</a>` : ''}
+            ${r.phone ? `<span class="with-icon">${icon('phone')}${esc(r.phone)}</span>` : ''}
+            ${r.address ? `<span class="with-icon">${icon('pin')}${esc(r.address)}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="store-box">
+        <div class="mix-title">Online ordering</div>
+        <div id="rpStore" class="segmented store-switch ${storeOpen ? 'is-open' : 'is-closed'}" role="tablist" aria-label="Online ordering"></div>
+        <div class="store-note">${esc(storeNote)}</div>
+      </div>
+      <div class="beat-box"><div class="mix-title">Orders App · last 60 minutes</div>${beatsHtml(r.beats)}</div>
+      <div class="hero-actions">
+        ${tel ? `<a class="btn btn-secondary" href="${esc(tel)}">${icon('phone')}Call</a>` : ''}
+        ${websiteUrl ? `<a class="btn btn-secondary" href="${esc(websiteUrl)}" target="_blank" rel="noopener">${icon('external')}Website</a>` : ''}
+      </div>`;
+
+    const storeEl = $('#rpStore');
+    segmented(storeEl, [{ value: 'open', label: 'Open' }, { value: 'closed', label: 'Closed' }], storeOpen ? 'open' : 'closed', (value) => {
+      const revert = () => selectSegment(storeEl, storeOpen ? 'open' : 'closed');
+      const apply = async () => {
+        try {
+          const data = await api(`/admin/api/restaurants/${encodeURIComponent(r.code)}`, { method: 'PATCH', body: JSON.stringify({ store_open: value === 'open' }) });
+          if (state.page !== page) return;
+          page.data = data.restaurant;
+          toast(value === 'open' ? `${r.name} is open for orders` : `${r.name} is closed for orders`);
+          renderHero();
+          setTimeout(() => { if (state.page === page) loadWordpress(page); }, 4000);
+        } catch (error) {
+          toast(error.message, 'error');
+          revert();
+        }
+      };
+      if (value === 'closed') {
+        choiceModal('Close online ordering?', `Customers can no longer order from ${r.name} until you open again. The website updates within about 30 seconds.`, 'Close ordering', 'btn-danger', apply, revert);
+      } else {
+        apply();
+      }
+    });
+    requestAnimationFrame(() => positionThumb(storeEl));
+  }
+
+  function choiceModal(title, message, label, cls, onConfirm, onCancel) {
+    let done = false;
+    openModal(title, `<p>${esc(message)}</p><div class="modal-actions"><button id="cancelModal" class="btn btn-secondary" type="button">Cancel</button><button id="confirmModal" class="btn ${cls}" type="button">${esc(label)}</button></div>`);
+    modalCloseHook = () => { if (!done) { done = true; onCancel?.(); } };
+    $('#cancelModal').onclick = closeModal;
+    $('#confirmModal').onclick = async () => {
+      done = true;
+      closeModal();
+      await onConfirm();
+    };
+    setTimeout(() => $('#cancelModal')?.focus(), 20);
   }
 
   function renderRestaurantSide(r) {
+    const page = state.page;
     const email = r.customer_email_settings || {};
     const failed = Array.isArray(r.failed_delivered_callbacks) ? r.failed_delivered_callbacks : [];
     const bad = (r.attention_items || []).length > 0;
+    const couriers = page.couriers;
+    const courierRows = !couriers
+      ? '<div class="muted-sm">Loading couriers…</div>'
+      : couriers.length
+        ? `<div class="mini-list">${couriers.map(c => `<div class="mini-row courier-row"><span class="cell-main" style="gap:10px"><span class="avatar sm" aria-hidden="true">${esc(initials(c.username))}</span><span><strong>${esc(c.username)}</strong><span class="s">${c.phone ? esc(c.phone) : 'no phone'}${c.created_at ? ' · since ' + esc(dayLabel(String(c.created_at).slice(0, 10))) : ''}</span></span></span><span class="row-actions"><button class="icon-button sm" type="button" data-courier-phone="${esc(c.key)}" aria-label="Edit phone of ${esc(c.username)}" title="Edit phone">${icon('phone')}</button><button class="icon-button sm" type="button" data-courier-password="${esc(c.key)}" aria-label="New password for ${esc(c.username)}" title="New password">${icon('key')}</button><button class="icon-button sm danger" type="button" data-courier-delete="${esc(c.key)}" aria-label="Remove ${esc(c.username)}" title="Remove">${icon('trash')}</button></span></div>`).join('')}</div>`
+        : '<div class="muted-sm">No courier accounts yet.</div>';
+
     $('#rpSide').innerHTML = `
-      ${bad ? `<div class="d-section danger"><div class="d-head"><h3>Needs attention</h3><span class="pill red">${plural(r.attention_items.length, 'issue')}</span></div><div class="d-body"><div class="issue-list" style="margin:0">${r.attention_items.map(i => `<div class="issue ${esc(i.severity)}"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span></div>`).join('')}</div></div></div>` : ''}
+      ${bad ? section('attention', 'Needs attention', `<span class="pill red">${plural(r.attention_items.length, 'issue')}</span>`, `<div class="issue-list" style="margin:0">${r.attention_items.map(i => `<div class="issue ${esc(i.severity)}"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span></div>`).join('')}</div>`, { danger: true, icon: 'alert' }) : ''}
       <div id="rpWp" class="side-stack"></div>
-      <div class="d-section"><div class="d-head"><h3>Connection profile</h3><button id="saveProfileBtn" class="btn btn-primary" type="button">Save</button></div><div class="d-body"><div class="edit-grid">
+      ${section('couriers', 'Couriers', `<span class="pill grey">${couriers ? couriers.length : '…'}</span>`, `${courierRows}
+        <div class="add-row">
+          <div class="mix-title" style="margin:14px 0 8px">Add courier</div>
+          <div class="edit-grid">
+            <div class="field"><label for="cNewName">Username</label><input id="cNewName" autocomplete="off" placeholder="Aziz"></div>
+            <div class="field"><label for="cNewPass">Password</label><input id="cNewPass" type="password" autocomplete="new-password" placeholder="At least 4 characters"></div>
+            <div class="field"><label for="cNewPhone">Phone</label><input id="cNewPhone" type="tel" placeholder="+41 79 000 00 00"></div>
+          </div>
+        </div>
+        <p class="d-note">The same accounts the FoodUp Courier app logs in with. Passwords are never shown.</p>`, { saveId: 'cAddBtn', saveLabel: 'Add courier', icon: 'user' })}
+      ${section('security', 'PINs & devices', `<span class="pill ${r.ios_pin_set ? 'green' : 'amber'}">iOS PIN ${r.ios_pin_set ? 'set' : 'not set'}</span>`, `
+        <div class="mini-list">
+          <div class="mini-row"><span><strong>Owner PIN</strong><span class="s">Android owner login and app settings · never shown</span></span><button id="resetPinBtn" class="btn btn-secondary" type="button">${icon('key')}Set new</button></div>
+          <div class="mini-row"><span><strong>iOS PIN</strong><span class="s">${r.ios_pin_set ? 'Set · never shown' : 'Not set yet'}</span></span><button id="iosPinBtn" class="btn btn-secondary" type="button">${icon('key')}Set new</button></div>
+          <div class="mini-row"><span><strong>Orders App devices</strong><span class="s">${plural(r.device_count || 0, 'device')} registered for push</span></span><button id="resetDevicesBtn" class="btn btn-secondary" type="button">${icon('device')}Reset</button></div>
+          <div class="mini-row"><span><strong>Printer</strong><span class="s">${r.printer_device_id ? 'Device ' + esc(String(r.printer_device_id).slice(0, 12)) + '…' : 'Not assigned'}</span></span><button id="resetPrinterBtn" class="btn btn-secondary" type="button">${icon('printer')}Clear</button></div>
+        </div>`, { icon: 'lock' })}
+      ${section('profile', 'Connection profile', '', `<div class="edit-grid">
         <div class="field"><label for="editName">Name</label><input id="editName" value="${esc(r.name)}"></div>
         <div class="field"><label for="editWebsite">Website</label><input id="editWebsite" value="${esc(r.website)}" placeholder="restaurant.ch"></div>
         <div class="field"><label for="editPhone">Phone</label><input id="editPhone" value="${esc(r.phone)}" placeholder="+41 44 000 00 00"></div>
         <div class="field"><label for="editAddress">Address</label><input id="editAddress" value="${esc(r.address)}" placeholder="Street 1, 8000 Zürich"></div>
-      </div><p class="d-note">Stored in the FoodUp backend. The website here is where the backend sends order callbacks; the apps show name, phone and address.</p></div></div>
-      <div class="d-section"><div class="d-head"><h3>Customer email (Resend, legacy)</h3><button id="saveCustomerEmailBtn" class="btn btn-secondary" type="button">Save</button></div><div class="d-body">
-        <label class="module-toggle"><span>Allow central FoodUp email via Resend</span><span class="switch"><input id="resendEnabledToggle" type="checkbox" ${email.resend_enabled ? 'checked' : ''}><span></span></span></label>
-        <p class="d-note">Restaurant emails now run through Brevo, set up in FoodUp Ordering → Brevo. This switch only controls the old central Resend endpoint.</p>
-      </div></div>
-      <div class="d-section"><div class="d-head"><h3>Failed delivered callbacks</h3><span class="pill ${failed.length ? 'amber' : 'green'}">${failed.length}</span></div><div class="d-body">
+      </div><p class="d-note">Stored in the FoodUp backend. The website here is where the backend sends order callbacks; the apps show name, phone and address.</p>`, { saveId: 'saveProfileBtn', icon: 'store' })}
+      ${section('callbacks', 'Failed delivered callbacks', `<span class="pill ${failed.length ? 'amber' : 'green'}">${failed.length}</span>`, `
         ${failed.length ? `<div class="mini-list">${failed.map(item => `<div class="mini-row"><span><strong>#${esc(item.order_id)}</strong><span class="s">${esc(item.reason || 'callback_failed')} · ${plural(Number(item.attempts || 0), 'attempt')} · ${esc(item.last_attempt_at ? fmtAgo(item.last_attempt_at) : 'no attempt time')}</span></span><button class="btn btn-secondary" type="button" data-retry-delivered-callback="${esc(item.order_id)}">${icon('refresh')}Retry</button></div>`).join('')}</div>` : '<div class="muted-sm">All delivered statuses reached WordPress.</div>'}
-        <p class="d-note">Permanent failures and callbacks that exhaust their 24-hour retry window are kept for 30 days.</p>
-      </div></div>
-      <div class="d-section"><div class="d-head"><h3>Connection management</h3></div><div class="d-body"><div class="actions-row">
-        <button id="resetDevicesBtn" class="btn btn-secondary" type="button">${icon('device')}Reset Orders devices</button>
-        <button id="resetPrinterBtn" class="btn btn-secondary" type="button">${icon('printer')}Clear printer</button>
-        <button id="resetPinBtn" class="btn btn-secondary" type="button">${icon('key')}Set new owner PIN</button>
-      </div></div></div>
-      <div class="d-section danger"><div class="d-head"><h3>Danger zone</h3></div><div class="d-body"><p class="d-note" style="margin:0 0 12px">These actions permanently change backend data for this restaurant.</p><div class="actions-row"><button id="clearOrdersBtn" class="btn btn-outline-danger" type="button">${icon('trash')}Clear order history</button><button id="removeRestaurantBtn" class="btn btn-danger" type="button">${icon('trash')}Remove restaurant</button></div></div></div>`;
+        <p class="d-note">Permanent failures and callbacks that exhaust their 24-hour retry window are kept for 30 days.</p>`, { icon: 'plug' })}
+      ${section('resend', 'Customer email (Resend, legacy)', email.resend_enabled ? '<span class="pill amber">On</span>' : '<span class="pill grey">Off</span>', `
+        <label class="module-toggle"><span>Allow central FoodUp email via Resend</span><span class="switch"><input id="resendEnabledToggle" type="checkbox" ${email.resend_enabled ? 'checked' : ''}><span></span></span></label>
+        <p class="d-note">Restaurant emails now run through Brevo (see Email above). This switch only controls the old central Resend endpoint.</p>`, { saveId: 'saveCustomerEmailBtn', saveClass: 'btn-secondary', icon: 'mail' })}
+      ${section('danger', 'Danger zone', '', `<p class="d-note" style="margin:0 0 12px">These actions permanently change backend data for this restaurant.</p><div class="actions-row"><button id="clearOrdersBtn" class="btn btn-outline-danger" type="button">${icon('trash')}Clear order history</button><button id="removeRestaurantBtn" class="btn btn-danger" type="button">${icon('trash')}Remove restaurant</button></div>`, { danger: true, icon: 'alert' })}`;
     state.page.dirty = false;
+    rememberSections($('#rpSide'));
     bindRestaurantActions();
     renderWordpress();
+  }
+
+  async function loadCouriers(page) {
+    try {
+      const data = await api(`/admin/api/restaurants/${encodeURIComponent(page.code)}/couriers`);
+      if (state.page !== page) return;
+      page.couriers = data.couriers || [];
+    } catch (_) {
+      if (state.page !== page) return;
+      page.couriers = page.couriers || [];
+    }
+    if (!page.dirty) renderRestaurantSide(page.data);
   }
 
   function bindRestaurantActions() {
@@ -1052,7 +1181,7 @@
     const code = page.data.code;
     const name = page.data.name;
     const side = $('#rpSide');
-    side.oninput = () => { page.dirty = true; };
+    side.oninput = (event) => { if (!event.target.closest('#rpWp')) page.dirty = true; };
     const patch = async (body, message) => {
       const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method: 'PATCH', body: JSON.stringify(body) });
       if (state.page !== page) return;
@@ -1063,6 +1192,15 @@
       refreshAll({ silent: true });
     };
     const busy = (btn, fn) => async () => { btn.disabled = true; try { await fn(); } catch (e) { toast(e.message, 'error'); } finally { btn.disabled = false; } };
+    const courierCall = async (method, path, body, message) => {
+      const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}/couriers${path}`, { method, body: JSON.stringify(body || {}) });
+      if (state.page !== page) return;
+      page.couriers = data.couriers || [];
+      page.dirty = false;
+      toast(message);
+      renderRestaurantSide(page.data);
+    };
+
     const saveProfile = $('#saveProfileBtn');
     saveProfile.addEventListener('click', busy(saveProfile, () => patch({ name: $('#editName').value, website: $('#editWebsite').value, phone: $('#editPhone').value, address: $('#editAddress').value }, 'Restaurant profile saved')));
     const saveEmail = $('#saveCustomerEmailBtn');
@@ -1077,6 +1215,25 @@
         renderRestaurantPage();
       }));
     });
+
+    const addBtn = $('#cAddBtn');
+    addBtn.addEventListener('click', busy(addBtn, () => courierCall('POST', '', {
+      username: $('#cNewName').value.trim(), password: $('#cNewPass').value, phone: $('#cNewPhone').value.trim(),
+    }, 'Courier added')));
+    $$('[data-courier-phone]', side).forEach(btn => btn.addEventListener('click', () => {
+      const key = btn.dataset.courierPhone;
+      const current = (page.couriers || []).find(c => c.key === key);
+      inputModal(`Phone for ${current?.username || key}`, 'The phone number customers and the restaurant see for this courier.', '+41 79 000 00 00', value => courierCall('PATCH', `/${encodeURIComponent(key)}`, { phone: value }, 'Courier phone updated'), 'tel', current?.phone || '');
+    }));
+    $$('[data-courier-password]', side).forEach(btn => btn.addEventListener('click', () => {
+      const key = btn.dataset.courierPassword;
+      inputModal('New courier password', 'At least 4 characters. The courier needs it for the next login.', 'New password', value => courierCall('PATCH', `/${encodeURIComponent(key)}`, { password: value }, 'Courier password changed'), 'password');
+    }));
+    $$('[data-courier-delete]', side).forEach(btn => btn.addEventListener('click', () => {
+      const key = btn.dataset.courierDelete;
+      confirmationModal('Remove courier', `Remove the courier account "${key}"? The Courier app logs this account out at its next check.`, 'Remove courier', () => courierCall('DELETE', `/${encodeURIComponent(key)}`, {}, 'Courier removed'));
+    }));
+
     $('#resetDevicesBtn').addEventListener('click', () => confirmationModal('Reset Orders devices', `Disconnect all registered Orders App devices for ${name}? They will need to log in again.`, 'Reset devices', async () => {
       await api(`/admin/api/restaurants/${encodeURIComponent(code)}/reset-devices`, { method: 'POST', body: '{}' });
       toast('Orders devices reset'); refreshAll({ silent: true }); await loadRestaurantPage();
@@ -1085,7 +1242,8 @@
       await api(`/admin/api/restaurants/${encodeURIComponent(code)}/reset-printer`, { method: 'POST', body: '{}' });
       toast('Printer assignment cleared'); refreshAll({ silent: true }); await loadRestaurantPage();
     }));
-    $('#resetPinBtn').addEventListener('click', () => inputModal('Set new owner PIN', 'Enter a new owner PIN (at least 4 characters). The current PIN is never shown.', 'New owner PIN', value => patch({ owner_pin: value }, 'Owner PIN updated'), 'password'));
+    $('#resetPinBtn').addEventListener('click', () => inputModal('Set new owner PIN', 'Enter a new owner PIN (at least 4 characters). The current PIN is never shown. WordPress keeps its own copy for Save & Connect, so update it there too.', 'New owner PIN', value => patch({ owner_pin: value }, 'Owner PIN updated'), 'password'));
+    $('#iosPinBtn').addEventListener('click', () => inputModal('Set new iOS PIN', 'Used by the FoodUp Orders app on iPhone/iPad (at least 4 characters, not a default PIN).', 'New iOS PIN', value => patch({ ios_pin: value }, 'iOS PIN updated'), 'password'));
     $('#clearOrdersBtn').addEventListener('click', () => typedConfirmation('Clear order history', `This permanently clears the stored FoodUp backend order history for ${name}. Type ${code} to continue.`, code, async () => {
       await api(`/admin/api/restaurants/${encodeURIComponent(code)}/orders`, { method: 'DELETE', body: JSON.stringify({ confirm: code }) });
       toast('Order history cleared'); refreshAll({ silent: true }); await loadRestaurantPage({ withAnalytics: true });
@@ -1111,7 +1269,7 @@
 
   async function loadWordpress(page) {
     page.wp = { ...(page.wp || {}), loading: true };
-    renderWordpress();
+    if (!page.wpDirty) renderWordpress();
     try {
       const data = await api(`/admin/api/restaurants/${encodeURIComponent(page.code)}/wordpress`);
       if (state.page !== page) return;
@@ -1123,10 +1281,28 @@
       page.wp = { loading: false, connected: false, reason: 'error', message: error.message };
     }
     if (!page.wpDirty) renderWordpress();
+    renderHero();
+    if (page.wp.connected && !page.menu) loadMenu(page);
+    else if (!page.wp.connected) renderMenu();
   }
 
   function wpField(id, label, value, opts = {}) {
-    return `<div class="field"><label for="${id}">${esc(label)}</label><input id="${id}" type="${opts.type || 'text'}" value="${esc(value ?? '')}" ${opts.placeholder ? `placeholder="${esc(opts.placeholder)}"` : ''} ${opts.min != null ? `min="${opts.min}" max="${opts.max}"` : ''}></div>`;
+    return `<div class="field"><label for="${id}">${esc(label)}</label><input id="${id}" type="${opts.type || 'text'}" value="${esc(value ?? '')}" ${opts.placeholder ? `placeholder="${esc(opts.placeholder)}"` : ''} ${opts.min != null ? `min="${opts.min}" max="${opts.max}"` : ''} ${opts.inputmode ? `inputmode="${opts.inputmode}"` : ''}></div>`;
+  }
+
+  function hoursRowsHtml(days) {
+    return days.map(d => `<div class="hours-row ${d.enabled ? '' : 'is-off'}" data-day="${d.day}">
+      <label class="hours-day"><span class="switch"><input type="checkbox" data-h-enabled ${d.enabled ? 'checked' : ''} aria-label="${esc(d.label)} open"><span></span></span><span>${esc(d.label)}</span></label>
+      <div class="hours-periods">
+        ${[0, 1].map(i => `<span class="period"><input class="time-input" inputmode="numeric" maxlength="5" placeholder="--:--" data-h="s${i}" value="${esc(d.periods[i]?.start || '')}" aria-label="${esc(d.label)} period ${i + 1} from"><span class="dash">–</span><input class="time-input" inputmode="numeric" maxlength="5" placeholder="--:--" data-h="e${i}" value="${esc(d.periods[i]?.end || '')}" aria-label="${esc(d.label)} period ${i + 1} until"></span>`).join('')}
+      </div>
+    </div>`).join('');
+  }
+  function closureRowHtml(c) {
+    return `<div class="closure-row"><input type="date" data-c="start" value="${esc(c.start || '')}" aria-label="Closed from"><span class="dash">–</span><input type="date" data-c="end" value="${esc(c.end || '')}" aria-label="Closed until"><input data-c="reason" value="${esc(c.reason || '')}" placeholder="Reason (shown to customers)" aria-label="Reason"><button class="icon-button sm danger" type="button" data-c-remove aria-label="Remove closure">${icon('trash')}</button></div>`;
+  }
+  function zoneRowHtml(z) {
+    return `<div class="zone-row"><input data-z="plz" value="${esc(z.plz || '')}" placeholder="PLZ" inputmode="numeric" aria-label="Postcode"><input data-z="city" value="${esc(z.city || '')}" placeholder="Place" aria-label="Place"><span class="money-input"><span>CHF</span><input data-z="min" value="${esc(z.min ?? '')}" inputmode="decimal" placeholder="0" aria-label="Minimum order"></span><button class="icon-button sm danger" type="button" data-z-remove aria-label="Remove zone">${icon('trash')}</button></div>`;
   }
 
   function renderWordpress() {
@@ -1135,14 +1311,14 @@
     if (!page || !host) return;
     const wp = page.wp || { loading: true };
     if (wp.loading && !wp.data) {
-      host.innerHTML = `<div class="d-section"><div class="d-head"><h3>WordPress · FoodUp Ordering</h3><span class="pill grey">Connecting…</span></div><div class="d-body"><div class="muted-sm">Reading the plugin settings from the restaurant's website…</div></div></div>`;
+      host.innerHTML = section('wp_status', 'WordPress · FoodUp Ordering', '<span class="pill grey">Connecting…</span>', '<div class="muted-sm">Reading the plugin settings from the restaurant\'s website…</div>', { icon: 'globe' });
       return;
     }
     if (!wp.connected) {
-      host.innerHTML = `<div class="d-section"><div class="d-head"><h3>WordPress · FoodUp Ordering</h3><span class="pill red">Not connected</span></div><div class="d-body">
+      host.innerHTML = section('wp_status', 'WordPress · FoodUp Ordering', '<span class="pill red">Not connected</span>', `
         <div class="issue warning" style="margin:0"><span class="text"><strong>${esc(WP_REASON_TITLES[wp.reason] || 'Connection problem')}</strong><br><span class="where">${esc(wp.message || '')}</span></span></div>
-        <div class="actions-row" style="margin-top:12px"><button id="wpRetryBtn" class="btn btn-secondary" type="button">${icon('refresh')}Try again</button></div>
-      </div></div>`;
+        <div class="actions-row" style="margin-top:12px"><button id="wpRetryBtn" class="btn btn-secondary" type="button">${icon('refresh')}Try again</button></div>`, { icon: 'globe' });
+      rememberSections(host);
       $('#wpRetryBtn').addEventListener('click', () => loadWordpress(page));
       return;
     }
@@ -1153,63 +1329,96 @@
     const info = d.feature_info || {};
     const oa = s.orders_app || {};
     const shop = s.shop || {};
+    const ordering = s.ordering || null;
+    const report = s.monthly_report || null;
+    const hours = s.hours || null;
+    const zones = Array.isArray(s.delivery_zones) ? s.delivery_zones : null;
+    const mail = d.email || null;
+    const avail = d.availability || null;
+    const v2 = Number(d.bridge_version || 1) >= 2;
     const brand = (s.branding || {}).brand_color || '#FF6600';
     const backendEdition = wp.backend?.edition;
     const editionMismatch = backendEdition && backendEdition !== oa.edition;
     const featureOrder = ['website_ordering', 'orders_app', 'courier', 'online_payments', 'auto_handling', 'printing', 'marketing', 'monthly_reports', 'table_ordering', 'customer_app'];
     const featureKeys = featureOrder.filter(key => key in f).concat(Object.keys(f).filter(key => !featureOrder.includes(key)));
+    const updateNote = '<div class="muted-sm">Needs FoodUp Ordering 0.5.238 or newer on this site.</div>';
+    const availPill = avail ? (avail.accepting_orders ? '<span class="pill green">Open now</span>' : (avail.reason === 'outside_opening_hours' ? '<span class="pill amber">Closed now</span>' : '<span class="pill red">Closed</span>')) : '';
 
     host.innerHTML = `
-      <div class="d-section"><div class="d-head"><h3>WordPress · FoodUp Ordering</h3><span class="pill green"><span class="status-dot online"></span>Connected</span></div><div class="d-body">
+      ${section('wp_status', 'WordPress · FoodUp Ordering', '<span class="pill green"><span class="status-dot online"></span>Connected</span>', `
         <div class="wp-meta"><span class="with-icon">${icon('plug')}Plugin ${esc(d.plugin_version || '?')}</span><a class="with-icon" href="${esc(d.site_url || '#')}/wp-admin/" target="_blank" rel="noopener">${icon('external')}wp-admin</a>${wp.loading ? '<span class="muted-sm">refreshing…</span>' : ''}</div>
-        <p class="d-note">These settings are stored in the restaurant's WordPress and saved there directly.</p>
-      </div></div>
+        <p class="d-note">These settings are stored in the restaurant's WordPress and saved there directly.</p>`, { icon: 'globe' })}
 
-      <div class="d-section"><div class="d-head"><h3>Features</h3><button id="wpSaveFeatures" class="btn btn-primary" type="button">Save</button></div><div class="d-body">
+      ${section('hours', 'Opening hours & closures', availPill, v2 && hours ? `
+        <div class="hours-list" id="wpHours">${hoursRowsHtml(hours.days)}</div>
+        <div class="mix-title" style="margin:16px 0 8px">Scheduled closures</div>
+        <div id="wpClosures" class="closure-list">${(hours.closures || []).map(closureRowHtml).join('')}</div>
+        <button id="wpAddClosure" class="btn btn-secondary btn-sm" type="button">${icon('plus')}Add closure</button>
+        <p class="d-note">Times in ${esc(hours.timezone || 'Europe/Zurich')}. Two periods per day, for example lunch and dinner. A closure closes the shop for whole days.</p>` : updateNote, v2 && hours ? { saveId: 'wpSaveHours', icon: 'clock' } : { icon: 'clock' })}
+
+      ${section('delivery', 'Delivery & pickup', zones ? `<span class="pill grey">${plural(zones.length, 'zone')}</span>` : '', v2 && ordering && zones ? `
+        <div class="field"><label>Order types</label><div id="wpOrderMode" class="segmented" role="tablist" aria-label="Order types"></div></div>
+        <div class="edit-grid" style="margin-top:12px">${wpField('wpLead', 'Minimum preorder lead time (minutes)', ordering.preorder_min_lead_minutes, { type: 'number', min: 0, max: 10080, inputmode: 'numeric' })}</div>
+        <div class="mix-title" style="margin:16px 0 8px">Delivery zones · minimum order</div>
+        <div id="wpZones" class="zone-list">${zones.map(zoneRowHtml).join('')}</div>
+        <button id="wpAddZone" class="btn btn-secondary btn-sm" type="button">${icon('plus')}Add zone</button>` : updateNote, v2 && ordering && zones ? { saveId: 'wpSaveDelivery', icon: 'bike' } : { icon: 'bike' })}
+
+      ${section('features', 'Features', `<span class="pill grey">${featureKeys.filter(k2 => f[k2]).length}/${featureKeys.length} on</span>`, `
         <div class="module-grid">${featureKeys.map(key => `<label class="module-toggle" title="${esc(info[key]?.description || '')}"><span>${esc(info[key]?.label || key)}</span><span class="switch"><input type="checkbox" data-wp-feature="${esc(key)}" ${f[key] ? 'checked' : ''}><span></span></span></label>`).join('')}</div>
-        <p class="d-note">Real plugin switches (General → Features). Website Ordering is the base module: switching it off turns every other module off.</p>
-      </div></div>
+        <p class="d-note">Real plugin switches (General → Features). Website Ordering is the base module: switching it off turns every other module off.</p>`, { saveId: 'wpSaveFeatures', icon: 'dashboard' })}
 
-      <div class="d-section"><div class="d-head"><h3>Orders App</h3><button id="wpSaveOrders" class="btn btn-primary" type="button">Save</button></div><div class="d-body">
+      ${section('orders_app', 'Orders App', `<span class="tag ${oa.edition === 'free' ? 'free' : 'pro'}">${oa.edition === 'free' ? 'Free' : 'Pro'}</span>`, `
         <div class="field"><label>Edition</label><div id="wpEdition" class="segmented" role="tablist" aria-label="Edition"></div></div>
         ${editionMismatch ? `<p class="d-note warn-note">The apps currently run as ${backendEdition === 'free' ? 'Free' : 'Pro'}. Saving applies the edition shown here.</p>` : ''}
         <div class="field" style="margin-top:14px"><label>Automatic handling</label><div id="wpAutoAction" class="segmented" role="tablist" aria-label="Automatic handling"></div></div>
         ${f.auto_handling ? '' : '<p class="d-note warn-note">The Automatic Order Handling feature is off, so these values are stored but not used.</p>'}
         <div class="edit-grid" style="margin-top:12px">
-          ${wpField('wpAutoWait', 'Wait before acting (minutes)', oa.auto_wait_minutes, { type: 'number', min: 1, max: 60 })}
+          ${wpField('wpAutoWait', 'Wait before acting (minutes)', oa.auto_wait_minutes, { type: 'number', min: 1, max: 60, inputmode: 'numeric' })}
           ${wpField('wpAutoAccept', 'Preparation time when accepting', oa.auto_accept_time, { placeholder: '30 Minutes' })}
           ${wpField('wpAutoReject', 'Reason when rejecting', oa.auto_reject_reason, { placeholder: 'Zu beschäftigt' })}
         </div>
-        <p class="d-note">Legacy app access: ${d.legacy_secret_enabled ? 'on' : 'off'} (changed in wp-admin only).</p>
-      </div></div>
+        <p class="d-note">Legacy app access: ${d.legacy_secret_enabled ? 'on' : 'off'} (changed in wp-admin only).</p>`, { saveId: 'wpSaveOrders', icon: 'device' })}
 
-      <div class="d-section"><div class="d-head"><h3>Shop details</h3><button id="wpSaveShop" class="btn btn-primary" type="button">Save</button></div><div class="d-body"><div class="edit-grid">
+      ${section('shop', 'Shop details', '', `<div class="edit-grid">
         ${wpField('wpShopName', 'Restaurant name', shop.restaurant_name)}
         ${wpField('wpShopAddress', 'Address', shop.address, { placeholder: 'Street 1, 8000 Zürich' })}
-        ${wpField('wpShopPhone', 'Phone', shop.contact_phone, { placeholder: '+41 44 000 00 00' })}
+        ${wpField('wpShopPhone', 'Phone', shop.contact_phone, { type: 'tel', placeholder: '+41 44 000 00 00' })}
         ${wpField('wpShopEmail', 'Email', shop.contact_email, { type: 'email', placeholder: 'info@restaurant.ch' })}
         ${wpField('wpShopVat', 'VAT number', shop.vat_number, { placeholder: 'CHE-000.000.000 MWST' })}
         ${wpField('wpShopReview', 'Google review link', shop.google_review_url, { type: 'url', placeholder: 'https://g.page/r/…' })}
-      </div><p class="d-note">Shown on the website, in emails and on invoices.</p></div></div>
+      </div><p class="d-note">Shown on the website, in emails and on invoices.</p>`, { saveId: 'wpSaveShop', icon: 'store' })}
 
-      <div class="d-section"><div class="d-head"><h3>Branding</h3><button id="wpSaveBrand" class="btn btn-primary" type="button">Save</button></div><div class="d-body">
+      ${section('branding', 'Branding', `<span class="brand-dot" style="background:${esc(brand)}"></span>`, `
         <div class="brand-row">
           <label class="brand-swatch" style="background:${esc(brand)}"><span class="sr-only">Pick brand colour</span><input id="wpBrandPicker" type="color" value="${esc(brand)}"></label>
           <div class="field" style="flex:1"><label for="wpBrandHex">Brand colour</label><input id="wpBrandHex" value="${esc(brand)}" maxlength="7"></div>
         </div>
-        <p class="d-note">Used for buttons and accents on the website and in emails.</p>
-      </div></div>`;
+        <p class="d-note">Used for buttons and accents on the website and in emails.</p>`, { saveId: 'wpSaveBrand', icon: 'star' })}
 
-    let edition = oa.edition === 'free' ? 'free' : 'pro';
-    let autoAction = ['accept', 'reject'].includes(oa.auto_action) ? oa.auto_action : 'disabled';
-    segmented($('#wpEdition'), [{ value: 'free', label: 'Free' }, { value: 'pro', label: 'Pro' }], edition, v => { edition = v; page.wpDirty = true; });
-    segmented($('#wpAutoAction'), [{ value: 'disabled', label: 'Off' }, { value: 'accept', label: 'Auto accept' }, { value: 'reject', label: 'Auto reject' }], autoAction, v => { autoAction = v; page.wpDirty = true; });
-    requestAnimationFrame(() => { positionThumb($('#wpEdition')); positionThumb($('#wpAutoAction')); });
+      ${section('report', 'Monthly report', report ? `<span class="pill ${report.auto ? 'green' : 'grey'}">${report.auto ? 'Automatic' : 'Off'}</span>` : '', v2 && report ? `
+        <label class="module-toggle"><span>Send the PDF sales report automatically on the 1st of each month</span><span class="switch"><input id="wpReportAuto" type="checkbox" ${report.auto ? 'checked' : ''}><span></span></span></label>
+        <div class="edit-grid" style="margin-top:12px">${wpField('wpReportEmail', 'Send to', report.email, { type: 'email', placeholder: 'chef@restaurant.ch' })}</div>
+        ${f.monthly_reports ? '' : '<p class="d-note warn-note">The Monthly Reports feature is off, so nothing is sent.</p>'}` : updateNote, v2 && report ? { saveId: 'wpSaveReport', icon: 'note' } : { icon: 'note' })}
 
-    const picker = $('#wpBrandPicker');
-    const hex = $('#wpBrandHex');
-    picker.addEventListener('input', () => { hex.value = picker.value.toUpperCase(); picker.parentElement.style.background = picker.value; });
-    hex.addEventListener('input', () => { if (/^#[0-9a-f]{6}$/i.test(hex.value)) { picker.value = hex.value; picker.parentElement.style.background = hex.value; } });
+      ${section('email', 'Email (Brevo)', mail ? `<span class="pill ${mail.brevo_configured ? 'green' : 'amber'}">${mail.brevo_configured ? 'Active' : 'Not set up'}</span>` : '', v2 && mail ? `
+        <dl class="kv">
+          <dt>Status</dt><dd>${mail.brevo_configured ? 'Brevo SMTP configured' : 'Not configured — emails use the server mailer'}</dd>
+          <dt>Sender</dt><dd>${esc(mail.from_name || '—')}${mail.from_email ? ` &lt;${esc(mail.from_email)}&gt;` : ''}</dd>
+          <dt>Sent today</dt><dd>${esc(mail.sent_today)}</dd>
+          <dt>Last test</dt><dd>${mail.last_test ? `${mail.last_test.success ? 'OK' : 'Failed'} · ${esc(mail.last_test.time)}` : 'No test yet'}</dd>
+        </dl>
+        <p class="d-note">Read-only. SMTP keys stay in wp-admin (FoodUp Ordering → Brevo) and are never sent to the Control Center.</p>` : updateNote, { icon: 'mail' })}`;
+
+    rememberSections(host);
+    bindWordpressActions(page, d);
+    host.oninput = () => { page.wpDirty = true; };
+  }
+
+  function bindWordpressActions(page, d) {
+    const host = $('#rpWp');
+    const s = d.settings || {};
+    const f = s.features || {};
+    const oa = s.orders_app || {};
 
     const save = (btn, changes, message) => async () => {
       btn.disabled = true;
@@ -1221,6 +1430,7 @@
         toast(message);
         if (res.warning) toast(res.warning, 'error');
         renderWordpress();
+        renderHero();
         if (changes.features || changes.orders_app) { loadRestaurantPage({ silent: true }); refreshAll({ silent: true }); }
       } catch (error) {
         toast(error.message, 'error');
@@ -1228,6 +1438,55 @@
       }
     };
 
+    // Hours + closures
+    if ($('#wpSaveHours')) {
+      $$('[data-h-enabled]', host).forEach(input => input.addEventListener('change', () => input.closest('.hours-row').classList.toggle('is-off', !input.checked)));
+      const closures = $('#wpClosures');
+      closures.addEventListener('click', e => { const b = e.target.closest('[data-c-remove]'); if (b) { b.closest('.closure-row').remove(); page.wpDirty = true; } });
+      $('#wpAddClosure').addEventListener('click', () => {
+        const today = swissDay(new Date());
+        closures.insertAdjacentHTML('beforeend', closureRowHtml({ start: today, end: today, reason: '' }));
+        page.wpDirty = true;
+      });
+      // 24-hour times typed as 1130 or 11:30 are normalised to 11:30.
+      host.addEventListener('change', e => {
+        const input = e.target.closest('.time-input');
+        if (!input) return;
+        const digits = input.value.replace(/\D/g, '');
+        if (/^\d{3,4}$/.test(digits)) input.value = `${digits.slice(0, -2).padStart(2, '0')}:${digits.slice(-2)}`;
+        input.classList.toggle('invalid', !!input.value && !/^([01]\d|2[0-3]):[0-5]\d$/.test(input.value));
+      });
+      const btn = $('#wpSaveHours');
+      btn.addEventListener('click', () => {
+        const bad = $$('.time-input', host).filter(i => i.value && !/^([01]\d|2[0-3]):[0-5]\d$/.test(i.value));
+        if (bad.length) { bad.forEach(i => i.classList.add('invalid')); toast('Enter times as HH:MM, for example 11:30', 'error'); bad[0].focus(); return; }
+        const days = $$('.hours-row', host).map(row => ({
+          day: Number(row.dataset.day),
+          enabled: $('[data-h-enabled]', row).checked,
+          periods: [0, 1].map(i => ({ start: $(`[data-h="s${i}"]`, row).value, end: $(`[data-h="e${i}"]`, row).value })),
+        }));
+        const list = $$('.closure-row', closures).map(row => ({ start: $('[data-c="start"]', row).value, end: $('[data-c="end"]', row).value, reason: $('[data-c="reason"]', row).value }))
+          .filter(c => c.start || c.end || c.reason);
+        save(btn, { hours: { days, closures: list } }, 'Opening hours saved')();
+      });
+    }
+
+    // Delivery & pickup
+    if ($('#wpSaveDelivery')) {
+      let mode = s.ordering?.order_mode || 'both';
+      segmented($('#wpOrderMode'), [{ value: 'both', label: 'Both' }, { value: 'delivery_only', label: 'Delivery' }, { value: 'pickup_only', label: 'Pickup' }], mode, v => { mode = v; page.wpDirty = true; });
+      const zones = $('#wpZones');
+      zones.addEventListener('click', e => { const b = e.target.closest('[data-z-remove]'); if (b) { b.closest('.zone-row').remove(); page.wpDirty = true; } });
+      $('#wpAddZone').addEventListener('click', () => { zones.insertAdjacentHTML('beforeend', zoneRowHtml({ plz: '', city: '', min: '' })); $('.zone-row:last-child [data-z="plz"]', zones).focus(); page.wpDirty = true; });
+      const btn = $('#wpSaveDelivery');
+      btn.addEventListener('click', () => {
+        const list = $$('.zone-row', zones).map(row => ({ plz: $('[data-z="plz"]', row).value.trim(), city: $('[data-z="city"]', row).value.trim(), min: $('[data-z="min"]', row).value.trim() || '0' }))
+          .filter(z => z.plz || z.city);
+        save(btn, { ordering: { order_mode: mode, preorder_min_lead_minutes: Number($('#wpLead').value || 0) }, delivery_zones: list }, 'Delivery & pickup saved')();
+      });
+    }
+
+    // Features
     const featuresBtn = $('#wpSaveFeatures');
     featuresBtn.addEventListener('click', () => {
       const next = {};
@@ -1242,6 +1501,12 @@
         run();
       }
     });
+
+    // Orders App
+    let edition = oa.edition === 'free' ? 'free' : 'pro';
+    let autoAction = ['accept', 'reject'].includes(oa.auto_action) ? oa.auto_action : 'disabled';
+    segmented($('#wpEdition'), [{ value: 'free', label: 'Free' }, { value: 'pro', label: 'Pro' }], edition, v => { edition = v; page.wpDirty = true; });
+    segmented($('#wpAutoAction'), [{ value: 'disabled', label: 'Off' }, { value: 'accept', label: 'Auto accept' }, { value: 'reject', label: 'Auto reject' }], autoAction, v => { autoAction = v; page.wpDirty = true; });
     const ordersBtn = $('#wpSaveOrders');
     ordersBtn.addEventListener('click', () => save(ordersBtn, { orders_app: {
       edition, auto_action: autoAction,
@@ -1249,17 +1514,170 @@
       auto_accept_time: $('#wpAutoAccept').value,
       auto_reject_reason: $('#wpAutoReject').value,
     } }, 'Orders App settings saved')());
+
+    // Shop
     const shopBtn = $('#wpSaveShop');
     shopBtn.addEventListener('click', () => save(shopBtn, { shop: {
       restaurant_name: $('#wpShopName').value, address: $('#wpShopAddress').value, contact_phone: $('#wpShopPhone').value,
       contact_email: $('#wpShopEmail').value, vat_number: $('#wpShopVat').value, google_review_url: $('#wpShopReview').value,
     } }, 'Shop details saved in WordPress')());
+
+    // Branding
+    const picker = $('#wpBrandPicker');
+    const hex = $('#wpBrandHex');
+    picker.addEventListener('input', () => { hex.value = picker.value.toUpperCase(); picker.parentElement.style.background = picker.value; });
+    hex.addEventListener('input', () => { if (/^#[0-9a-f]{6}$/i.test(hex.value)) { picker.value = hex.value; picker.parentElement.style.background = hex.value; } });
     const brandBtn = $('#wpSaveBrand');
     brandBtn.addEventListener('click', () => {
       if (!/^#[0-9a-f]{6}$/i.test(hex.value)) { toast('Enter a colour like #FF6600', 'error'); return; }
       save(brandBtn, { branding: { brand_color: hex.value.toUpperCase() } }, 'Brand colour saved')();
     });
-    host.oninput = () => { page.wpDirty = true; };
+
+    // Monthly report
+    if ($('#wpSaveReport')) {
+      const btn = $('#wpSaveReport');
+      btn.addEventListener('click', () => save(btn, { monthly_report: { auto: $('#wpReportAuto').checked, email: $('#wpReportEmail').value.trim() } }, 'Monthly report settings saved')());
+    }
+
+    requestAnimationFrame(() => $$('.segmented', host).forEach(positionThumb));
+  }
+
+  // ---------- Menu & prices (WooCommerce products via the bridge) ----------
+  async function loadMenu(page) {
+    page.menu = { loading: true, changes: new Map(), search: page.menu?.search || '', category: page.menu?.category || 'all' };
+    renderMenu();
+    try {
+      const data = await api(`/admin/api/restaurants/${encodeURIComponent(page.code)}/wordpress/products`);
+      if (state.page !== page) return;
+      page.menu = { ...page.menu, loading: false, available: data.available, reason: data.reason, message: data.message, products: data.products || [], categories: data.categories || [], currency: data.currency || 'CHF' };
+    } catch (error) {
+      if (state.page !== page) return;
+      page.menu = { ...page.menu, loading: false, available: false, message: error.message };
+    }
+    renderMenu();
+  }
+
+  function renderMenu() {
+    const page = state.page;
+    const host = $('#rpMenu');
+    if (!page || !host) return;
+    const sub = $('#rpMenuSub');
+    const saveBtn = $('#rpMenuSave');
+    const m = page.menu;
+    if (!page.wp || page.wp.loading && !page.wp.data) { host.innerHTML = '<div class="empty-box">Connecting to WordPress…</div>'; saveBtn.hidden = true; sub.textContent = 'From the restaurant\'s WooCommerce'; return; }
+    if (!page.wp.connected) { host.innerHTML = '<div class="empty-box">Connect WordPress to manage the menu here.</div>'; saveBtn.hidden = true; return; }
+    if (!m || m.loading) { host.innerHTML = '<div class="empty-box">Loading products…</div>'; saveBtn.hidden = true; return; }
+    if (!m.available) { host.innerHTML = `<div class="empty-box">${esc(m.message || 'Products are not available.')}</div>`; saveBtn.hidden = true; return; }
+
+    const enabledCount = m.products.filter(p => p.enabled).length;
+    sub.textContent = `${plural(m.products.length, 'product')} · ${enabledCount} available · edit availability and prices`;
+    if (!$('#menuSearch', host)) {
+      host.innerHTML = `
+        <div class="menu-toolbar">
+          <label class="search-wrap small"><span class="search-icon">${icon('search')}</span><span class="sr-only">Search products</span><input id="menuSearch" type="search" placeholder="Search products" value="${esc(m.search)}"></label>
+          <label class="select-wrap"><span class="sr-only">Category</span><select id="menuCategory" class="select-control"><option value="all">All categories</option>${m.categories.map(c => `<option value="${esc(c)}" ${m.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}<option value="__hidden" ${m.category === '__hidden' ? 'selected' : ''}>Unavailable only</option></select></label>
+        </div>
+        <div id="menuList" class="menu-list"></div>
+        <div class="menu-savebar" id="menuSavebar" hidden><span id="menuChangeCount"></span><button id="menuDiscard" class="btn btn-secondary" type="button">Discard</button><button id="menuSaveMobile" class="btn btn-primary" type="button">Save changes</button></div>`;
+      $('#menuSearch', host).addEventListener('input', e => { host._menu.search = e.target.value; renderMenuList(); });
+      $('#menuCategory', host).addEventListener('change', e => { host._menu.category = e.target.value; renderMenuList(); });
+      $('#menuDiscard', host).addEventListener('click', () => { host._menu.changes.clear(); renderMenuList(); });
+      $('#menuSaveMobile', host).addEventListener('click', () => { if (state.page) saveMenu(state.page); });
+      const list = $('#menuList', host);
+      list.addEventListener('input', e => {
+        const input = e.target.closest('[data-price]');
+        if (!input) return;
+        const m = host._menu;
+        const id = Number(input.dataset.price);
+        const original = input.dataset.original;
+        const entry = { ...(m.changes.get(id) || {}) };
+        const value = input.value.trim().replace(',', '.');
+        if (value === original) delete entry.regular_price; else entry.regular_price = value;
+        if (Object.keys(entry).length) m.changes.set(id, entry); else m.changes.delete(id);
+        input.classList.toggle('changed', value !== original);
+        updateMenuSavebar();
+      });
+      list.addEventListener('change', e => {
+        const input = e.target.closest('[data-enabled]');
+        if (!input) return;
+        const m = host._menu;
+        const id = Number(input.dataset.enabled);
+        const original = input.dataset.original === '1';
+        const entry = { ...(m.changes.get(id) || {}) };
+        if (input.checked === original) delete entry.enabled; else entry.enabled = input.checked;
+        if (Object.keys(entry).length) m.changes.set(id, entry); else m.changes.delete(id);
+        input.closest('.menu-row').classList.toggle('is-off', !input.checked);
+        updateMenuSavebar();
+      });
+    }
+    host._menu = m;
+    saveBtn.hidden = false;
+    saveBtn.onclick = () => saveMenu(page);
+    renderMenuList();
+  }
+
+  function renderMenuList() {
+    const page = state.page;
+    const m = page?.menu;
+    const list = $('#menuList');
+    if (!m || !list) return;
+    const q = String(m.search || '').trim().toLowerCase();
+    const items = m.products.filter(p => {
+      const enabled = m.changes.get(p.id)?.enabled ?? p.enabled;
+      if (m.category === '__hidden' && enabled) return false;
+      if (m.category !== 'all' && m.category !== '__hidden' && !p.categories.includes(m.category)) return false;
+      if (q && !`${p.name} ${p.categories.join(' ')} ${p.variations.map(v => v.name).join(' ')}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+    const cur = m.currency || 'CHF';
+    const priceInput = (id, value, sale) => {
+      const changed = m.changes.get(id)?.regular_price;
+      return `<span class="money-input ${sale ? 'has-sale' : ''}"><span>${esc(cur)}</span><input data-price="${id}" data-original="${esc(value)}" value="${esc(changed ?? value)}" inputmode="decimal" class="${changed !== undefined ? 'changed' : ''}" aria-label="Price"></span>${sale ? `<span class="sale-note">Sale ${esc(sale)}</span>` : ''}`;
+    };
+    list.innerHTML = items.length ? items.map(p => {
+      const enabled = m.changes.get(p.id)?.enabled ?? p.enabled;
+      return `<div class="menu-item">
+        <div class="menu-row ${enabled ? '' : 'is-off'}">
+          <span class="menu-main"><span class="t">${esc(p.name)}</span><span class="s">${esc(p.categories.join(', ') || 'No category')}${p.variations.length ? ` · ${plural(p.variations.length, 'size')}` : ''}</span></span>
+          <label class="switch" title="${enabled ? 'Available' : 'Hidden'}"><input type="checkbox" data-enabled="${p.id}" data-original="${p.enabled ? '1' : '0'}" ${enabled ? 'checked' : ''} aria-label="${esc(p.name)} available"><span></span></label>
+          ${p.variations.length ? '<span class="menu-price-slot"></span>' : `<span class="menu-price-slot">${priceInput(p.id, p.regular_price, p.sale_price)}</span>`}
+        </div>
+        ${p.variations.map(v => `<div class="menu-row variation"><span class="menu-main"><span class="t">${esc(v.name)}</span></span><span></span><span class="menu-price-slot">${priceInput(v.id, v.regular_price, v.sale_price)}</span></div>`).join('')}
+      </div>`;
+    }).join('') : '<div class="empty-box">No products match.</div>';
+    updateMenuSavebar();
+  }
+
+  function updateMenuSavebar() {
+    const m = state.page?.menu;
+    const bar = $('#menuSavebar');
+    const btn = $('#rpMenuSave');
+    if (!m || !bar) return;
+    const n = m.changes.size;
+    bar.hidden = n === 0;
+    $('#menuChangeCount').textContent = `${plural(n, 'change')} not saved`;
+    btn.disabled = n === 0;
+    btn.textContent = n ? `Save ${plural(n, 'change')}` : 'Save changes';
+  }
+
+  async function saveMenu(page) {
+    const m = page.menu;
+    if (!m || !m.changes.size) return;
+    const updates = Array.from(m.changes.entries()).map(([id, change]) => ({ id, ...change }));
+    const btn = $('#rpMenuSave');
+    btn.disabled = true;
+    try {
+      const data = await api(`/admin/api/restaurants/${encodeURIComponent(page.code)}/wordpress/products`, { method: 'PATCH', body: JSON.stringify({ updates }) });
+      if (state.page !== page) return;
+      m.products = data.products || m.products;
+      m.categories = data.categories || m.categories;
+      m.changes.clear();
+      toast(`${plural(updates.length, 'product change')} saved`);
+      renderMenu();
+    } catch (error) {
+      toast(error.message, 'error');
+      updateMenuSavebar();
+    }
   }
 
   function findOrder(code, id) {
@@ -1326,7 +1744,11 @@
     $('#modalBackdrop').classList.remove('hidden');
     $('#modal').classList.remove('hidden');
   }
+  let modalCloseHook = null;
   function closeModal() {
+    const hook = modalCloseHook;
+    modalCloseHook = null;
+    hook?.();
     $('#modalBackdrop').classList.add('hidden');
     $('#modal').classList.add('hidden');
     $('#modalBody').innerHTML = '';
@@ -1351,8 +1773,8 @@
     $('#confirmModal').onclick = () => ($('#confirmText').value !== expected ? toast('Confirmation code does not match', 'error') : run());
     setTimeout(() => $('#confirmText')?.focus(), 20);
   }
-  function inputModal(title, message, placeholder, action, type = 'text') {
-    openModal(title, `<p>${esc(message)}</p><label class="sr-only" for="modalInput">${esc(placeholder)}</label><input id="modalInput" type="${esc(type)}" autocomplete="off" placeholder="${esc(placeholder)}"><div class="modal-actions"><button id="cancelModal" class="btn btn-secondary" type="button">Cancel</button><button id="confirmModal" class="btn btn-primary" type="button">Save</button></div>`);
+  function inputModal(title, message, placeholder, action, type = 'text', initial = '') {
+    openModal(title, `<p>${esc(message)}</p><label class="sr-only" for="modalInput">${esc(placeholder)}</label><input id="modalInput" type="${esc(type)}" autocomplete="off" placeholder="${esc(placeholder)}" value="${esc(initial)}"><div class="modal-actions"><button id="cancelModal" class="btn btn-secondary" type="button">Cancel</button><button id="confirmModal" class="btn btn-primary" type="button">Save</button></div>`);
     $('#cancelModal').onclick = closeModal;
     $('#confirmModal').onclick = () => {
       const value = $('#modalInput').value.trim();
