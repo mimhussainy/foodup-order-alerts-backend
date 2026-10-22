@@ -159,7 +159,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
   });
 
   async function loadRestaurant(code, includeOrders = false) {
-    const [profileRaw, heartbeatRaw, tokensRaw, ordersRaw, printerRaw, autoRaw, websiteRaw, modulesRaw, storeRaw, courierRaw, customerEmailRaw, editionRaw, iosPinRaw] = await Promise.all([
+    const [profileRaw, heartbeatRaw, tokensRaw, ordersRaw, printerRaw, autoRaw, websiteRaw, modulesRaw, storeRaw, courierRaw, customerEmailRaw, editionRaw, iosPinRaw, wpEditionRaw] = await Promise.all([
       redisCommand('GET', k(code, 'restaurant_profile')),
       redisCommand('GET', k(code, 'heartbeat')),
       redisCommand('SMEMBERS', k(code, 'device_tokens')),
@@ -173,6 +173,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       redisCommand('GET', k(code, 'customer_email_settings')),
       redisCommand('GET', k(code, 'orders_app_edition')),
       redisCommand('EXISTS', k(code, 'ios_pin')),
+      redisCommand('GET', k(code, 'cc_wp_edition')),
     ]);
 
     const profile = safeJson(profileRaw.result, {}) || {};
@@ -263,6 +264,12 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
     if (!profile.website) attentionItems.push({ text: 'Website missing', severity: 'warning' });
     if (modules.orders_app && tokens.length === 0) attentionItems.push({ text: 'No push device', severity: 'warning' });
     if (modules.printing && !printerRaw.result) attentionItems.push({ text: 'Printer not assigned', severity: 'warning' });
+    // WordPress is where the edition is chosen; the apps follow the backend copy.
+    const backendEdition = editionRaw.result === 'free' ? 'free' : 'pro';
+    const wpEdition = ['free', 'pro'].includes(wpEditionRaw?.result) ? wpEditionRaw.result : null;
+    if (wpEdition && wpEdition !== backendEdition) {
+      attentionItems.push({ text: `Edition mismatch: WordPress is ${wpEdition === 'free' ? 'Free' : 'Pro'}, the apps run as ${backendEdition === 'free' ? 'Free' : 'Pro'}`, severity: 'warning', kind: 'edition_mismatch' });
+    }
     const attention = attentionItems.map(item => item.text);
 
     return {
@@ -277,7 +284,8 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       heartbeat,
       device_count: tokens.length,
       printer_device_id: printerRaw.result || '',
-      edition: editionRaw.result === 'free' ? 'free' : 'pro',
+      edition: backendEdition,
+      wp_edition: wpEdition,
       courier_count: couriers.length,
       store_status: storeRaw.result || 'open',
       ios_pin_set: Number(iosPinRaw?.result || 0) > 0,
@@ -583,6 +591,13 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
     }
   }
 
+  // Remembers which edition WordPress has, so a mismatch with the apps' copy
+  // shows up under Needs attention. Read-only: it never changes the edition.
+  async function rememberWordpressEdition(code, settings) {
+    const edition = settings?.orders_app?.edition;
+    if (edition === 'free' || edition === 'pro') await redisCommand('SET', k(code, 'cc_wp_edition'), edition);
+  }
+
   // Mirrors the real plugin feature switches into the Control Center badges.
   async function mirrorModules(code, features) {
     if (!features || typeof features !== 'object') return;
@@ -628,6 +643,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       const result = await wordpressRequest(code, 'GET');
       if (!result.ok) return res.json({ success: true, connected: false, reason: result.reason, message: result.message });
       await mirrorModules(code, result.data.settings.features).catch(() => {});
+      await rememberWordpressEdition(code, result.data.settings).catch(() => {});
       res.json({ success: true, connected: true, wordpress: result.data, backend: await backendView(code) });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
@@ -649,6 +665,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       }
       const settings = result.data.settings;
       await mirrorModules(code, settings.features).catch(() => {});
+      await rememberWordpressEdition(code, settings).catch(() => {});
       let applied = {};
       let warning = '';
       if (changes.orders_app || changes.features) {
@@ -793,6 +810,24 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       res.status(500).json({ success: false, message: error.message });
     }
   });
+
+  // Every 30 minutes: read each connected site's settings once (sequentially,
+  // read-only) so edition mismatches are found without opening every page.
+  async function checkWordpressEditions() {
+    let codes = [];
+    try { codes = ((await redisCommand('SMEMBERS', 'restaurants')).result || []).map(normalizeCode).filter(Boolean); } catch (_) { return; }
+    for (const code of codes) {
+      try {
+        const result = await wordpressRequest(code, 'GET');
+        if (!result.ok) continue;
+        await rememberWordpressEdition(code, result.data.settings);
+        await mirrorModules(code, result.data.settings.features);
+      } catch (_) {}
+    }
+  }
+  if (options.startHistoryRecorder !== false) {
+    setTimeout(() => { checkWordpressEditions(); setInterval(checkWordpressEditions, 30 * 60 * 1000).unref?.(); }, 90 * 1000).unref?.();
+  }
 
   app.get('/admin/api/health', requireAdmin, async (req, res) => {
     try {

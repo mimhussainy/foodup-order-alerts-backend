@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/admin/assets/admin.css?v=3.3.4">
+  <link rel="stylesheet" href="/admin/assets/admin.css?v=3.4.1">
 </head>
 <body>
   <div id="loginView" class="login-view hidden">
@@ -156,6 +156,21 @@
               <div class="table-scroll"><div id="rpOrders" class="grid-table orders-table single"></div></div>
               <button id="rpOrdersMore" class="more-button" type="button">Show all recent orders</button>
             </section>
+            <section id="rpWebPanel" class="panel web-panel">
+              <div class="panel-head">
+                <div class="title-inline"><span class="icon-chip accent" data-icon="globe"></span><div><h2>Website</h2><p id="rpWebSub">FoodUp Restaurant theme</p></div></div>
+                <div class="actions-row">
+                  <a id="rpWebOpen" class="btn btn-secondary" href="#" target="_blank" rel="noopener" hidden><span data-icon="external"></span>Open</a>
+                  <button id="rpWebPurge" class="btn btn-secondary" type="button" hidden><span data-icon="refresh"></span>Clear cache</button>
+                </div>
+              </div>
+              <div id="rpWebBody" class="web-body"></div>
+              <div id="rpWebFoot" class="web-foot" hidden>
+                <span id="rpWebCount"></span>
+                <button id="rpWebDiscard" class="btn btn-secondary" type="button">Discard</button>
+                <button id="rpWebSave" class="btn btn-primary" type="button">Save website</button>
+              </div>
+            </section>
             <section id="rpMenuPanel" class="panel menu-panel">
               <div class="panel-head">
                 <div class="title-inline"><span class="icon-chip accent" data-icon="menu"></span><div><h2>Menu &amp; prices</h2><p id="rpMenuSub">From the restaurant's WooCommerce</p></div></div>
@@ -218,6 +233,6 @@
   </div>
 
   <div id="toastContainer" class="toast-container" aria-live="polite"></div>
-  <script src="/admin/assets/admin.js?v=3.3.4" defer></script>
+  <script src="/admin/assets/admin.js?v=3.4.1" defer></script>
 </body>
 </html>

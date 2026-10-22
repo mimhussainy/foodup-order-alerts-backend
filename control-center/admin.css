@@ -459,6 +459,28 @@ details[open] > summary .d-chev { transform: rotate(90deg); }
 .menu-savebar .btn-secondary:hover { background: #2a2c33; }
 .more-button { display: none; width: 100%; height: 46px; border: 0; border-top: 1px solid var(--line); background: #ffffff; color: var(--accent-text); font-size: 13px; font-weight: 600; cursor: pointer; }
 
+/* website (theme) panel */
+.web-panel { overflow: visible; }
+.web-body { padding: 16px 20px 20px; }
+.web-tabs { margin-bottom: 16px; }
+.web-tabs .segmented { display: flex; width: 100%; }
+.web-tabs .seg-btn, .web-style-switch .seg-btn { flex: 1; }
+.web-style-switch { display: flex; width: 100%; max-width: 460px; }
+.web-style-note { margin: 10px 2px 14px; font-size: 13px; line-height: 1.55; color: var(--text-2); max-width: 620px; }
+.web-block { border: 1px solid var(--border); border-radius: 14px; padding: 14px 15px 15px; transition: opacity .2s ease; }
+.web-block + .web-block { margin-top: 12px; }
+.web-block-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.web-block-head h3 { font-size: 14px; font-weight: 700; }
+.web-block-head p { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+.web-block.is-off .web-fields { opacity: .45; }
+.web-block .module-toggle .s { display: block; margin-top: 2px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.image-field { display: flex; align-items: center; gap: 10px; }
+.image-field input { flex: 1; min-width: 0; }
+.image-preview { width: 64px; height: 40px; flex: 0 0 auto; border-radius: 8px; border: 1px solid var(--border); background: var(--head-bg) center / cover no-repeat; display: grid; place-items: center; color: var(--faint); font-size: 16px; }
+.web-foot { position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); border-radius: 0 0 var(--radius) var(--radius); background: var(--head-bg); }
+.web-foot #rpWebCount { flex: 1; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.web-foot[hidden], .actions-row > [hidden] { display: none; }
+
 /* table cells used by the phone card layout */
 .c-beats { display: block; min-width: 0; }
 
@@ -490,6 +512,9 @@ details[open] > summary .d-chev { transform: rotate(90deg); }
 .field label { display: block; font-size: 12px; color: var(--text-2); font-weight: 600; margin-bottom: 6px; }
 .field input { width: 100%; height: 40px; border: 1px solid var(--border); border-radius: 9px; padding: 0 11px; font-size: 13px; outline: 0; }
 .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139, 56, 203, .1); }
+.field textarea { width: 100%; min-height: 96px; border: 1px solid var(--border); border-radius: 9px; padding: 10px 11px; font-size: 13px; line-height: 1.55; outline: 0; resize: vertical; }
+.field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139, 56, 203, .1); }
+.edit-grid .wide { grid-column: 1 / -1; }
 .module-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .module-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 11px; font-size: 13px; font-weight: 500; cursor: pointer; }
 .switch { position: relative; width: 34px; height: 20px; flex: 0 0 auto; }
@@ -677,7 +702,13 @@ button.mini-row:hover { background: var(--hover); }
   #view-restaurant .chart-panel { order: 1; }
   #view-restaurant .rp-orders-panel { order: 2; }
   #view-restaurant .rp-side { order: 3; gap: 12px; flex-basis: auto; }
-  #view-restaurant .menu-panel { order: 4; }
+  #view-restaurant .web-panel { order: 4; }
+  #view-restaurant .menu-panel { order: 5; }
+  .web-body { padding: 14px; }
+  .web-tabs .seg-btn { padding: 0 8px; }
+  .web-foot { position: fixed; left: 12px; right: 12px; bottom: calc(78px + env(safe-area-inset-bottom)); z-index: 70; border: 0; border-radius: 14px; background: #1e2025; color: #ffffff; padding: 8px 8px 8px 14px; box-shadow: 0 16px 40px rgba(0, 0, 0, .25); }
+  .web-foot #rpWebCount { color: #ffffff; }
+  .web-foot .btn-secondary { background: transparent; color: #ffffff; border-color: #3a3d45; }
   #rpWp.side-stack { gap: 12px; }
   .more-button { display: block; }
   #rpOrders:not(.show-all) .o-row:nth-of-type(n+9) { display: none; }

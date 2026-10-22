@@ -941,7 +941,7 @@
 
   async function showRestaurantPage(code) {
     if (!state.page || state.page.code !== code) {
-      state.page = { code, data: null, analytics: null, chart: { period: 'today', hover: null, animated: false }, dirty: false, lastAnalyticsAt: 0, couriers: null, wp: null, menu: null };
+      state.page = { code, data: null, analytics: null, chart: { period: 'today', hover: null, animated: false }, dirty: false, lastAnalyticsAt: 0, couriers: null, wp: null, menu: null, webEdits: {}, webTab: 'style' };
     }
     setActiveView('restaurant', 'restaurants');
     const known = restaurantsList().find(r => r.code === code);
@@ -1014,6 +1014,7 @@
       $('#rpOrdersSub').textContent = '';
       $('#rpOrdersMore').hidden = true;
       $('#rpMenu').innerHTML = '';
+      renderWebsite();
       renderChart(restaurantChartCtx());
       return;
     }
@@ -1049,6 +1050,7 @@
 
     if (!skipSide) renderRestaurantSide(r);
     renderMenu();
+    renderWebsite();
   }
 
   function renderHero() {
@@ -1144,7 +1146,7 @@
         : '<div class="muted-sm">No courier accounts yet.</div>';
 
     $('#rpSide').innerHTML = `
-      ${bad ? section('attention', 'Needs attention', `<span class="pill red">${plural(r.attention_items.length, 'issue')}</span>`, `<div class="issue-list" style="margin:0">${r.attention_items.map(i => `<div class="issue ${esc(i.severity)}"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span></div>`).join('')}</div>`, { danger: true, icon: 'alert' }) : ''}
+      ${bad ? section('attention', 'Needs attention', `<span class="pill red">${plural(r.attention_items.length, 'issue')}</span>`, `<div class="issue-list" style="margin:0">${r.attention_items.map(i => `<div class="issue ${esc(i.severity)}"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span>${i.kind === 'edition_mismatch' && r.wp_edition ? `<button id="applyEditionBtn" class="btn btn-secondary btn-sm" type="button">Apply ${r.wp_edition === 'free' ? 'Free' : 'Pro'}</button>` : ''}</div>`).join('')}</div>`, { danger: true, icon: 'alert' }) : ''}
       <div id="rpWp" class="side-stack"></div>
       ${section('couriers', 'Couriers', `<span class="pill grey">${couriers ? couriers.length : '…'}</span>`, `${courierRows}
         <div class="add-row">
@@ -1219,6 +1221,20 @@
       renderRestaurantSide(page.data);
     };
 
+    const applyEdition = $('#applyEditionBtn');
+    if (applyEdition) {
+      const target = page.data.wp_edition;
+      applyEdition.addEventListener('click', () => confirmationModal(
+        `Switch the apps to ${target === 'free' ? 'Free' : 'Pro'}?`,
+        `WordPress has ${name} set to FoodUp ${target === 'free' ? 'Free' : 'Pro'}. The Orders app switches within a few minutes. ${target === 'free' ? 'Free prints the full address without QR code and locks the Pro tabs (statistics, couriers).' : 'Pro unlocks statistics and couriers and prints the courier QR code.'}`,
+        `Apply ${target === 'free' ? 'Free' : 'Pro'}`,
+        async () => {
+          await api(`/admin/api/restaurants/${encodeURIComponent(code)}/wordpress`, { method: 'PATCH', body: JSON.stringify({ changes: { orders_app: { edition: target } } }) });
+          toast(`${name} now runs as FoodUp ${target === 'free' ? 'Free' : 'Pro'}`);
+          refreshAll({ silent: true });
+          await loadRestaurantPage();
+        }));
+    }
     const saveProfile = $('#saveProfileBtn');
     saveProfile.addEventListener('click', busy(saveProfile, () => patch({ name: $('#editName').value, website: $('#editWebsite').value, phone: $('#editPhone').value, address: $('#editAddress').value }, 'Restaurant profile saved')));
     const saveEmail = $('#saveCustomerEmailBtn');
@@ -1300,6 +1316,7 @@
     }
     if (!page.wpDirty) renderWordpress();
     renderHero();
+    renderWebsite();
     if (page.wp.connected && !page.menu) loadMenu(page);
     else if (!page.wp.connected) renderMenu();
   }
@@ -1560,6 +1577,198 @@
     requestAnimationFrame(() => $$('.segmented', host).forEach(positionThumb));
   }
 
+  // ---------- Website (FoodUp Restaurant theme via the bridge, v3) ----------
+  const WEB_STYLES = {
+    delivereat: 'Bold photo homepage with the DeliverEat ordering page. The standard FoodUp look.',
+    foodie: 'Fresh olive and lime: compact categories, clean food cards and an app-like feel. Uses its own green palette.',
+    motion: 'Colourful and playful: dish stories, top sellers, re-order and product sheets with a photo banner.',
+  };
+  const WEB_TABS = [{ value: 'style', label: 'Style' }, { value: 'home', label: 'Homepage' }, { value: 'contact', label: 'Contact' }, { value: 'legal', label: 'Legal' }];
+
+  function webValue(page, key) {
+    const edits = page.webEdits || {};
+    if (key in edits) return edits[key];
+    return page.wp?.data?.website?.values?.[key];
+  }
+  function webText(key, label, opts = {}) {
+    const page = state.page;
+    const v = webValue(page, key) ?? '';
+    if (opts.area) return `<div class="field ${opts.wide ? 'wide' : ''}"><label for="web_${key}">${esc(label)}</label><textarea id="web_${key}" data-web="${key}" rows="${opts.rows || 4}">${esc(v)}</textarea></div>`;
+    return `<div class="field ${opts.wide ? 'wide' : ''}"><label for="web_${key}">${esc(label)}</label><input id="web_${key}" data-web="${key}" type="${opts.type || 'text'}" value="${esc(v)}" ${opts.placeholder ? `placeholder="${esc(opts.placeholder)}"` : ''}></div>`;
+  }
+  function webImage(key, label) {
+    const v = webValue(state.page, key) || '';
+    return `<div class="field wide"><label for="web_${key}">${esc(label)}</label><div class="image-field"><span class="image-preview" data-preview="${key}" ${/^https:\/\//.test(v) ? `style="background-image:url('${esc(v)}')"` : ''}>${/^https:\/\//.test(v) ? '' : icon('star')}</span><input id="web_${key}" data-web="${key}" type="url" value="${esc(v)}" placeholder="https://… image link from the media library"></div></div>`;
+  }
+  function webColor(key, label) {
+    const v = webValue(state.page, key) || '#000000';
+    return `<div class="field"><label for="web_${key}">${esc(label)}</label><div class="brand-row"><label class="brand-swatch" style="background:${esc(v)}"><span class="sr-only">Pick ${esc(label)}</span><input type="color" data-web-picker="${key}" value="${esc(v)}"></label><input id="web_${key}" data-web="${key}" value="${esc(v)}" maxlength="7"></div></div>`;
+  }
+  function webSwitch(key, label, note = '') {
+    const on = !!webValue(state.page, key);
+    return `<label class="module-toggle"><span>${esc(label)}${note ? `<span class="s">${esc(note)}</span>` : ''}</span><span class="switch"><input type="checkbox" data-web-bool="${key}" ${on ? 'checked' : ''}><span></span></span></label>`;
+  }
+  function webSection(title, toggleKey, body, note = '') {
+    const on = toggleKey ? !!webValue(state.page, toggleKey) : true;
+    return `<div class="web-block ${on ? '' : 'is-off'}" ${toggleKey ? `data-web-block="${toggleKey}"` : ''}>
+      <div class="web-block-head"><div><h3>${esc(title)}</h3>${note ? `<p>${esc(note)}</p>` : ''}</div>${toggleKey ? `<span class="switch"><input type="checkbox" data-web-bool="${toggleKey}" ${on ? 'checked' : ''} aria-label="Show ${esc(title)}"><span></span></span>` : ''}</div>
+      <div class="edit-grid web-fields">${body}</div>
+    </div>`;
+  }
+
+  function webTabHtml(tab) {
+    if (tab === 'style') {
+      const style = webValue(state.page, 'site_style') || 'delivereat';
+      return `<div class="field"><label>Website style</label><div id="webStyle" class="segmented web-style-switch" role="tablist" aria-label="Website style"></div></div>
+        <p class="web-style-note" id="webStyleNote">${esc(WEB_STYLES[style] || '')}</p>
+        <div class="edit-grid web-fields" style="margin-top:6px">${webColor('accent_color', 'Motion accent colour')}</div>
+        <p class="d-note">The accent colour is used by Motion for add buttons and highlights. The brand colour stays under Branding. Sizes and spacing are changed in wp-admin (FoodUp Restaurant → Design).</p>`;
+    }
+    if (tab === 'home') {
+      return `${webSection('Hero', '', `${webText('hero_kicker_text', 'Small line above the title')}${webText('hero_title', 'Title')}${webText('hero_text', 'Text', { wide: true })}${webText('hero_primary_button_text', 'Order button')}${webText('hero_secondary_button_text', 'Second button')}${webColor('hero_button_color', 'Button colour')}${webImage('hero_image', 'Hero image')}`, 'The large photo area at the top of the homepage.')}
+        ${webSection('Promotion', 'homepage_promo_enabled', `${webText('homepage_promo_title', 'Title')}${webText('homepage_promo_text', 'Text')}${webImage('homepage_promo_image', 'Image')}`)}
+        ${webSection('Popular dishes', 'homepage_popular_enabled', `${webText('homepage_popular_title', 'Title')}${webText('homepage_popular_text', 'Text')}`)}
+        ${webSection('Opening hours', 'homepage_hours_enabled', `${webText('homepage_hours_title', 'Title')}`, 'Shows the opening hours set under Opening hours & closures.')}
+        ${webSection('Order now', 'homepage_cta_enabled', `${webText('homepage_cta_title', 'Title')}${webText('homepage_cta_text', 'Text')}${webImage('homepage_cta_image', 'Image')}`)}
+        ${webSection('App launch notice', 'homepage_app_enabled', `${webText('homepage_app_title', 'Title')}${webText('homepage_app_text', 'Text')}${webText('homepage_app_ios_url', 'App Store link', { type: 'url', placeholder: 'https://apps.apple.com/…' })}${webText('homepage_app_android_url', 'Google Play link', { type: 'url', placeholder: 'https://play.google.com/…' })}`)}
+        ${webSection('Services', '', `${webText('homepage_services_title', 'Title')}${webText('homepage_services_text', 'Text')}<div class="wide">${webSwitch('show_dinein', 'Show dine-in', 'Delivery and pickup follow the order types under Delivery & pickup.')}</div>`)}
+        ${webSection('Categories', '', `${webText('homepage_categories_title', 'Title')}${webText('homepage_categories_text', 'Text')}`)}`;
+    }
+    if (tab === 'contact') {
+      return `${webSection('Contact page', '', `${webText('contact_hero_title', 'Title')}${webText('contact_hero_text', 'Text')}${webImage('contact_hero_image', 'Image')}`)}
+        <div class="web-block"><div class="web-block-head"><div><h3>Show on the contact page</h3></div></div>
+          <div class="module-grid">${webSwitch('contact_show_details', 'Contact details')}${webSwitch('contact_show_hours', 'Opening hours')}${webSwitch('contact_show_zones', 'Delivery zones')}${webSwitch('contact_show_map', 'Map')}</div>
+          <div class="edit-grid web-fields" style="margin-top:12px">${webText('contact_zones_title', 'Delivery zones title')}</div>
+        </div>`;
+    }
+    return `${webSection('Impressum', '', `${webText('legal_company_name', 'Company')}${webText('legal_owner', 'Owner')}${webText('legal_address', 'Address')}${webText('legal_country', 'Country')}${webText('legal_phone', 'Phone', { type: 'tel' })}${webText('legal_email', 'Email', { type: 'email' })}${webText('impressum_intro', 'Introduction', { wide: true })}`)}
+      ${webSection('AGB', '', `${webText('agb_title', 'Title', { wide: true })}${webText('agb_content', 'Text', { area: true, rows: 14, wide: true })}`, 'Blank line = new paragraph. {{company_name}} is replaced with the company name.')}`;
+  }
+
+  function renderWebsite({ force = false } = {}) {
+    const page = state.page;
+    const body = $('#rpWebBody');
+    if (!page || !body) return;
+    const sub = $('#rpWebSub');
+    const foot = $('#rpWebFoot');
+    const purge = $('#rpWebPurge');
+    const site = $('#rpWebOpen');
+    const wp = page.wp;
+    const show = (html) => { body.innerHTML = html; foot.hidden = true; purge.hidden = true; site.hidden = true; page.webRenderedFor = null; };
+    if (!wp || (wp.loading && !wp.data)) return show('<div class="empty-box">Connecting to WordPress…</div>');
+    if (!wp.connected) return show('<div class="empty-box">Connect WordPress to manage the website here.</div>');
+    const d = wp.data;
+    if (Number(d.bridge_version || 1) < 3) return show('<div class="empty-box">Needs FoodUp Ordering 0.5.241 or newer on this site.</div>');
+    if (!d.website) return show('<div class="empty-box">The FoodUp Restaurant theme is not active on this site.</div>');
+
+    sub.textContent = `${d.website.theme_name || 'Theme'} ${d.website.theme_version || ''}`.trim();
+    purge.hidden = false;
+    site.hidden = false;
+    site.href = d.site_url || '#';
+    if (!force && page.webRenderedFor === d && body.dataset.tab === (page.webTab || 'style')) return;
+    // Never rebuild the form under the admin's cursor; the next render picks the new data up.
+    if (!force && page.webRenderedFor && body.contains(document.activeElement) && document.activeElement !== document.body) return;
+    page.webRenderedFor = d;
+    page.webTab = page.webTab || 'style';
+    page.webEdits = page.webEdits || {};
+
+    body.dataset.tab = page.webTab;
+    body.innerHTML = `<div class="web-tabs"><div id="webTabs" class="segmented" role="tablist" aria-label="Website settings"></div></div><div class="web-pane">${webTabHtml(page.webTab)}</div>`;
+    segmented($('#webTabs'), WEB_TABS, page.webTab, v => { page.webTab = v; renderWebsite({ force: true }); });
+    if (page.webTab === 'style') {
+      segmented($('#webStyle'), [{ value: 'delivereat', label: 'DeliverEat' }, { value: 'foodie', label: 'Foodie' }, { value: 'motion', label: 'Motion' }], webValue(page, 'site_style') || 'delivereat', v => {
+        setWebEdit(page, 'site_style', v);
+        $('#webStyleNote').textContent = WEB_STYLES[v] || '';
+      });
+    }
+    requestAnimationFrame(() => $$('.segmented', body).forEach(positionThumb));
+
+    body.oninput = (e) => {
+      const t = e.target;
+      if (t.dataset.web) {
+        setWebEdit(page, t.dataset.web, t.value);
+        const prev = $(`[data-preview="${t.dataset.web}"]`, body);
+        if (prev) { const ok = /^https:\/\/\S+$/.test(t.value.trim()); prev.style.backgroundImage = ok ? `url('${t.value.trim().replace(/'/g, '%27')}')` : ''; prev.innerHTML = ok ? '' : icon('star'); }
+        const picker = $(`[data-web-picker="${t.dataset.web}"]`, body);
+        if (picker && /^#[0-9a-f]{6}$/i.test(t.value)) { picker.value = t.value; picker.parentElement.style.background = t.value; }
+      } else if (t.dataset.webPicker) {
+        const key = t.dataset.webPicker;
+        const hex = $(`[data-web="${key}"]`, body);
+        hex.value = t.value.toUpperCase();
+        t.parentElement.style.background = t.value;
+        setWebEdit(page, key, hex.value);
+      }
+    };
+    body.onchange = (e) => {
+      const t = e.target;
+      if (t.dataset.webBool) {
+        setWebEdit(page, t.dataset.webBool, t.checked);
+        $$(`[data-web-bool="${t.dataset.webBool}"]`, body).forEach(x => { x.checked = t.checked; });
+        const block = $(`[data-web-block="${t.dataset.webBool}"]`, body);
+        if (block) block.classList.toggle('is-off', !t.checked);
+      }
+    };
+    updateWebFoot();
+  }
+
+  function setWebEdit(page, key, value) {
+    const original = page.wp?.data?.website?.values?.[key];
+    const same = typeof original === 'boolean' ? original === !!value : String(original ?? '') === String(value ?? '');
+    if (same) delete page.webEdits[key]; else page.webEdits[key] = value;
+    updateWebFoot();
+  }
+
+  function updateWebFoot() {
+    const page = state.page;
+    const foot = $('#rpWebFoot');
+    if (!page || !foot) return;
+    const n = Object.keys(page.webEdits || {}).length;
+    foot.hidden = n === 0;
+    $('#rpWebCount').textContent = `${plural(n, 'change')} not saved`;
+  }
+
+  async function saveWebsite(page, changes, message) {
+    const btn = $('#rpWebSave');
+    btn.disabled = true;
+    $('#rpWebPurge').disabled = true;
+    try {
+      const res = await api(`/admin/api/restaurants/${encodeURIComponent(page.code)}/wordpress`, { method: 'PATCH', body: JSON.stringify({ changes }) });
+      if (state.page !== page) return;
+      page.wp = { loading: false, connected: true, data: res.wordpress, backend: res.backend };
+      if (changes.website) page.webEdits = {};
+      toast(message);
+      if (!page.wpDirty) renderWordpress();
+      renderWebsite({ force: true });
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      btn.disabled = false;
+      $('#rpWebPurge').disabled = false;
+    }
+  }
+
+  function bindWebsitePanel() {
+    $('#rpWebSave').addEventListener('click', () => {
+      const page = state.page;
+      if (!page || !Object.keys(page.webEdits || {}).length) return;
+      const edits = { ...page.webEdits };
+      for (const key of ['hero_button_color', 'accent_color']) {
+        if (key in edits && !/^#[0-9a-f]{6}$/i.test(edits[key])) { toast('Enter colours like #FF6600', 'error'); return; }
+      }
+      saveWebsite(page, { website: edits }, 'Website saved. Changes are live within a minute.');
+    });
+    $('#rpWebDiscard').addEventListener('click', () => {
+      const page = state.page;
+      if (!page) return;
+      page.webEdits = {};
+      renderWebsite({ force: true });
+    });
+    $('#rpWebPurge').addEventListener('click', () => {
+      const page = state.page;
+      if (page) saveWebsite(page, { purge_website_cache: true }, 'Website cache cleared');
+    });
+  }
+
   // ---------- Menu & prices (WooCommerce products via the bridge) ----------
   async function loadMenu(page) {
     page.menu = { loading: true, changes: new Map(), search: page.menu?.search || '', category: page.menu?.category || 'all' };
@@ -1808,6 +2017,7 @@
   ['gesturestart', 'gesturechange', 'gestureend'].forEach(type => document.addEventListener(type, e => e.preventDefault(), { passive: false }));
 
   function bindStaticEvents() {
+    bindWebsitePanel();
     $('#loginForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       $('#loginError').textContent = '';
