@@ -202,16 +202,16 @@
     requestAnimationFrame(positionAllThumbs);
   }
 
-  // Routes: #overview, #restaurants, #orders, #health, #restaurant/<code>
+  // Routes: #overview, #restaurants, #orders, #health, #restaurant/<code>[/<tab>]
   function parseRoute() {
     const hash = location.hash.replace(/^#/, '');
-    const m = hash.match(/^restaurant\/([a-z0-9_-]+)$/i);
-    if (m) return { view: 'restaurant', code: decodeURIComponent(m[1]).toLowerCase() };
+    const m = hash.match(/^restaurant\/([a-z0-9_-]+)(?:\/([a-z]+))?$/i);
+    if (m) return { view: 'restaurant', code: decodeURIComponent(m[1]).toLowerCase(), tab: (m[2] || 'overview').toLowerCase() };
     return { view: VIEWS.includes(hash) ? hash : 'overview' };
   }
   function route() {
     const r = parseRoute();
-    if (r.view === 'restaurant') showRestaurantPage(r.code);
+    if (r.view === 'restaurant') showRestaurantPage(r.code, r.tab);
     else switchView(r.view, false);
   }
 
@@ -242,7 +242,7 @@
     if (state.view === 'restaurants') renderRestaurants();
     if (state.view === 'orders') renderOrders();
     if (state.view === 'health') renderHealth();
-    if (state.view === 'restaurant') renderRestaurantPage({ skipSide: !!state.page?.dirty });
+    if (state.view === 'restaurant') renderRestaurantPage({ skipSide: settingsBusy() });
     renderPageSub();
   }
 
@@ -939,16 +939,20 @@
     showRestaurantPage(code);
   }
 
-  async function showRestaurantPage(code) {
+  async function showRestaurantPage(code, tab = 'overview') {
     if (!state.page || state.page.code !== code) {
-      state.page = { code, data: null, analytics: null, chart: { period: 'today', hover: null, animated: false }, dirty: false, lastAnalyticsAt: 0, couriers: null, wp: null, menu: null, webEdits: {}, webTab: 'style', an: null };
+      state.page = { code, data: null, analytics: null, chart: { period: 'today', hover: null, animated: false }, dirty: false, lastAnalyticsAt: 0, couriers: null, wp: null, menu: null, webEdits: {}, webTab: 'style', an: null, tab: 'overview', orderFilter: 'all', orderSearch: '', setSec: 'ordering' };
+      const anRoot = $('#rpAnalytics');
+      if (anRoot) { anRoot.innerHTML = ''; delete anRoot.dataset.built; }
     }
+    state.page.tab = RP_TAB_IDS.includes(tab) ? tab : 'overview';
     setActiveView('restaurant', 'restaurants');
     const known = restaurantsList().find(r => r.code === code);
     $('#pageTitle').textContent = state.page.data?.name || known?.name || code;
     renderPageSub();
     window.scrollTo(0, 0);
     renderRestaurantPage();
+    setRpTab(state.page.tab, { replace: false });
     await loadRestaurantPage({ withAnalytics: true });
   }
 
@@ -964,7 +968,7 @@
       page.data = detail.restaurant;
       if (analytics?.analytics) { page.analytics = analytics.analytics; page.lastAnalyticsAt = Date.now(); }
       // Never overwrite a form the admin is typing in.
-      renderRestaurantPage({ skipSide: silent && page.dirty });
+      renderRestaurantPage({ skipSide: silent && settingsBusy() });
       if (!silent) { loadWordpress(page); loadCouriers(page); }
     } catch (error) {
       if (state.page !== page) return;
@@ -974,15 +978,15 @@
   }
 
   // Collapsible restaurant-page sections; the open/closed choice is remembered per browser.
-  const SECTION_DEFAULT_OPEN = { attention: true, wp_status: true, hours: !window.matchMedia('(max-width: 760px)').matches };
+  const SECTION_DEFAULT_CLOSED = ['resend', 'danger'];
   let sectionMemory = {};
-  try { sectionMemory = JSON.parse(localStorage.getItem('cc_sections') || '{}') || {}; } catch (_) { sectionMemory = {}; }
-  const sectionOpen = (id) => (id in sectionMemory ? !!sectionMemory[id] : !!SECTION_DEFAULT_OPEN[id]);
+  try { sectionMemory = JSON.parse(localStorage.getItem('cc_sections_v2') || '{}') || {}; } catch (_) { sectionMemory = {}; }
+  const sectionOpen = (id) => (id in sectionMemory ? !!sectionMemory[id] : !SECTION_DEFAULT_CLOSED.includes(id));
   function rememberSections(root) {
     $$('details[data-sec]', root).forEach(el => {
       el.addEventListener('toggle', () => {
         sectionMemory[el.dataset.sec] = el.open;
-        try { localStorage.setItem('cc_sections', JSON.stringify(sectionMemory)); } catch (_) {}
+        try { localStorage.setItem('cc_sections_v2', JSON.stringify(sectionMemory)); } catch (_) {}
         if (el.open) requestAnimationFrame(() => $$('.segmented', el).forEach(positionThumb));
       });
     });
@@ -1009,11 +1013,13 @@
     if (!r) {
       $('#rpHero').innerHTML = '<div class="rp-loading">Loading restaurant…</div>';
       $('#rpKpis').innerHTML = '';
-      $('#rpSide').innerHTML = '';
+      $('#rpSettings').innerHTML = '';
       $('#rpOrders').innerHTML = '';
+      $('#rpOrdersAll').innerHTML = '';
+      $('#rpAttention').innerHTML = '';
       $('#rpOrdersSub').textContent = '';
-      $('#rpOrdersMore').hidden = true;
       $('#rpMenu').innerHTML = '';
+      renderRpTabs();
       renderWebsite();
       renderAnalyticsPanel();
       renderChart(restaurantChartCtx());
@@ -1037,22 +1043,21 @@
     ];
     $('#rpKpis').innerHTML = tiles.map(([label, value, note, ic, chip]) => `<div class="kpi"><div class="kpi-top"><span class="kpi-label">${esc(label)}</span><span class="icon-chip ${chip}">${icon(ic)}</span></div><div class="kpi-value">${esc(value)}</div><div class="kpi-note">${esc(note)}</div></div>`).join('');
 
-    renderChart(restaurantChartCtx());
+    if (page.tab === 'overview') renderChart(restaurantChartCtx());
 
-    const list = (r.recent_orders || []).map(o => ({ ...o, restaurant_code: r.code, restaurant_name: r.name }));
-    $('#rpOrdersSub').textContent = list.length ? `Latest ${Math.min(25, list.length)} of ${list.length} stored orders` : '';
-    $('#rpOrders').innerHTML = orderRows(list.slice(0, 25), false, true);
-    $('#rpOrders').classList.toggle('show-all', !!page.showAllOrders);
-    const more = $('#rpOrdersMore');
-    more.hidden = list.length <= 8;
-    more.textContent = page.showAllOrders ? 'Show fewer' : `Show all ${Math.min(25, list.length)} orders`;
-    more.onclick = () => { page.showAllOrders = !page.showAllOrders; renderRestaurantPage({ skipSide: true }); };
+    const list = rpOrderList();
+    $('#rpOrdersSub').textContent = list.length ? `${Math.min(5, list.length)} of ${list.length} stored orders` : '';
+    $('#rpOrders').innerHTML = orderRows(list.slice(0, 5), false, true);
     bindOpeners($('#rpOrders'));
+    $('#rpAllOrders').onclick = () => setRpTab('orders');
+    renderRpAttention(r);
+    renderRpTabs();
+    if (page.tab === 'orders') renderRpOrders();
 
     if (!skipSide) renderRestaurantSide(r);
-    renderMenu();
-    renderWebsite();
-    renderAnalyticsPanel();
+    if (page.tab === 'menu') renderMenu();
+    if (page.tab === 'website') renderWebsite();
+    if (page.tab === 'analytics') renderAnalyticsPanel();
   }
 
   function renderHero() {
@@ -1139,7 +1144,6 @@
     const page = state.page;
     const email = r.customer_email_settings || {};
     const failed = Array.isArray(r.failed_delivered_callbacks) ? r.failed_delivered_callbacks : [];
-    const bad = (r.attention_items || []).length > 0;
     const couriers = page.couriers;
     const courierRows = !couriers
       ? '<div class="muted-sm">Loading couriers…</div>'
@@ -1147,10 +1151,7 @@
         ? `<div class="mini-list">${couriers.map(c => `<div class="mini-row courier-row"><span class="cell-main" style="gap:10px"><span class="avatar sm" aria-hidden="true">${esc(initials(c.username))}</span><span><strong>${esc(c.username)}</strong><span class="s">${c.phone ? esc(c.phone) : 'no phone'}${c.created_at ? ' · since ' + esc(dayLabel(String(c.created_at).slice(0, 10))) : ''}</span></span></span><span class="row-actions"><button class="icon-button sm" type="button" data-courier-phone="${esc(c.key)}" aria-label="Edit phone of ${esc(c.username)}" title="Edit phone">${icon('phone')}</button><button class="icon-button sm" type="button" data-courier-password="${esc(c.key)}" aria-label="New password for ${esc(c.username)}" title="New password">${icon('key')}</button><button class="icon-button sm danger" type="button" data-courier-delete="${esc(c.key)}" aria-label="Remove ${esc(c.username)}" title="Remove">${icon('trash')}</button></span></div>`).join('')}</div>`
         : '<div class="muted-sm">No courier accounts yet.</div>';
 
-    $('#rpSide').innerHTML = `
-      ${bad ? section('attention', 'Needs attention', `<span class="pill red">${plural(r.attention_items.length, 'issue')}</span>`, `<div class="issue-list" style="margin:0">${r.attention_items.map(i => `<div class="issue ${esc(i.severity)}"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span>${i.kind === 'edition_mismatch' && r.wp_edition ? `<button id="applyEditionBtn" class="btn btn-secondary btn-sm" type="button">Apply ${r.wp_edition === 'free' ? 'Free' : 'Pro'}</button>` : ''}</div>`).join('')}</div>`, { danger: true, icon: 'alert' }) : ''}
-      <div id="rpWp" class="side-stack"></div>
-      ${section('couriers', 'Couriers', `<span class="pill grey">${couriers ? couriers.length : '…'}</span>`, `${courierRows}
+    const couriersHtml = section('couriers', 'Couriers', `<span class="pill grey">${couriers ? couriers.length : '…'}</span>`, `${courierRows}
         <div class="add-row">
           <div class="mix-title" style="margin:14px 0 8px">Add courier</div>
           <div class="edit-grid">
@@ -1159,31 +1160,42 @@
             <div class="field"><label for="cNewPhone">Phone</label><input id="cNewPhone" type="tel" placeholder="+41 79 000 00 00"></div>
           </div>
         </div>
-        <p class="d-note">The same accounts the FoodUp Courier app logs in with. Passwords are never shown.</p>`, { saveId: 'cAddBtn', saveLabel: 'Add courier', icon: 'user' })}
-      ${section('security', 'PINs & devices', `<span class="pill ${r.ios_pin_set ? 'green' : 'amber'}">iOS PIN ${r.ios_pin_set ? 'set' : 'not set'}</span>`, `
+        <p class="d-note">The same accounts the FoodUp Courier app logs in with. Passwords are never shown.</p>`, { saveId: 'cAddBtn', saveLabel: 'Add courier', icon: 'user' });
+    const securityHtml = section('security', 'PINs & devices', `<span class="pill ${r.ios_pin_set ? 'green' : 'amber'}">iOS PIN ${r.ios_pin_set ? 'set' : 'not set'}</span>`, `
         <div class="mini-list">
           <div class="mini-row"><span><strong>Owner PIN</strong><span class="s">Android owner login and app settings · never shown</span></span><button id="resetPinBtn" class="btn btn-secondary" type="button">${icon('key')}Set new</button></div>
           <div class="mini-row"><span><strong>iOS PIN</strong><span class="s">${r.ios_pin_set ? 'Set · never shown' : 'Not set yet'}</span></span><button id="iosPinBtn" class="btn btn-secondary" type="button">${icon('key')}Set new</button></div>
           <div class="mini-row"><span><strong>Orders App devices</strong><span class="s">${plural(r.device_count || 0, 'device')} registered for push</span></span><button id="resetDevicesBtn" class="btn btn-secondary" type="button">${icon('device')}Reset</button></div>
           <div class="mini-row"><span><strong>Printer</strong><span class="s">${r.printer_device_id ? 'Device ' + esc(String(r.printer_device_id).slice(0, 12)) + '…' : 'Not assigned'}</span></span><button id="resetPrinterBtn" class="btn btn-secondary" type="button">${icon('printer')}Clear</button></div>
-        </div>`, { icon: 'lock' })}
-      ${section('profile', 'Connection profile', '', `<div class="edit-grid">
+        </div>`, { icon: 'lock' });
+    const profileHtml = section('profile', 'Connection profile', '', `<div class="edit-grid">
         <div class="field"><label for="editName">Name</label><input id="editName" value="${esc(r.name)}"></div>
         <div class="field"><label for="editWebsite">Website</label><input id="editWebsite" value="${esc(r.website)}" placeholder="restaurant.ch"></div>
         <div class="field"><label for="editPhone">Phone</label><input id="editPhone" value="${esc(r.phone)}" placeholder="+41 44 000 00 00"></div>
         <div class="field"><label for="editAddress">Address</label><input id="editAddress" value="${esc(r.address)}" placeholder="Street 1, 8000 Zürich"></div>
-      </div><p class="d-note">Stored in the FoodUp backend. The website here is where the backend sends order callbacks; the apps show name, phone and address.</p>`, { saveId: 'saveProfileBtn', icon: 'store' })}
-      ${section('callbacks', 'Failed delivered callbacks', `<span class="pill ${failed.length ? 'amber' : 'green'}">${failed.length}</span>`, `
+      </div><p class="d-note">Stored in the FoodUp backend. The website here is where the backend sends order callbacks; the apps show name, phone and address.</p>`, { saveId: 'saveProfileBtn', icon: 'store' });
+    const callbacksHtml = section('callbacks', 'Failed delivered callbacks', `<span class="pill ${failed.length ? 'amber' : 'green'}">${failed.length}</span>`, `
         ${failed.length ? `<div class="mini-list">${failed.map(item => `<div class="mini-row"><span><strong>#${esc(item.order_id)}</strong><span class="s">${esc(item.reason || 'callback_failed')} · ${plural(Number(item.attempts || 0), 'attempt')} · ${esc(item.last_attempt_at ? fmtAgo(item.last_attempt_at) : 'no attempt time')}</span></span><button class="btn btn-secondary" type="button" data-retry-delivered-callback="${esc(item.order_id)}">${icon('refresh')}Retry</button></div>`).join('')}</div>` : '<div class="muted-sm">All delivered statuses reached WordPress.</div>'}
-        <p class="d-note">Permanent failures and callbacks that exhaust their 24-hour retry window are kept for 30 days.</p>`, { icon: 'plug' })}
-      ${section('resend', 'Customer email (Resend, legacy)', email.resend_enabled ? '<span class="pill amber">On</span>' : '<span class="pill grey">Off</span>', `
+        <p class="d-note">Permanent failures and callbacks that exhaust their 24-hour retry window are kept for 30 days.</p>`, { icon: 'plug' });
+    const resendHtml = section('resend', 'Customer email (Resend, legacy)', email.resend_enabled ? '<span class="pill amber">On</span>' : '<span class="pill grey">Off</span>', `
         <label class="module-toggle"><span>Allow central FoodUp email via Resend</span><span class="switch"><input id="resendEnabledToggle" type="checkbox" ${email.resend_enabled ? 'checked' : ''}><span></span></span></label>
-        <p class="d-note">Restaurant emails now run through Brevo (see Email above). This switch only controls the old central Resend endpoint.</p>`, { saveId: 'saveCustomerEmailBtn', saveClass: 'btn-secondary', icon: 'mail' })}
-      ${section('danger', 'Danger zone', '', `<p class="d-note" style="margin:0 0 12px">These actions permanently change backend data for this restaurant.</p><div class="actions-row"><button id="clearOrdersBtn" class="btn btn-outline-danger" type="button">${icon('trash')}Clear order history</button><button id="removeRestaurantBtn" class="btn btn-danger" type="button">${icon('trash')}Remove restaurant</button></div>`, { danger: true, icon: 'alert' })}`;
+        <p class="d-note">Restaurant emails now run through Brevo (see Email above). This switch only controls the old central Resend endpoint.</p>`, { saveId: 'saveCustomerEmailBtn', saveClass: 'btn-secondary', icon: 'mail' });
+    const dangerHtml = section('danger', 'Danger zone', '', `<p class="d-note" style="margin:0 0 12px">These actions permanently change backend data for this restaurant.</p><div class="actions-row"><button id="clearOrdersBtn" class="btn btn-outline-danger" type="button">${icon('trash')}Clear order history</button><button id="removeRestaurantBtn" class="btn btn-danger" type="button">${icon('trash')}Remove restaurant</button></div>`, { danger: true, icon: 'alert' });
+
+    const pane = (id, title, note, html) => `<div class="set-pane" data-pane="${id}" hidden><div class="set-pane-head"><h2>${esc(title)}</h2><p>${esc(note)}</p></div><div class="set-stack">${html}</div></div>`;
+    $('#rpSettings').innerHTML = `${settingsNavHtml(r)}
+      <div class="set-panes rp-side">
+        ${pane('ordering', 'Ordering', 'When and how customers can order', '<div class="wp-host set-stack" data-wp="ordering"></div>')}
+        ${pane('apps', 'Apps & staff', 'FoodUp Orders, couriers and access', `<div class="wp-host set-stack" data-wp="apps"></div>${couriersHtml}${securityHtml}`)}
+        ${pane('shop', 'Shop & communication', 'What customers see and receive', `<div class="wp-host set-stack" data-wp="shop"></div>${resendHtml}`)}
+        ${pane('conn', 'Connection & advanced', 'Rarely needed', `<div class="wp-host set-stack" data-wp="conn"></div>${profileHtml}${callbacksHtml}${dangerHtml}`)}
+      </div>`;
+    $('#rpSetNav').onclick = (event) => { const btn = event.target.closest('[data-set]'); if (btn) selectSettingsSection(btn.dataset.set); };
     state.page.dirty = false;
-    rememberSections($('#rpSide'));
+    rememberSections($('#rpSettings'));
     bindRestaurantActions();
     renderWordpress();
+    selectSettingsSection(state.page.setSec);
   }
 
   async function loadCouriers(page) {
@@ -1202,8 +1214,8 @@
     const page = state.page;
     const code = page.data.code;
     const name = page.data.name;
-    const side = $('#rpSide');
-    side.oninput = (event) => { if (!event.target.closest('#rpWp')) page.dirty = true; };
+    const side = $('#rpSettings');
+    side.oninput = (event) => { if (!event.target.closest('.wp-host')) page.dirty = true; };
     const patch = async (body, message) => {
       const data = await api(`/admin/api/restaurants/${encodeURIComponent(code)}`, { method: 'PATCH', body: JSON.stringify(body) });
       if (state.page !== page) return;
@@ -1223,20 +1235,6 @@
       renderRestaurantSide(page.data);
     };
 
-    const applyEdition = $('#applyEditionBtn');
-    if (applyEdition) {
-      const target = page.data.wp_edition;
-      applyEdition.addEventListener('click', () => confirmationModal(
-        `Switch the apps to ${target === 'free' ? 'Free' : 'Pro'}?`,
-        `WordPress has ${name} set to FoodUp ${target === 'free' ? 'Free' : 'Pro'}. The Orders app switches within a few minutes. ${target === 'free' ? 'Free prints the full address without QR code and locks the Pro tabs (statistics, couriers).' : 'Pro unlocks statistics and couriers and prints the courier QR code.'}`,
-        `Apply ${target === 'free' ? 'Free' : 'Pro'}`,
-        async () => {
-          await api(`/admin/api/restaurants/${encodeURIComponent(code)}/wordpress`, { method: 'PATCH', body: JSON.stringify({ changes: { orders_app: { edition: target } } }) });
-          toast(`${name} now runs as FoodUp ${target === 'free' ? 'Free' : 'Pro'}`);
-          refreshAll({ silent: true });
-          await loadRestaurantPage();
-        }));
-    }
     const saveProfile = $('#saveProfileBtn');
     saveProfile.addEventListener('click', busy(saveProfile, () => patch({ name: $('#editName').value, website: $('#editWebsite').value, phone: $('#editPhone').value, address: $('#editAddress').value }, 'Restaurant profile saved')));
     const saveEmail = $('#saveCustomerEmailBtn');
@@ -1336,6 +1334,16 @@
       </div>
     </div>`).join('');
   }
+  // Read-only week view of the saved opening hours (08:00 – 24:00).
+  function weekTimelineHtml(days) {
+    const toH = (t) => { const m = String(t || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Number(m[1]) + Number(m[2]) / 60 : null; };
+    const pos = (h) => Math.max(0, Math.min(100, (h - 8) / 16 * 100));
+    const rows = days.map(d => {
+      const slots = d.enabled ? (d.periods || []).map(p => { const a = toH(p.start); let b = toH(p.end); if (a === null || b === null) return ''; if (b <= a) b = 24; return `<span class="wk-slot" style="left:${pos(a).toFixed(2)}%;width:${(pos(b) - pos(a)).toFixed(2)}%" title="${esc(p.start)} – ${esc(p.end)}"></span>`; }).join('') : '';
+      return `<span class="wk-day">${esc(String(d.label || '').slice(0, 3))}</span><span class="wk-track">${slots}${d.enabled ? '' : '<em>Closed</em>'}</span>`;
+    }).join('');
+    return `<div class="wk" aria-hidden="true">${rows}<span></span><span class="wk-scale"><span>08</span><span>12</span><span>16</span><span>20</span><span>24</span></span></div>`;
+  }
   function closureRowHtml(c) {
     return `<div class="closure-row"><input type="date" data-c="start" value="${esc(c.start || '')}" aria-label="Closed from"><span class="dash">–</span><input type="date" data-c="end" value="${esc(c.end || '')}" aria-label="Closed until"><input data-c="reason" value="${esc(c.reason || '')}" placeholder="Reason (shown to customers)" aria-label="Reason"><button class="icon-button sm danger" type="button" data-c-remove aria-label="Remove closure">${icon('trash')}</button></div>`;
   }
@@ -1343,20 +1351,34 @@
     return `<div class="zone-row"><input data-z="plz" value="${esc(z.plz || '')}" placeholder="PLZ" inputmode="numeric" aria-label="Postcode"><input data-z="city" value="${esc(z.city || '')}" placeholder="Place" aria-label="Place"><span class="money-input"><span>CHF</span><input data-z="min" value="${esc(z.min ?? '')}" inputmode="decimal" placeholder="0" aria-label="Minimum order"></span><button class="icon-button sm danger" type="button" data-z-remove aria-label="Remove zone">${icon('trash')}</button></div>`;
   }
 
+  // Puts WordPress sections into their settings panes; the rest of each pane is untouched.
+  function placeWordpressSections(html, notice) {
+    const hosts = {};
+    $$('#rpSettings .wp-host').forEach(h => { hosts[h.dataset.wp] = h; h.innerHTML = ''; });
+    const staging = document.createElement('div');
+    staging.innerHTML = html;
+    Array.from(staging.children).forEach(el => {
+      const paneId = WP_SECTION_PANE[el.dataset.sec] || 'conn';
+      if (hosts[paneId]) hosts[paneId].appendChild(el);
+    });
+    if (notice) Object.entries(hosts).forEach(([id, h]) => { if (id !== 'conn' && !h.children.length) h.innerHTML = `<div class="set-notice">${notice}</div>`; });
+    Object.values(hosts).forEach(h => rememberSections(h));
+  }
+
   function renderWordpress() {
     const page = state.page;
-    const host = $('#rpWp');
-    if (!page || !host) return;
+    const host = $('#rpSettings');
+    if (!page || !host || !$('#rpSettings .wp-host')) return;
+    renderRpTabs();
     const wp = page.wp || { loading: true };
     if (wp.loading && !wp.data) {
-      host.innerHTML = section('wp_status', 'WordPress · FoodUp Ordering', '<span class="pill grey">Connecting…</span>', '<div class="muted-sm">Reading the plugin settings from the restaurant\'s website…</div>', { icon: 'globe' });
+      placeWordpressSections(section('wp_status', 'WordPress · FoodUp Ordering', '<span class="pill grey">Connecting…</span>', '<div class="muted-sm">Reading the plugin settings from the restaurant\'s website…</div>', { icon: 'globe' }), 'Reading the settings from WordPress…');
       return;
     }
     if (!wp.connected) {
-      host.innerHTML = section('wp_status', 'WordPress · FoodUp Ordering', '<span class="pill red">Not connected</span>', `
+      placeWordpressSections(section('wp_status', 'WordPress · FoodUp Ordering', '<span class="pill red">Not connected</span>', `
         <div class="issue warning" style="margin:0"><span class="text"><strong>${esc(WP_REASON_TITLES[wp.reason] || 'Connection problem')}</strong><br><span class="where">${esc(wp.message || '')}</span></span></div>
-        <div class="actions-row" style="margin-top:12px"><button id="wpRetryBtn" class="btn btn-secondary" type="button">${icon('refresh')}Try again</button></div>`, { icon: 'globe' });
-      rememberSections(host);
+        <div class="actions-row" style="margin-top:12px"><button id="wpRetryBtn" class="btn btn-secondary" type="button">${icon('refresh')}Try again</button></div>`, { icon: 'globe' }), 'WordPress is not connected. See Connection &amp; advanced.');
       $('#wpRetryBtn').addEventListener('click', () => loadWordpress(page));
       return;
     }
@@ -1382,12 +1404,13 @@
     const updateNote = '<div class="muted-sm">Needs FoodUp Ordering 0.5.238 or newer on this site.</div>';
     const availPill = avail ? (avail.accepting_orders ? '<span class="pill green">Open now</span>' : (avail.reason === 'outside_opening_hours' ? '<span class="pill amber">Closed now</span>' : '<span class="pill red">Closed</span>')) : '';
 
-    host.innerHTML = `
+    placeWordpressSections(`
       ${section('wp_status', 'WordPress · FoodUp Ordering', '<span class="pill green"><span class="status-dot online"></span>Connected</span>', `
         <div class="wp-meta"><span class="with-icon">${icon('plug')}Plugin ${esc(d.plugin_version || '?')}</span><a class="with-icon" href="${esc(d.site_url || '#')}/wp-admin/" target="_blank" rel="noopener">${icon('external')}wp-admin</a>${wp.loading ? '<span class="muted-sm">refreshing…</span>' : ''}</div>
         <p class="d-note">These settings are stored in the restaurant's WordPress and saved there directly.</p>`, { icon: 'globe' })}
 
       ${section('hours', 'Opening hours & closures', availPill, v2 && hours ? `
+        ${weekTimelineHtml(hours.days)}
         <div class="hours-list" id="wpHours">${hoursRowsHtml(hours.days)}</div>
         <div class="mix-title" style="margin:16px 0 8px">Scheduled closures</div>
         <div id="wpClosures" class="closure-list">${(hours.closures || []).map(closureRowHtml).join('')}</div>
@@ -1445,15 +1468,13 @@
           <dt>Sent today</dt><dd>${esc(mail.sent_today)}</dd>
           <dt>Last test</dt><dd>${mail.last_test ? `${mail.last_test.success ? 'OK' : 'Failed'} · ${esc(mail.last_test.time)}` : 'No test yet'}</dd>
         </dl>
-        <p class="d-note">Read-only. SMTP keys stay in wp-admin (FoodUp Ordering → Brevo) and are never sent to the Control Center.</p>` : updateNote, { icon: 'mail' })}`;
-
-    rememberSections(host);
+        <p class="d-note">Read-only. SMTP keys stay in wp-admin (FoodUp Ordering → Brevo) and are never sent to the Control Center.</p>` : updateNote, { icon: 'mail' })}`);
     bindWordpressActions(page, d);
-    host.oninput = () => { page.wpDirty = true; };
+    $$('#rpSettings .wp-host').forEach(h => { h.oninput = () => { page.wpDirty = true; }; });
   }
 
   function bindWordpressActions(page, d) {
-    const host = $('#rpWp');
+    const host = $('#rpSettings');
     const s = d.settings || {};
     const f = s.features || {};
     const oa = s.orders_app || {};
@@ -1580,9 +1601,17 @@
     requestAnimationFrame(() => $$('.segmented', host).forEach(positionThumb));
   }
 
-  // ---------- Analytics (plugin analytics via the bridge, v4) ----------
+  // ---------- Analytics tab (plugin analytics via the bridge, v4) ----------
   const AN_RANGES = [{ value: 'today', label: 'Today' }, { value: 'last7', label: '7 days' }, { value: 'last30', label: '30 days' }, { value: 'this_month', label: 'This month' }];
-  const AN_SHADES = ['#8b38cb', '#a768d9', '#c49be6', '#e3d3f2', '#d9c2ee', '#efe4f8', '#f4ebfb', '#f7f1fc'];
+  const AN_WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const AN_ICONS = {
+    fire: 'M12 3c1 3 4 5 4 9a4 4 0 0 1-8 0c0-2 1-3 2-4c0 2 1 3 2 3c0-3-1-5 0-8z',
+    star: 'M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z',
+    pin: 'M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11zM12 7.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5z',
+    bag: 'M6 8h12l-1 12H7zM9 8V6a3 3 0 0 1 6 0v2',
+  };
+  const fmtInt = (n) => String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '’');
+  const svgPath = (d, size = 16) => `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"></path></svg>`;
 
   async function loadAnalyticsPanel(page, range) {
     page.an = { ...(page.an || {}), range: range || page.an?.range || 'last7', loading: true };
@@ -1590,54 +1619,78 @@
     try {
       const data = await api(`/admin/api/restaurants/${encodeURIComponent(page.code)}/wordpress/analytics?range=${encodeURIComponent(page.an.range)}`);
       if (state.page !== page) return;
-      page.an = { ...page.an, loading: false, data };
+      page.an = { ...page.an, loading: false, data, renderedFor: null };
     } catch (error) {
       if (state.page !== page) return;
-      page.an = { ...page.an, loading: false, data: { available: false, message: error.message } };
+      page.an = { ...page.an, loading: false, data: { available: false, message: error.message }, renderedFor: null };
     }
     renderAnalyticsPanel();
   }
 
-  function anDelta(now, base, { points = false, invert = false } = {}) {
+  function anDelta(now, base, { points = false } = {}) {
     if (points) {
-      if (now === null || base === null) return '';
+      if (now === null || base === null || base === undefined) return '';
       const d = Math.round((now - base) * 10) / 10;
       return `<span class="pill ${d >= 0 ? 'green' : 'amber'}">${d > 0 ? '+' : d < 0 ? '−' : '±'}${Math.abs(d).toFixed(1)} pts</span>`;
     }
     const d = pctDelta(now, base);
     if (d === null) return '';
-    const good = invert ? d <= 0 : d >= 0;
-    return `<span class="pill ${good ? 'green' : 'amber'}">${deltaText(d)}</span>`;
+    return `<span class="pill ${d >= 0 ? 'green' : 'amber'}">${deltaText(d)}</span>`;
   }
 
-  function anBars(rows, valueKey, labelFn, valueFn) {
-    if (!rows.length) return '<div class="muted-sm an-empty">No data in this period.</div>';
-    const max = Math.max(1, ...rows.map(r => r[valueKey]));
-    return `<div class="share-list an-list">${rows.map((r, i) => `<div class="share-row"><div class="top"><span>${esc(labelFn(r))}</span><span class="num">${valueFn(r)}</span></div><div class="track"><div style="width:${(r[valueKey] / max * 100).toFixed(1)}%;background:${AN_SHADES[Math.min(i, AN_SHADES.length - 1)]}"></div></div></div>`).join('')}</div>`;
+  function anSpark(values, color) {
+    if (!values.length || values.every(v => !v)) return '';
+    const max = Math.max(...values), min = Math.min(...values);
+    const pts = values.map((v, i) => [values.length === 1 ? 60 : (i / (values.length - 1)) * 120, 30 - ((v - min) / (max - min || 1)) * 26]);
+    const line = pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+    return `<svg class="an-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polygon points="0,34 ${line} 120,34" fill="${color}" opacity=".12"></polygon><polyline class="an-draw" points="${line}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline></svg>`;
+  }
+
+  function anRing(share, color, label, sub, size = 104, width = 11, track = 'var(--line)') {
+    const r = 42, c = 2 * Math.PI * r;
+    const dash = Math.max(0, Math.min(1, share)) * c;
+    return `<svg class="an-ring" viewBox="0 0 100 100" style="width:${size}px;height:${size}px" role="img" aria-label="${esc(sub)} ${esc(label)}"><circle cx="50" cy="50" r="${r}" fill="none" stroke="${track}" stroke-width="${width}"></circle><circle class="an-ring-arc" cx="50" cy="50" r="${r}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linecap="round" stroke-dasharray="${dash.toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 50 50)"></circle><text x="50" y="${sub ? 50 : 56}" text-anchor="middle" class="an-ring-value">${esc(label)}</text>${sub ? `<text x="50" y="64" text-anchor="middle" class="an-ring-sub">${esc(sub)}</text>` : ''}</svg>`;
+  }
+
+  function anBarRow(label, valueHtml, pct, color, delay) {
+    return `<div class="an-row" style="--d:${delay}ms"><div class="an-row-top"><span>${esc(label)}</span><span class="num">${valueHtml}</span></div><div class="track"><div class="an-widen" style="width:${Math.max(0, Math.min(100, pct)).toFixed(1)}%;background:${color}"></div></div></div>`;
   }
 
   function renderAnalyticsPanel() {
     const page = state.page;
+    const root = $('#rpAnalytics');
+    if (!page || !root) return;
+    if (!root.dataset.built) {
+      root.dataset.built = '1';
+      root.innerHTML = `
+        <section class="panel an-head">
+          <div class="title-inline"><span class="icon-chip accent lg">${icon('trend')}</span><div><h2>Website &amp; sales analytics</h2><p id="rpAnSub">From the restaurant's WordPress</p></div></div>
+          <div id="rpAnRange" class="segmented" role="tablist" aria-label="Analytics period"></div>
+        </section>
+        <div id="rpAnBody" class="an-body"></div>`;
+    }
     const body = $('#rpAnBody');
-    if (!page || !body) return;
     const sw = $('#rpAnRange');
     const sub = $('#rpAnSub');
     const wp = page.wp;
-    const show = (html) => { body.innerHTML = html; sw.hidden = true; };
-    if (!wp || (wp.loading && !wp.data)) return show('<div class="empty-box">Connecting to WordPress…</div>');
-    if (!wp.connected) return show('<div class="empty-box">Connect WordPress to see website and sales analytics.</div>');
-    if (Number(wp.data.bridge_version || 1) < 4) return show('<div class="empty-box">Needs FoodUp Ordering 0.5.247 or newer on this site.</div>');
+    const notice = (html) => { body.innerHTML = `<section class="panel"><div class="empty-box">${html}</div></section>`; sw.hidden = true; page.an && (page.an.renderedFor = null); };
+    if (!wp || (wp.loading && !wp.data)) return notice('Connecting to WordPress…');
+    if (!wp.connected) return notice('Connect WordPress to see website and sales analytics.');
+    if (Number(wp.data.bridge_version || 1) < 4) return notice('Needs FoodUp Ordering 0.5.247 or newer on this site.');
+    if (page.tab !== 'analytics') return;
     if (!page.an) { loadAnalyticsPanel(page, 'last7'); return; }
     sw.hidden = false;
     segmented(sw, AN_RANGES, page.an.range, v => loadAnalyticsPanel(page, v));
     const a = page.an.data;
-    if (!a) { body.innerHTML = '<div class="empty-box">Loading analytics…</div>'; return; }
-    if (!a.available) { body.innerHTML = `<div class="empty-box">${esc(a.message || 'Analytics are not available.')}</div>`; return; }
-
     body.classList.toggle('is-loading', !!page.an.loading);
+    if (!a) { body.innerHTML = '<section class="panel"><div class="empty-box">Loading analytics…</div></section>'; return; }
+    if (!a.available) { body.innerHTML = `<section class="panel"><div class="empty-box">${esc(a.message || 'Analytics are not available.')}</div></section>`; return; }
+    if (page.an.renderedFor === a) return;
+    page.an.renderedFor = a;
+
+    const cc = a.currency || 'CHF';
     const cur = a.current || {};
     const prev = a.previous || {};
-    const cc = a.currency || 'CHF';
     const vis = a.visitors || {};
     const vc = vis.current;
     const vp = vis.previous;
@@ -1645,49 +1698,310 @@
     const conv = tracking && vc.sessions ? Math.round(vc.converted_sessions / vc.sessions * 1000) / 10 : null;
     const convPrev = tracking && vp && vp.sessions ? Math.round(vp.converted_sessions / vp.sessions * 1000) / 10 : null;
     const r = a.range || {};
-    sub.textContent = r.from ? `${dayLabel(r.from)}${r.to && r.to !== r.from ? ' – ' + dayLabel(r.to) : ''} · compared with the previous ${r.days === 1 ? 'day' : r.days + ' days'}` : 'From the restaurant\'s WordPress';
+    sub.textContent = r.from ? `${dayLabel(r.from)}${r.to && r.to !== r.from ? ' – ' + dayLabel(r.to) : ''} · compared with the previous ${r.days === 1 ? 'day' : r.days + ' days'}` : "From the restaurant's WordPress";
+
+    // timeline (hourly: trim to the active part of the day)
+    let tl = (a.timeline || []).slice();
+    if (a.granularity === 'hour' && tl.length === 24) {
+      const active = tl.map((t, i) => (t.orders ? i : -1)).filter(i => i >= 0);
+      const from = Math.min(10, active.length ? active[0] : 10);
+      const to = Math.max(22, active.length ? active[active.length - 1] + 1 : 22);
+      tl = tl.slice(from, to);
+    }
+    const ordersSeries = tl.map(t => t.orders);
+    const revenueSeries = tl.map(t => t.revenue);
 
     const tiles = [
-      ['Website visitors', tracking ? String(vc.visitors) : 'Off', tracking ? anDelta(vc.visitors, vp?.visitors) : '', tracking ? `${vc.sessions} visits · ${vc.returning_visitors} returning` : 'Visitor tracking is off on this site', 'user', 'blue'],
-      ['Conversion', conv === null ? '—' : `${conv.toFixed(1)}%`, conv === null ? '' : anDelta(conv, convPrev, { points: true }), tracking ? `${vc.converted_sessions} visits led to an order` : 'Needs visitor tracking', 'trend', 'accent'],
-      ['Orders', String(cur.orders || 0), anDelta(cur.orders, prev.orders), cur.lost ? `${cur.lost} cancelled or failed` : 'From WooCommerce', 'receipt', 'accent'],
-      ['Revenue', money(cur.revenue, cc), anDelta(cur.revenue, prev.revenue), `avg. ${money(cur.aov, cc)} per order`, 'wallet', 'amber'],
+      { label: 'Website visitors', value: tracking ? fmtInt(vc.visitors) : 'Off', delta: tracking ? anDelta(vc.visitors, vp?.visitors) : '', note: tracking ? `${fmtInt(vc.sessions)} visits` : 'Visitor tracking is off on this site',
+        extra: tracking && vc.visitors ? `<div class="an-mini-split" title="Returning visitors"><span class="an-widen" style="width:${(vc.returning_visitors / vc.visitors * 100).toFixed(1)}%"></span></div><div class="kpi-note">${Math.round(vc.returning_visitors / vc.visitors * 100)}% returning</div>` : '' },
+      { label: 'Conversion', value: conv === null ? '—' : `${conv.toFixed(1)}%`, delta: conv === null ? '' : anDelta(conv, convPrev, { points: true }), note: tracking ? `${fmtInt(vc.converted_sessions)} visits led to an order` : 'Needs visitor tracking', extra: '' },
+      { label: 'Orders', value: fmtInt(cur.orders || 0), delta: anDelta(cur.orders, prev.orders), note: cur.lost ? `${plural(cur.lost, 'order')} cancelled or failed` : 'From WooCommerce', extra: anSpark(ordersSeries, '#8b38cb') },
+      { label: 'Revenue', value: money(cur.revenue, cc), delta: anDelta(cur.revenue, prev.revenue), note: `avg. ${money(cur.aov, cc)} per order`, extra: anSpark(revenueSeries, '#e79b24') },
     ];
 
+    // insights
+    const insights = [];
+    const heat = Array.isArray(a.heat) && a.heat.length === 7 ? a.heat : null;
+    if (heat) {
+      let best = { v: 0, d: 0, h: 0 };
+      heat.forEach((row, d) => (row || []).forEach((v, h) => { if (v > best.v) best = { v, d, h }; }));
+      if (best.v) insights.push({ icon: AN_ICONS.fire, tone: 'amber', label: 'Busiest time', value: `${AN_WEEKDAYS[best.d]}, ${String(best.h).padStart(2, '0')}:00 – ${String(best.h + 1).padStart(2, '0')}:00`, note: plural(best.v, 'order') });
+    } else if (Array.isArray(a.hours) && a.hours.some(Boolean)) {
+      const h = a.hours.indexOf(Math.max(...a.hours));
+      insights.push({ icon: AN_ICONS.fire, tone: 'amber', label: 'Busiest hour', value: `${String(h).padStart(2, '0')}:00 – ${String(h + 1).padStart(2, '0')}:00`, note: plural(a.hours[h], 'order') });
+    }
     const labels = a.source_labels || {};
+    const srcLabel = key => labels[key] || key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+    const orderSources = a.order_sources || {};
+    const totalSourced = Object.values(orderSources).reduce((x, y) => x + y, 0);
+    const bestSource = Object.entries(orderSources).filter(([k]) => k !== 'unknown').sort((x, y) => y[1] - x[1])[0];
+    if (bestSource && bestSource[1]) insights.push({ icon: AN_ICONS.star, tone: 'blue', label: 'Best source', value: srcLabel(bestSource[0]), note: `${Math.round(bestSource[1] / Math.max(1, totalSourced) * 100)}% of orders` });
+    const zones = a.zones || [];
+    const deliveryOrders = (a.modes || {}).delivery || 0;
+    if (zones[0] && zones[0].orders) insights.push({ icon: AN_ICONS.pin, tone: 'green', label: 'Strongest zone', value: zones[0].name, note: `${Math.round(zones[0].orders / Math.max(1, deliveryOrders) * 100)}% of delivery orders` });
+    else if ((a.products || [])[0]) insights.push({ icon: AN_ICONS.bag, tone: 'green', label: 'Top product', value: a.products[0].name, note: `${a.products[0].qty}× sold` });
+
+    // orders & revenue chart
+    const barMax = Math.max(1, ...ordersSeries);
+    const revMax = Math.max(1, ...revenueSeries);
+    const revPoints = revenueSeries.map((v, i) => `${(((i + 0.5) / revenueSeries.length) * 100).toFixed(2)},${(100 - (v / revMax) * 92).toFixed(2)}`).join(' ');
+    const step = Math.max(1, Math.ceil(tl.length / 6));
+    const chart = tl.length ? `
+      <div class="an-chart">
+        <div class="an-bars">${tl.map((t, i) => `<div class="an-bar" title="${esc(t.label)} · ${plural(t.orders, 'order')} · ${esc(money(t.revenue, cc))}"><span class="an-grow" style="height:${(t.orders / barMax * 100).toFixed(1)}%;--d:${i * 18}ms"></span></div>`).join('')}</div>
+        ${revenueSeries.some(Boolean) ? `<svg class="an-line" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline points="${revPoints}" fill="none" stroke="#e79b24" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"></polyline></svg>` : ''}
+        <div class="an-axis">${tl.map((t, i) => `<span>${i % step === 0 ? esc(t.label) : ''}</span>`).join('')}</div>
+      </div>` : '<div class="empty-box">No orders in this period.</div>';
+
+    // funnel
+    const funnel = tracking ? `
+      <div class="an-funnel">
+        ${anRing((conv || 0) / 100 * 5, '#8b38cb', conv === null ? '—' : `${conv.toFixed(1)}%`, 'conversion')}
+        <div class="an-funnel-rows">
+          ${anBarRow('Visits', `<strong>${fmtInt(vc.sessions)}</strong>`, 100, '#e3d3f2', 0)}
+          ${anBarRow('Unique visitors', `<strong>${fmtInt(vc.visitors)}</strong>`, vc.sessions ? vc.visitors / vc.sessions * 100 : 0, '#c49be6', 80)}
+          ${anBarRow('Visits with an order', `<strong>${fmtInt(vc.converted_sessions)}</strong>`, vc.sessions ? vc.converted_sessions / vc.sessions * 100 : 0, '#8b38cb', 160)}
+        </div>
+      </div>
+      <p class="d-note">The ring fills completely at 20% conversion.</p>`
+      : `<div class="an-off">${icon('user')}<div><strong>Visitor tracking is off</strong><p>Orders still show below. Switch it on in wp-admin under FoodUp Ordering → Analytics → Visitors &amp; acquisition, after updating the privacy notice.</p></div></div>`;
+
+    // sources
     const visitSources = (tracking && vc.sources) || {};
-    const sourceKeys = Array.from(new Set([...Object.keys(a.order_sources || {}), ...Object.keys(visitSources)]));
-    const sources = sourceKeys.map(key => ({ key, orders: (a.order_sources || {})[key] || 0, visits: visitSources[key]?.sessions || 0 }))
-      .filter(s => s.orders || s.visits).sort((x, y) => y.orders - x.orders || y.visits - x.visits).slice(0, 8);
-    const sourceLabel = s => labels[s.key] || s.key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+    const sourceRows = Array.from(new Set([...Object.keys(orderSources), ...Object.keys(visitSources)]))
+      .map(key => ({ key, orders: orderSources[key] || 0, visits: visitSources[key]?.sessions || 0 }))
+      .filter(x => x.orders || x.visits).sort((x, y) => y.orders - x.orders || y.visits - x.visits).slice(0, 7);
+    const maxSrcOrders = Math.max(1, ...sourceRows.map(x => x.orders));
+    const maxSrcVisits = Math.max(1, ...sourceRows.map(x => x.visits));
+    const sources = sourceRows.length ? sourceRows.map((x, i) => `
+      <div class="an-row" style="--d:${i * 60}ms">
+        <div class="an-row-top"><span>${esc(srcLabel(x.key))}</span><span class="num"><strong>${plural(x.orders, 'order')}</strong>${tracking && x.visits ? ` <span class="muted-sm">· ${plural(x.visits, 'visit')}</span>` : ''}</span></div>
+        <div class="track"><div class="an-widen" style="width:${(x.orders / maxSrcOrders * 100).toFixed(1)}%;background:#8b38cb"></div></div>
+        ${tracking ? `<div class="track thin"><div class="an-widen" style="width:${(x.visits / maxSrcVisits * 100).toFixed(1)}%;background:#d9c2ee"></div></div>` : ''}
+      </div>`).join('') : '<div class="muted-sm an-empty">No orders in this period.</div>';
 
-    const tl = a.timeline || [];
-    const tlMax = Math.max(1, ...tl.map(t => t.orders));
-    const tlStep = Math.ceil(tl.length / 8);
-    const timeline = tl.length ? `<div class="an-bars" role="img" aria-label="Orders per ${a.granularity === 'hour' ? 'hour' : 'day'}">${tl.map((t, i) => `<div class="an-bar" title="${esc(t.label)} · ${plural(t.orders, 'order')} · ${esc(money(t.revenue, cc))}"><span style="height:${Math.max(t.orders ? 4 : 0, t.orders / tlMax * 100).toFixed(1)}%"></span><em>${i % tlStep === 0 ? esc(t.label) : ''}</em></div>`).join('')}</div>` : '';
+    // heatmap
+    let heatHtml;
+    if (heat) {
+      const active = [];
+      heat.forEach(row => (row || []).forEach((v, h) => { if (v) active.push(h); }));
+      const hFrom = Math.min(10, active.length ? Math.min(...active) : 10);
+      const hTo = Math.max(22, active.length ? Math.max(...active) + 1 : 22);
+      const cols = hTo - hFrom;
+      const hmax = Math.max(1, ...heat.flat());
+      heatHtml = `<div class="an-heat-scroll"><div class="an-heat" style="--cols:${cols}">
+        ${heat.map((row, d) => `<span class="an-heat-day">${AN_WEEKDAYS[d].slice(0, 3)}</span>${Array.from({ length: cols }, (_, k) => { const h = hFrom + k; const v = (row || [])[h] || 0; return `<span class="an-cell" style="opacity:${v ? (0.14 + 0.86 * v / hmax).toFixed(2) : '0.06'};--d:${(d * cols + k) * 6}ms" title="${AN_WEEKDAYS[d]} ${String(h).padStart(2, '0')}:00 · ${plural(v, 'order')}"></span>`; }).join('')}`).join('')}
+        <span></span>${Array.from({ length: cols }, (_, k) => `<span class="an-heat-h">${(hFrom + k) % 2 === 0 ? String(hFrom + k).padStart(2, '0') : ''}</span>`).join('')}
+      </div></div>
+      <div class="an-legend"><span>Quiet</span><span class="an-legend-bar"></span><span>Busy</span></div>`;
+    } else {
+      heatHtml = '<div class="muted-sm an-empty">The weekday × hour view needs FoodUp Ordering 0.5.248 or newer.</div>';
+    }
 
+    // products
+    const products = a.products || [];
+    const maxQty = Math.max(1, ...products.map(p => p.qty));
+    const productsHtml = products.length ? products.slice(0, 6).map((p, i) => `
+      <div class="an-rank-row" style="--d:${i * 60}ms"><span class="an-rank">${i + 1}</span><div style="flex:1;min-width:0">
+        <div class="an-row-top"><span>${esc(p.name)}</span><span class="num"><strong>${p.qty}×</strong> <span class="muted-sm">${esc(money(p.revenue, cc))}</span></span></div>
+        <div class="track"><div class="an-widen" style="width:${(p.qty / maxQty * 100).toFixed(1)}%;background:#a768d9"></div></div></div></div>`).join('') : '<div class="muted-sm an-empty">No products sold in this period.</div>';
+
+    // platform + app clicks + mix
     const platform = a.platform || {};
     const pTotal = (platform.website || 0) + (platform.app || 0) + (platform.unknown || 0);
     const clicks = a.app_clicks;
+    const modes = a.modes || {};
+    const pay = a.payment || {};
+    const mTotal = (modes.delivery || 0) + (modes.pickup || 0) + (modes.table || 0);
+    const payTotal = (pay.online || 0) + (pay.cash || 0) + (pay.table || 0);
+    const split = (parts) => `<div class="an-split">${parts.filter(x => x[1]).map(([, v, color, total]) => `<span class="an-widen" style="width:${(v / total * 100).toFixed(1)}%;background:${color}"></span>`).join('')}</div>`;
+    const platformHtml = pTotal ? `
+      <div class="an-donut-row">${anRing((platform.website || 0) / pTotal, '#8b38cb', `${Math.round((platform.website || 0) / pTotal * 100)}%`, 'website', 110, 14, '#d9c2ee')}
+        <div class="an-legend-list"><span><i style="background:#8b38cb"></i>Website <strong>${platform.website || 0}</strong></span><span><i style="background:#d9c2ee"></i>Customer App <strong>${platform.app || 0}</strong></span>${platform.unknown ? `<span><i style="background:#e3d3f2"></i>Other <strong>${platform.unknown}</strong></span>` : ''}</div></div>` : '<div class="muted-sm an-empty">No orders in this period.</div>';
+    const clicksHtml = clicks ? `
+      <div class="mix-title an-sub-title">App Store &amp; Google Play link opens ${anDelta(clicks.total, clicks.previous_total)}</div>
+      <div class="an-clicks">
+        ${[['Homepage', clicks.homepage], ['Emails', clicks.email]].map(([label, c]) => { const t = (c?.ios || 0) + (c?.android || 0); return `<div><span>${label}</span><strong>${t}</strong>${t ? `<div class="an-split"><span class="an-widen" style="width:${((c.ios || 0) / t * 100).toFixed(1)}%;background:#15171c"></span><span class="an-widen" style="width:${((c.android || 0) / t * 100).toFixed(1)}%;background:#22b36b"></span></div>` : ''}<em>iOS ${c?.ios || 0} · Android ${c?.android || 0}</em></div>`; }).join('')}
+      </div>` : '';
+    const mixHtml = mTotal ? `
+      <div class="an-mix"><div class="an-row-top"><span>Delivery ${modes.delivery || 0} · Pickup ${modes.pickup || 0}${modes.table ? ` · Table ${modes.table}` : ''}</span></div>${split([['d', modes.delivery || 0, '#8b38cb', mTotal], ['p', modes.pickup || 0, '#c49be6', mTotal], ['t', modes.table || 0, '#e3d3f2', mTotal]])}</div>
+      ${payTotal ? `<div class="an-mix"><div class="an-row-top"><span>Online ${pay.online || 0} · Cash ${pay.cash || 0}${pay.table ? ` · Table ${pay.table}` : ''}</span></div>${split([['o', pay.online || 0, '#1d5fd1', payTotal], ['c', pay.cash || 0, '#9db8ec', payTotal], ['t', pay.table || 0, '#d6e2f8', payTotal]])}</div>` : ''}` : '';
+    const maxZone = Math.max(1, ...zones.map(z => z.orders));
+    const zonesHtml = zones.length ? zones.slice(0, 6).map((z, i) => anBarRow(z.name, `<strong>${plural(z.orders, 'order')}</strong> <span class="muted-sm">· ${esc(money(z.revenue, cc))}</span>`, z.orders / maxZone * 100, '#e79b24', i * 60)).join('') : '<div class="muted-sm an-empty">No delivery orders in this period.</div>';
+    const emails = a.emails || {};
+    const sent = (emails.brevo || 0) + (emails.wordpress || 0) + (emails.resend || 0);
 
     body.innerHTML = `
-      <div class="an-tiles">${tiles.map(([label, value, delta, note, ic, chip]) => `<div class="an-tile"><div class="kpi-top"><span class="kpi-label">${esc(label)}</span>${delta || `<span class="icon-chip ${chip}">${icon(ic)}</span>`}</div><div class="an-value">${esc(value)}</div><div class="kpi-note">${esc(note)}</div></div>`).join('')}</div>
-      ${timeline ? `<div class="an-block"><div class="mix-title">Orders ${a.granularity === 'hour' ? 'per hour' : 'per day'}</div>${timeline}</div>` : ''}
-      <div class="an-grid">
-        <div class="an-block"><div class="mix-title">Where orders come from${tracking ? ' · visits' : ''}</div>
-          ${anBars(sources, 'orders', sourceLabel, s => `<strong>${plural(s.orders, 'order')}</strong>${tracking && s.visits ? ` <span class="muted-sm">· ${plural(s.visits, 'visit')}</span>` : ''}`)}</div>
-        <div class="an-block"><div class="mix-title">Top products</div>
-          ${anBars(a.products || [], 'qty', p => p.name, p => `<strong>${p.qty}×</strong> <span class="muted-sm">· ${esc(money(p.revenue, cc))}</span>`)}</div>
-        <div class="an-block"><div class="mix-title">Delivery zones</div>
-          ${anBars(a.zones || [], 'orders', z => z.name, z => `<strong>${plural(z.orders, 'order')}</strong> <span class="muted-sm">· ${esc(money(z.revenue, cc))}</span>`)}</div>
-        <div class="an-block"><div class="mix-title">Website vs. Customer App</div>
-          ${pTotal ? `<div class="stack-bar"><span style="width:${(platform.website || 0) / pTotal * 100}%;background:#8b38cb"></span><span style="width:${(platform.app || 0) / pTotal * 100}%;background:#c49be6"></span><span style="width:${(platform.unknown || 0) / pTotal * 100}%;background:#e3d3f2"></span></div>
-          <div class="mix-legend"><span><i style="background:#8b38cb"></i>Website <strong>${platform.website || 0}</strong></span><span><i style="background:#c49be6"></i>App <strong>${platform.app || 0}</strong></span>${platform.unknown ? `<span><i style="background:#e3d3f2"></i>Other <strong>${platform.unknown}</strong></span>` : ''}</div>` : '<div class="muted-sm an-empty">No orders in this period.</div>'}
-          ${clicks ? `<div class="mix-title" style="margin-top:18px">App Store & Google Play link opens ${anDelta(clicks.total, clicks.previous_total)}</div>
-          <div class="an-clicks"><div><span>Homepage</span><strong>${(clicks.homepage?.ios || 0) + (clicks.homepage?.android || 0)}</strong><em>iOS ${clicks.homepage?.ios || 0} · Android ${clicks.homepage?.android || 0}</em></div><div><span>Emails</span><strong>${(clicks.email?.ios || 0) + (clicks.email?.android || 0)}</strong><em>iOS ${clicks.email?.ios || 0} · Android ${clicks.email?.android || 0}</em></div></div>` : ''}
-        </div>
+      <div class="an-tiles">${tiles.map((t, i) => `<div class="kpi an-tile an-rise" style="--d:${i * 70}ms"><div class="kpi-top"><span class="kpi-label">${esc(t.label)}</span>${t.delta}</div><div class="kpi-value">${esc(t.value)}</div>${t.extra}<div class="kpi-note">${esc(t.note)}</div></div>`).join('')}</div>
+      ${insights.length ? `<div class="an-insights">${insights.map((x, i) => `<div class="an-insight an-rise tone-${x.tone}" style="--d:${120 + i * 60}ms"><span class="an-insight-icon">${svgPath(x.icon)}</span><div><span class="muted-sm">${esc(x.label)}</span><strong>${esc(x.value)}</strong><span class="muted-sm">${esc(x.note)}</span></div></div>`).join('')}</div>` : ''}
+      <div class="split">
+        <section class="panel pad grow-wide an-rise" style="--d:160ms">
+          <div class="panel-title-row"><h2>Orders &amp; revenue</h2><span class="an-key"><span><i style="background:#c49be6"></i>Orders</span>${revenueSeries.some(Boolean) ? '<span><i class="line" style="background:#e79b24"></i>Revenue</span>' : ''}</span></div>
+          ${chart}
+        </section>
+        <section class="panel pad grow-side an-rise" style="--d:220ms">
+          <div class="panel-title-row"><h2>From visit to order</h2><span class="muted-sm">website</span></div>
+          ${funnel}
+        </section>
       </div>
-      <p class="d-note an-note">${tracking ? 'Visitors are counted anonymously and only after cookie consent.' : 'Visitor tracking is off on this site, so visits and conversion are not counted. It can be switched on in wp-admin under FoodUp Ordering → Analytics → Visitors & acquisition, after updating the privacy notice.'}${a.partial ? ' Some days are still being calculated; reload in a minute for complete figures.' : ''} Link opens are not confirmed downloads.</p>`;
+      <div class="split">
+        <section class="panel pad grow-side an-rise" style="--d:260ms; flex-basis: 380px">
+          <div class="panel-title-row"><h2>Where orders come from</h2>${tracking ? '<span class="an-key"><span><i style="background:#8b38cb"></i>Orders</span><span><i style="background:#d9c2ee"></i>Visits</span></span>' : ''}</div>
+          <div class="an-list">${sources}</div>
+        </section>
+        <section class="panel pad grow-side an-rise" style="--d:300ms; flex-basis: 380px">
+          <div class="panel-title-row"><h2>Busiest times</h2><span class="muted-sm">orders by weekday and hour</span></div>
+          ${heatHtml}
+        </section>
+      </div>
+      <div class="split">
+        <section class="panel pad grow-side an-rise" style="--d:340ms">
+          <div class="panel-title-row"><h2>Top products</h2><span class="muted-sm">by quantity</span></div>
+          <div class="an-list">${productsHtml}</div>
+        </section>
+        <section class="panel pad grow-side an-rise" style="--d:380ms">
+          <div class="panel-title-row"><h2>Website vs. App</h2>${sent ? `<span class="muted-sm">${plural(sent, 'email')} sent${emails.failed ? ` · ${emails.failed} failed` : ''}</span>` : ''}</div>
+          ${platformHtml}${mixHtml}${clicksHtml}
+        </section>
+        <section class="panel pad grow-side an-rise" style="--d:420ms">
+          <div class="panel-title-row"><h2>Delivery zones</h2><span class="muted-sm">by orders</span></div>
+          <div class="an-list">${zonesHtml}</div>
+        </section>
+      </div>
+      <p class="d-note an-note">${tracking ? 'Visitors are counted anonymously and only after cookie consent.' : ''}${a.partial ? ' Some days are still being calculated; open the tab again in a minute for complete figures.' : ''} Link opens are store-link clicks, not confirmed downloads.</p>`;
+  }
+
+  // ---------- restaurant page tabs ----------
+  // A refresh never rebuilds Settings while the admin is editing there.
+  function settingsBusy() {
+    const page = state.page;
+    if (!page) return false;
+    const box = $('#rpSettings');
+    return !!(page.dirty || page.wpDirty || (box && box.contains(document.activeElement) && document.activeElement !== document.body));
+  }
+
+  const RP_TABS = [
+    { value: 'overview', label: 'Overview' }, { value: 'orders', label: 'Orders' }, { value: 'analytics', label: 'Analytics' },
+    { value: 'menu', label: 'Menu' }, { value: 'website', label: 'Website' }, { value: 'settings', label: 'Settings' },
+  ];
+  const RP_TAB_IDS = RP_TABS.map(t => t.value);
+  const SET_SECTIONS = [
+    { id: 'ordering', label: 'Ordering', sub: 'Hours, delivery, features', icon: 'clock' },
+    { id: 'apps', label: 'Apps & staff', sub: 'Orders app, couriers, PINs', icon: 'device' },
+    { id: 'shop', label: 'Shop & communication', sub: 'Details, brand, email, report', icon: 'store' },
+    { id: 'conn', label: 'Connection & advanced', sub: 'WordPress, callbacks, danger zone', icon: 'plug' },
+  ];
+  // Which pane each WordPress section belongs to.
+  const WP_SECTION_PANE = { wp_status: 'conn', hours: 'ordering', delivery: 'ordering', features: 'ordering', orders_app: 'apps', shop: 'shop', branding: 'shop', report: 'shop', email: 'shop' };
+
+  function renderRpTabs() {
+    const page = state.page;
+    const el = $('#rpTabs');
+    if (!page || !el) return;
+    const r = page.data;
+    const issues = (r?.attention_items || []).length;
+    const failed = (r?.failed_delivered_callbacks || []).length;
+    const wpProblem = page.wp && !page.wp.loading && !page.wp.connected;
+    const badges = { overview: issues ? String(issues) : '', settings: failed ? String(failed) : (wpProblem ? '!' : '') };
+    el.innerHTML = '<span class="seg-thumb" aria-hidden="true"></span>' + RP_TABS.map(t => `<button type="button" class="seg-btn" role="tab" data-value="${t.value}" aria-selected="false" aria-controls="rpPane-${t.value}">${esc(t.label)}${badges[t.value] ? `<span class="tab-badge ${t.value === 'overview' ? 'red' : 'amber'}">${esc(badges[t.value])}</span>` : ''}</button>`).join('');
+    el.dataset.ready = '';
+    el.onclick = (event) => {
+      const btn = event.target.closest('.seg-btn');
+      if (btn) setRpTab(btn.dataset.value);
+    };
+    selectSegment(el, page.tab);
+  }
+
+  function setRpTab(tab, { replace = true } = {}) {
+    const page = state.page;
+    if (!page) return;
+    page.tab = RP_TAB_IDS.includes(tab) ? tab : 'overview';
+    const target = `#restaurant/${encodeURIComponent(page.code)}${page.tab === 'overview' ? '' : '/' + page.tab}`;
+    if (replace && location.hash !== target) history.replaceState(null, '', target);
+    $$('#view-restaurant .rp-pane').forEach(p => { p.hidden = p.dataset.pane !== page.tab; });
+    selectSegment($('#rpTabs'), page.tab);
+    // On a phone the tab bar scrolls: keep the chosen tab in view.
+    const wrap = $('.rp-tabs-wrap');
+    const tabBtn = $(`#rpTabs .seg-btn[data-value="${page.tab}"]`);
+    if (wrap && tabBtn && wrap.scrollWidth > wrap.clientWidth) {
+      const left = tabBtn.offsetLeft - 16, right = tabBtn.offsetLeft + tabBtn.offsetWidth + 16;
+      if (left < wrap.scrollLeft || right > wrap.scrollLeft + wrap.clientWidth) wrap.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+    }
+    if (page.tab === 'overview') renderChart(restaurantChartCtx());
+    if (page.tab === 'orders') renderRpOrders();
+    if (page.tab === 'analytics') renderAnalyticsPanel();
+    if (page.tab === 'menu') renderMenu();
+    if (page.tab === 'website') renderWebsite({ force: !Object.keys(page.webEdits || {}).length });
+    if (page.tab === 'settings') selectSettingsSection(page.setSec);
+    requestAnimationFrame(() => $$(`#view-restaurant .rp-pane[data-pane="${page.tab}"] .segmented`).forEach(positionThumb));
+  }
+
+  function renderRpAttention(r) {
+    const host = $('#rpAttention');
+    if (!host) return;
+    const items = r?.attention_items || [];
+    $('#rpAttentionSub').textContent = items.length ? 'Sorted by severity' : '';
+    if (!items.length) { host.innerHTML = `<div class="healthy-line">${icon('check')}No open issues for this restaurant</div>`; return; }
+    const sorted = items.slice().sort((x, y) => (x.severity === 'critical' ? 0 : 1) - (y.severity === 'critical' ? 0 : 1));
+    host.innerHTML = `<div class="issue-list" style="padding:14px 16px;margin:0">${sorted.map(i => `<div class="issue ${esc(i.severity)}"><span class="sev ${esc(i.severity)}">${i.severity === 'critical' ? 'CRITICAL' : 'WARNING'}</span><span class="text">${esc(i.text)}</span>${i.kind === 'edition_mismatch' && r.wp_edition ? `<button id="applyEditionBtn" class="btn btn-secondary btn-sm" type="button">Apply ${r.wp_edition === 'free' ? 'Free' : 'Pro'}</button>` : ''}</div>`).join('')}</div>`;
+    const applyEdition = $('#applyEditionBtn');
+    if (applyEdition) {
+      const target = r.wp_edition;
+      const page = state.page;
+      applyEdition.addEventListener('click', () => confirmationModal(
+        `Switch the apps to ${target === 'free' ? 'Free' : 'Pro'}?`,
+        `WordPress has ${r.name} set to FoodUp ${target === 'free' ? 'Free' : 'Pro'}. The Orders app switches within a few minutes. ${target === 'free' ? 'Free prints the full address without QR code and locks the Pro tabs (statistics, couriers).' : 'Pro unlocks statistics and couriers and prints the courier QR code.'}`,
+        `Apply ${target === 'free' ? 'Free' : 'Pro'}`,
+        async () => {
+          await api(`/admin/api/restaurants/${encodeURIComponent(r.code)}/wordpress`, { method: 'PATCH', body: JSON.stringify({ changes: { orders_app: { edition: target } } }) });
+          toast(`${r.name} now runs as FoodUp ${target === 'free' ? 'Free' : 'Pro'}`);
+          refreshAll({ silent: true });
+          if (state.page === page) await loadRestaurantPage();
+        }));
+    }
+  }
+
+  function rpOrderList() {
+    const r = state.page?.data;
+    return (r?.recent_orders || []).map(o => ({ ...o, restaurant_code: r.code, restaurant_name: r.name }));
+  }
+
+  function renderRpOrders() {
+    const page = state.page;
+    if (!page?.data) return;
+    const all = rpOrderList();
+    const q = String(page.orderSearch || '').trim().toLowerCase();
+    const searched = q ? all.filter(o => `${o.order_id} ${o.customer_name} ${o.customer_phone} ${o.payment_method}`.toLowerCase().includes(q)) : all;
+    const counts = { all: searched.length, new: 0, accepted: 0, done: 0, void: 0 };
+    searched.forEach(o => { counts[orderStatus(o).group] += 1; });
+    segmented($('#rpOrderFilter'), [
+      { value: 'all', label: 'All', count: counts.all }, { value: 'new', label: 'New', count: counts.new },
+      { value: 'accepted', label: 'Accepted', count: counts.accepted }, { value: 'done', label: 'Delivered', count: counts.done },
+      { value: 'void', label: 'Rejected & cancelled', count: counts.void },
+    ], page.orderFilter, v => { page.orderFilter = v; renderRpOrders(); });
+    const list = page.orderFilter === 'all' ? searched : searched.filter(o => orderStatus(o).group === page.orderFilter);
+    $('#rpOrdersAll').innerHTML = orderRows(list, false, true);
+    bindOpeners($('#rpOrdersAll'));
+  }
+
+  function settingsNavHtml(r) {
+    const page = state.page;
+    const failed = (r.failed_delivered_callbacks || []).length;
+    const wpProblem = page.wp && !page.wp.loading && !page.wp.connected;
+    const badge = { conn: failed ? String(failed) : (wpProblem ? '!' : ''), apps: r.ios_pin_set ? '' : '!' };
+    return `<nav id="rpSetNav" class="panel set-nav" aria-label="Settings sections"><span class="set-thumb" aria-hidden="true"></span>${SET_SECTIONS.map(x => `<button type="button" data-set="${x.id}" aria-current="false"><span class="icon-chip accent">${icon(x.icon)}</span><span class="set-nav-text"><strong>${esc(x.label)}</strong><span>${esc(x.sub)}</span></span>${badge[x.id] ? `<span class="tab-badge amber">${esc(badge[x.id])}</span>` : ''}</button>`).join('')}</nav>`;
+  }
+
+  function selectSettingsSection(id) {
+    const page = state.page;
+    if (!page) return;
+    page.setSec = SET_SECTIONS.some(x => x.id === id) ? id : 'ordering';
+    $$('#rpSetNav [data-set]').forEach(b => { const on = b.dataset.set === page.setSec; b.classList.toggle('on', on); b.setAttribute('aria-current', on ? 'true' : 'false'); });
+    const thumb = $('#rpSetNav .set-thumb');
+    const btn = $(`#rpSetNav [data-set="${page.setSec}"]`);
+    if (thumb && btn && btn.offsetHeight) { thumb.style.height = `${btn.offsetHeight}px`; thumb.style.transform = `translateY(${btn.offsetTop - 8}px)`; }
+    $$('#rpSettings .set-pane').forEach(p => { p.hidden = p.dataset.pane !== page.setSec; });
+    requestAnimationFrame(() => $$(`#rpSettings .set-pane[data-pane="${page.setSec}"] .segmented`).forEach(positionThumb));
   }
 
   // ---------- Website (FoodUp Restaurant theme via the bridge, v3) ----------

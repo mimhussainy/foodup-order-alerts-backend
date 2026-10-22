@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/admin/assets/admin.css?v=3.5.0">
+  <link rel="stylesheet" href="/admin/assets/admin.css?v=3.6.0">
 </head>
 <body>
   <div id="loginView" class="login-view hidden">
@@ -140,10 +140,12 @@
 
       <section id="view-restaurant" class="view">
         <section id="rpHero" class="panel rp-hero"></section>
-        <div id="rpKpis" class="kpi-grid"></div>
-        <div class="split">
-          <div class="main-stack grow-wide">
-            <section class="panel chart-panel">
+        <div class="rp-tabs-wrap"><div id="rpTabs" class="segmented rp-tabs" role="tablist" aria-label="Restaurant sections"></div></div>
+
+        <div class="rp-pane" data-pane="overview">
+          <div id="rpKpis" class="kpi-grid"></div>
+          <div class="split">
+            <section class="panel chart-panel grow-wide">
               <div class="panel-head">
                 <div><h2>Orders over time</h2><p id="rpChartSub">Per hour · today</p></div>
                 <div id="rpPeriodSwitch" class="segmented" role="tablist" aria-label="Chart period"></div>
@@ -151,42 +153,64 @@
               <div id="rpChartBody" class="chart-body"></div>
               <div id="rpChartStats" class="stat-strip"></div>
             </section>
-            <section class="panel rp-orders-panel">
-              <div class="panel-head"><div><h2>Recent orders</h2><p id="rpOrdersSub"></p></div></div>
-              <div class="table-scroll"><div id="rpOrders" class="grid-table orders-table single"></div></div>
-              <button id="rpOrdersMore" class="more-button" type="button">Show all recent orders</button>
-            </section>
-            <section id="rpAnPanel" class="panel an-panel">
-              <div class="panel-head">
-                <div class="title-inline"><span class="icon-chip accent" data-icon="trend"></span><div><h2>Website &amp; sales analytics</h2><p id="rpAnSub">From the restaurant's WordPress</p></div></div>
-                <div id="rpAnRange" class="segmented" role="tablist" aria-label="Analytics period" hidden></div>
-              </div>
-              <div id="rpAnBody" class="an-body"></div>
-            </section>
-            <section id="rpWebPanel" class="panel web-panel">
-              <div class="panel-head">
-                <div class="title-inline"><span class="icon-chip accent" data-icon="globe"></span><div><h2>Website</h2><p id="rpWebSub">FoodUp Restaurant theme</p></div></div>
-                <div class="actions-row">
-                  <a id="rpWebOpen" class="btn btn-secondary" href="#" target="_blank" rel="noopener" hidden><span data-icon="external"></span>Open</a>
-                  <button id="rpWebPurge" class="btn btn-secondary" type="button" hidden><span data-icon="refresh"></span>Clear cache</button>
-                </div>
-              </div>
-              <div id="rpWebBody" class="web-body"></div>
-              <div id="rpWebFoot" class="web-foot" hidden>
-                <span id="rpWebCount"></span>
-                <button id="rpWebDiscard" class="btn btn-secondary" type="button">Discard</button>
-                <button id="rpWebSave" class="btn btn-primary" type="button">Save website</button>
-              </div>
-            </section>
-            <section id="rpMenuPanel" class="panel menu-panel">
-              <div class="panel-head">
-                <div class="title-inline"><span class="icon-chip accent" data-icon="menu"></span><div><h2>Menu &amp; prices</h2><p id="rpMenuSub">From the restaurant's WooCommerce</p></div></div>
-                <button id="rpMenuSave" class="btn btn-primary" type="button" hidden disabled>Save changes</button>
-              </div>
-              <div id="rpMenu"></div>
+            <section class="panel grow-side rp-attention">
+              <div class="panel-head"><div><h2>Needs attention</h2><p id="rpAttentionSub"></p></div></div>
+              <div id="rpAttention"></div>
             </section>
           </div>
-          <div id="rpSide" class="side-stack grow-side rp-side"></div>
+          <section class="panel rp-orders-panel">
+            <div class="panel-head">
+              <div><h2>Latest orders</h2><p id="rpOrdersSub"></p></div>
+              <button id="rpAllOrders" class="text-button" type="button">All orders <span data-icon="arrow-right"></span></button>
+            </div>
+            <div class="table-scroll"><div id="rpOrders" class="grid-table orders-table single"></div></div>
+          </section>
+        </div>
+
+        <div class="rp-pane" data-pane="orders" hidden>
+          <div class="section-toolbar">
+            <div id="rpOrderFilter" class="segmented" role="tablist" aria-label="Filter orders"></div>
+            <label class="search-wrap small"><span class="search-icon" data-icon="search"></span><span class="sr-only">Search orders</span><input id="rpOrderSearch" type="search" placeholder="Search name, phone or order"></label>
+          </div>
+          <section class="panel">
+            <div class="table-scroll"><div id="rpOrdersAll" class="grid-table orders-table single"></div></div>
+          </section>
+        </div>
+
+        <div class="rp-pane" data-pane="analytics" hidden>
+          <div id="rpAnalytics" class="an-root"></div>
+        </div>
+
+        <div class="rp-pane" data-pane="menu" hidden>
+          <section id="rpMenuPanel" class="panel menu-panel">
+            <div class="panel-head">
+              <div class="title-inline"><span class="icon-chip accent" data-icon="menu"></span><div><h2>Menu &amp; prices</h2><p id="rpMenuSub">From the restaurant's WooCommerce</p></div></div>
+              <button id="rpMenuSave" class="btn btn-primary" type="button" hidden disabled>Save changes</button>
+            </div>
+            <div id="rpMenu"></div>
+          </section>
+        </div>
+
+        <div class="rp-pane" data-pane="website" hidden>
+          <section id="rpWebPanel" class="panel web-panel">
+            <div class="panel-head">
+              <div class="title-inline"><span class="icon-chip accent" data-icon="globe"></span><div><h2>Website</h2><p id="rpWebSub">FoodUp Restaurant theme</p></div></div>
+              <div class="actions-row">
+                <a id="rpWebOpen" class="btn btn-secondary" href="#" target="_blank" rel="noopener" hidden><span data-icon="external"></span>Open</a>
+                <button id="rpWebPurge" class="btn btn-secondary" type="button" hidden><span data-icon="refresh"></span>Clear cache</button>
+              </div>
+            </div>
+            <div id="rpWebBody" class="web-body"></div>
+            <div id="rpWebFoot" class="web-foot" hidden>
+              <span id="rpWebCount"></span>
+              <button id="rpWebDiscard" class="btn btn-secondary" type="button">Discard</button>
+              <button id="rpWebSave" class="btn btn-primary" type="button">Save website</button>
+            </div>
+          </section>
+        </div>
+
+        <div class="rp-pane" data-pane="settings" hidden>
+          <div id="rpSettings" class="set-layout"></div>
         </div>
       </section>
 
@@ -240,6 +264,6 @@
   </div>
 
   <div id="toastContainer" class="toast-container" aria-live="polite"></div>
-  <script src="/admin/assets/admin.js?v=3.5.0" defer></script>
+  <script src="/admin/assets/admin.js?v=3.6.0" defer></script>
 </body>
 </html>
