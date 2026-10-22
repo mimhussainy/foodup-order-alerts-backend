@@ -564,7 +564,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
       return { ok: false, reason: 'secret_missing', message: 'This restaurant has no per-restaurant secret yet. Open FoodUp Ordering → Orders App in WordPress and press Save & Connect once.' };
     }
 
-    const url = `${base}/wp-json/foodup/v1${path}${method === 'GET' ? `?restaurant_code=${encodeURIComponent(code)}` : ''}`;
+    const url = `${base}/wp-json/foodup/v1${path}${method === 'GET' ? `${path.includes('?') ? '&' : '?'}restaurant_code=${encodeURIComponent(code)}` : ''}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), WP_TIMEOUT_MS);
     try {
@@ -682,6 +682,21 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
     }
   });
 
+
+  // Read-only website and sales analytics from the plugin (bridge v4).
+  const ANALYTICS_RANGES = ['today', 'yesterday', 'last7', 'last30', 'this_month', 'last_month'];
+  app.get('/admin/api/restaurants/:code/wordpress/analytics', requireAdmin, async (req, res) => {
+    const code = normalizeCode(req.params.code);
+    if (!code) return res.status(400).json({ success: false, message: 'Invalid restaurant code' });
+    const range = ANALYTICS_RANGES.includes(String(req.query.range || '')) ? String(req.query.range) : 'last7';
+    try {
+      const result = await wordpressRequest(code, 'GET', null, `/control-center/analytics?range=${range}`, '0.5.247');
+      if (!result.ok) return res.json({ success: true, available: false, reason: result.reason, message: result.message });
+      res.json({ success: true, available: true, ...result.data });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  });
 
   app.get('/admin/api/restaurants/:code/wordpress/products', requireAdmin, async (req, res) => {
     const code = normalizeCode(req.params.code);

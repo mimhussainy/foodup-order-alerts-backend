@@ -941,7 +941,7 @@
 
   async function showRestaurantPage(code) {
     if (!state.page || state.page.code !== code) {
-      state.page = { code, data: null, analytics: null, chart: { period: 'today', hover: null, animated: false }, dirty: false, lastAnalyticsAt: 0, couriers: null, wp: null, menu: null, webEdits: {}, webTab: 'style' };
+      state.page = { code, data: null, analytics: null, chart: { period: 'today', hover: null, animated: false }, dirty: false, lastAnalyticsAt: 0, couriers: null, wp: null, menu: null, webEdits: {}, webTab: 'style', an: null };
     }
     setActiveView('restaurant', 'restaurants');
     const known = restaurantsList().find(r => r.code === code);
@@ -1015,6 +1015,7 @@
       $('#rpOrdersMore').hidden = true;
       $('#rpMenu').innerHTML = '';
       renderWebsite();
+      renderAnalyticsPanel();
       renderChart(restaurantChartCtx());
       return;
     }
@@ -1051,6 +1052,7 @@
     if (!skipSide) renderRestaurantSide(r);
     renderMenu();
     renderWebsite();
+    renderAnalyticsPanel();
   }
 
   function renderHero() {
@@ -1317,6 +1319,7 @@
     if (!page.wpDirty) renderWordpress();
     renderHero();
     renderWebsite();
+    renderAnalyticsPanel();
     if (page.wp.connected && !page.menu) loadMenu(page);
     else if (!page.wp.connected) renderMenu();
   }
@@ -1577,6 +1580,116 @@
     requestAnimationFrame(() => $$('.segmented', host).forEach(positionThumb));
   }
 
+  // ---------- Analytics (plugin analytics via the bridge, v4) ----------
+  const AN_RANGES = [{ value: 'today', label: 'Today' }, { value: 'last7', label: '7 days' }, { value: 'last30', label: '30 days' }, { value: 'this_month', label: 'This month' }];
+  const AN_SHADES = ['#8b38cb', '#a768d9', '#c49be6', '#e3d3f2', '#d9c2ee', '#efe4f8', '#f4ebfb', '#f7f1fc'];
+
+  async function loadAnalyticsPanel(page, range) {
+    page.an = { ...(page.an || {}), range: range || page.an?.range || 'last7', loading: true };
+    renderAnalyticsPanel();
+    try {
+      const data = await api(`/admin/api/restaurants/${encodeURIComponent(page.code)}/wordpress/analytics?range=${encodeURIComponent(page.an.range)}`);
+      if (state.page !== page) return;
+      page.an = { ...page.an, loading: false, data };
+    } catch (error) {
+      if (state.page !== page) return;
+      page.an = { ...page.an, loading: false, data: { available: false, message: error.message } };
+    }
+    renderAnalyticsPanel();
+  }
+
+  function anDelta(now, base, { points = false, invert = false } = {}) {
+    if (points) {
+      if (now === null || base === null) return '';
+      const d = Math.round((now - base) * 10) / 10;
+      return `<span class="pill ${d >= 0 ? 'green' : 'amber'}">${d > 0 ? '+' : d < 0 ? '−' : '±'}${Math.abs(d).toFixed(1)} pts</span>`;
+    }
+    const d = pctDelta(now, base);
+    if (d === null) return '';
+    const good = invert ? d <= 0 : d >= 0;
+    return `<span class="pill ${good ? 'green' : 'amber'}">${deltaText(d)}</span>`;
+  }
+
+  function anBars(rows, valueKey, labelFn, valueFn) {
+    if (!rows.length) return '<div class="muted-sm an-empty">No data in this period.</div>';
+    const max = Math.max(1, ...rows.map(r => r[valueKey]));
+    return `<div class="share-list an-list">${rows.map((r, i) => `<div class="share-row"><div class="top"><span>${esc(labelFn(r))}</span><span class="num">${valueFn(r)}</span></div><div class="track"><div style="width:${(r[valueKey] / max * 100).toFixed(1)}%;background:${AN_SHADES[Math.min(i, AN_SHADES.length - 1)]}"></div></div></div>`).join('')}</div>`;
+  }
+
+  function renderAnalyticsPanel() {
+    const page = state.page;
+    const body = $('#rpAnBody');
+    if (!page || !body) return;
+    const sw = $('#rpAnRange');
+    const sub = $('#rpAnSub');
+    const wp = page.wp;
+    const show = (html) => { body.innerHTML = html; sw.hidden = true; };
+    if (!wp || (wp.loading && !wp.data)) return show('<div class="empty-box">Connecting to WordPress…</div>');
+    if (!wp.connected) return show('<div class="empty-box">Connect WordPress to see website and sales analytics.</div>');
+    if (Number(wp.data.bridge_version || 1) < 4) return show('<div class="empty-box">Needs FoodUp Ordering 0.5.247 or newer on this site.</div>');
+    if (!page.an) { loadAnalyticsPanel(page, 'last7'); return; }
+    sw.hidden = false;
+    segmented(sw, AN_RANGES, page.an.range, v => loadAnalyticsPanel(page, v));
+    const a = page.an.data;
+    if (!a) { body.innerHTML = '<div class="empty-box">Loading analytics…</div>'; return; }
+    if (!a.available) { body.innerHTML = `<div class="empty-box">${esc(a.message || 'Analytics are not available.')}</div>`; return; }
+
+    body.classList.toggle('is-loading', !!page.an.loading);
+    const cur = a.current || {};
+    const prev = a.previous || {};
+    const cc = a.currency || 'CHF';
+    const vis = a.visitors || {};
+    const vc = vis.current;
+    const vp = vis.previous;
+    const tracking = !!vis.tracking_enabled && !!vc;
+    const conv = tracking && vc.sessions ? Math.round(vc.converted_sessions / vc.sessions * 1000) / 10 : null;
+    const convPrev = tracking && vp && vp.sessions ? Math.round(vp.converted_sessions / vp.sessions * 1000) / 10 : null;
+    const r = a.range || {};
+    sub.textContent = r.from ? `${dayLabel(r.from)}${r.to && r.to !== r.from ? ' – ' + dayLabel(r.to) : ''} · compared with the previous ${r.days === 1 ? 'day' : r.days + ' days'}` : 'From the restaurant\'s WordPress';
+
+    const tiles = [
+      ['Website visitors', tracking ? String(vc.visitors) : 'Off', tracking ? anDelta(vc.visitors, vp?.visitors) : '', tracking ? `${vc.sessions} visits · ${vc.returning_visitors} returning` : 'Visitor tracking is off on this site', 'user', 'blue'],
+      ['Conversion', conv === null ? '—' : `${conv.toFixed(1)}%`, conv === null ? '' : anDelta(conv, convPrev, { points: true }), tracking ? `${vc.converted_sessions} visits led to an order` : 'Needs visitor tracking', 'trend', 'accent'],
+      ['Orders', String(cur.orders || 0), anDelta(cur.orders, prev.orders), cur.lost ? `${cur.lost} cancelled or failed` : 'From WooCommerce', 'receipt', 'accent'],
+      ['Revenue', money(cur.revenue, cc), anDelta(cur.revenue, prev.revenue), `avg. ${money(cur.aov, cc)} per order`, 'wallet', 'amber'],
+    ];
+
+    const labels = a.source_labels || {};
+    const visitSources = (tracking && vc.sources) || {};
+    const sourceKeys = Array.from(new Set([...Object.keys(a.order_sources || {}), ...Object.keys(visitSources)]));
+    const sources = sourceKeys.map(key => ({ key, orders: (a.order_sources || {})[key] || 0, visits: visitSources[key]?.sessions || 0 }))
+      .filter(s => s.orders || s.visits).sort((x, y) => y.orders - x.orders || y.visits - x.visits).slice(0, 8);
+    const sourceLabel = s => labels[s.key] || s.key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+
+    const tl = a.timeline || [];
+    const tlMax = Math.max(1, ...tl.map(t => t.orders));
+    const tlStep = Math.ceil(tl.length / 8);
+    const timeline = tl.length ? `<div class="an-bars" role="img" aria-label="Orders per ${a.granularity === 'hour' ? 'hour' : 'day'}">${tl.map((t, i) => `<div class="an-bar" title="${esc(t.label)} · ${plural(t.orders, 'order')} · ${esc(money(t.revenue, cc))}"><span style="height:${Math.max(t.orders ? 4 : 0, t.orders / tlMax * 100).toFixed(1)}%"></span><em>${i % tlStep === 0 ? esc(t.label) : ''}</em></div>`).join('')}</div>` : '';
+
+    const platform = a.platform || {};
+    const pTotal = (platform.website || 0) + (platform.app || 0) + (platform.unknown || 0);
+    const clicks = a.app_clicks;
+
+    body.innerHTML = `
+      <div class="an-tiles">${tiles.map(([label, value, delta, note, ic, chip]) => `<div class="an-tile"><div class="kpi-top"><span class="kpi-label">${esc(label)}</span>${delta || `<span class="icon-chip ${chip}">${icon(ic)}</span>`}</div><div class="an-value">${esc(value)}</div><div class="kpi-note">${esc(note)}</div></div>`).join('')}</div>
+      ${timeline ? `<div class="an-block"><div class="mix-title">Orders ${a.granularity === 'hour' ? 'per hour' : 'per day'}</div>${timeline}</div>` : ''}
+      <div class="an-grid">
+        <div class="an-block"><div class="mix-title">Where orders come from${tracking ? ' · visits' : ''}</div>
+          ${anBars(sources, 'orders', sourceLabel, s => `<strong>${plural(s.orders, 'order')}</strong>${tracking && s.visits ? ` <span class="muted-sm">· ${plural(s.visits, 'visit')}</span>` : ''}`)}</div>
+        <div class="an-block"><div class="mix-title">Top products</div>
+          ${anBars(a.products || [], 'qty', p => p.name, p => `<strong>${p.qty}×</strong> <span class="muted-sm">· ${esc(money(p.revenue, cc))}</span>`)}</div>
+        <div class="an-block"><div class="mix-title">Delivery zones</div>
+          ${anBars(a.zones || [], 'orders', z => z.name, z => `<strong>${plural(z.orders, 'order')}</strong> <span class="muted-sm">· ${esc(money(z.revenue, cc))}</span>`)}</div>
+        <div class="an-block"><div class="mix-title">Website vs. Customer App</div>
+          ${pTotal ? `<div class="stack-bar"><span style="width:${(platform.website || 0) / pTotal * 100}%;background:#8b38cb"></span><span style="width:${(platform.app || 0) / pTotal * 100}%;background:#c49be6"></span><span style="width:${(platform.unknown || 0) / pTotal * 100}%;background:#e3d3f2"></span></div>
+          <div class="mix-legend"><span><i style="background:#8b38cb"></i>Website <strong>${platform.website || 0}</strong></span><span><i style="background:#c49be6"></i>App <strong>${platform.app || 0}</strong></span>${platform.unknown ? `<span><i style="background:#e3d3f2"></i>Other <strong>${platform.unknown}</strong></span>` : ''}</div>` : '<div class="muted-sm an-empty">No orders in this period.</div>'}
+          ${clicks ? `<div class="mix-title" style="margin-top:18px">App Store & Google Play link opens ${anDelta(clicks.total, clicks.previous_total)}</div>
+          <div class="an-clicks"><div><span>Homepage</span><strong>${(clicks.homepage?.ios || 0) + (clicks.homepage?.android || 0)}</strong><em>iOS ${clicks.homepage?.ios || 0} · Android ${clicks.homepage?.android || 0}</em></div><div><span>Emails</span><strong>${(clicks.email?.ios || 0) + (clicks.email?.android || 0)}</strong><em>iOS ${clicks.email?.ios || 0} · Android ${clicks.email?.android || 0}</em></div></div>` : ''}
+        </div>
+      </div>
+      <p class="d-note an-note">${tracking ? 'Visitors are counted anonymously and only after cookie consent.' : 'Visitor tracking is off on this site, so visits and conversion are not counted. It can be switched on in wp-admin under FoodUp Ordering → Analytics → Visitors & acquisition, after updating the privacy notice.'}${a.partial ? ' Some days are still being calculated; reload in a minute for complete figures.' : ''} Link opens are not confirmed downloads.</p>`;
+  }
+
   // ---------- Website (FoodUp Restaurant theme via the bridge, v3) ----------
   const WEB_STYLES = {
     delivereat: 'Bold photo homepage with the DeliverEat ordering page. The standard FoodUp look.',
@@ -1658,7 +1771,7 @@
     if (!wp || (wp.loading && !wp.data)) return show('<div class="empty-box">Connecting to WordPress…</div>');
     if (!wp.connected) return show('<div class="empty-box">Connect WordPress to manage the website here.</div>');
     const d = wp.data;
-    if (Number(d.bridge_version || 1) < 3) return show('<div class="empty-box">Needs FoodUp Ordering 0.5.241 or newer on this site.</div>');
+    if (Number(d.bridge_version || 1) < 3) return show('<div class="empty-box">Needs FoodUp Ordering 0.5.247 or newer on this site.</div>');
     if (!d.website) return show('<div class="empty-box">The FoodUp Restaurant theme is not active on this site.</div>');
 
     sub.textContent = `${d.website.theme_name || 'Theme'} ${d.website.theme_version || ''}`.trim();
