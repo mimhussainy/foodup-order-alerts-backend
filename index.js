@@ -807,6 +807,34 @@ app.post("/unregister-token", async (req, res) => {
   res.json({ success: true });
 });
 
+// Items as sent in the push data. ticket_category (plugin 0.5.252+) is the
+// italic category line the Orders app prints above the product. Expo push data
+// is limited to about 4 KB, so very large orders drop the category lines from
+// the push; the stored order (fetched by the app) still has them.
+function foodupPushItems(items, withCategory) {
+  return (Array.isArray(items) ? items : []).map(item => {
+    const out = {
+      name: String(item.name || ''),
+      variation: String(item.variation || ''),
+      quantity: Number(item.quantity || 0),
+      total: Number(item.total || 0),
+      addons: (item.addons || []).map(a => ({
+        label: String(a.label || ''),
+        value: String(a.value || ''),
+      })),
+    };
+    const category = withCategory ? String(item.ticket_category || '').trim() : '';
+    if (category) out.ticket_category = category;
+    return out;
+  });
+}
+
+function foodupPushItemsString(items) {
+  const full = JSON.stringify(foodupPushItems(items, true));
+  if (Buffer.byteLength(full, 'utf8') <= 2500) return full;
+  return JSON.stringify(foodupPushItems(items, false));
+}
+
 app.post("/new-order", async (req, res) => {
   const order = foodupNormalizeOrderFulfillment(req.body);
   const code = order.restaurant_code?.toLowerCase().trim();
@@ -842,17 +870,7 @@ app.post("/new-order", async (req, res) => {
 
   let itemsString = '[]';
   try {
-    const safeItems = (order.items || []).map(item => ({
-      name: String(item.name || ''),
-      variation: String(item.variation || ''),
-      quantity: Number(item.quantity || 0),
-      total: Number(item.total || 0),
-      addons: (item.addons || []).map(a => ({
-        label: String(a.label || ''),
-        value: String(a.value || ''),
-      })),
-    }));
-    itemsString = JSON.stringify(safeItems);
+    itemsString = foodupPushItemsString(order.items);
   } catch(e) {
     console.log("Items parse error:", e.message);
   }
@@ -961,17 +979,7 @@ console.log("Full order data:", JSON.stringify(order));
 
   let itemsString = '[]';
   try {
-    const safeItems = (order.items || []).map(item => ({
-      name: String(item.name || ''),
-      variation: String(item.variation || ''),
-      quantity: Number(item.quantity || 0),
-      total: Number(item.total || 0),
-      addons: (item.addons || []).map(a => ({
-        label: String(a.label || ''),
-        value: String(a.value || ''),
-      })),
-    }));
-    itemsString = JSON.stringify(safeItems);
+    itemsString = foodupPushItemsString(order.items);
   } catch(e) {}
 
   const messages = deviceTokens.map(token => ({
