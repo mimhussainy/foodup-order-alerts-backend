@@ -6,7 +6,7 @@ const { handleAutoActionWordPressFailure } = require("./autoActionPolicy");
 const { createOrderAppEdition } = require("./orderAppEdition");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const { createDailyStats, buildPeriods: buildDailyPeriods } = require("./dailyStats");
-const { createWpSalesSync } = require("./wpSalesSync");
+const { createSalesHistoryReceiver } = require("./wpSalesSync");
 const { isVoidOrder: statsIsVoidOrder, zurichParts: statsZurichParts } = require("./controlCenterStats");
 const app = installAsyncRouteSafety(express());
 app.set('trust proxy', 1);
@@ -130,19 +130,10 @@ const k = (code, key) => `${code}:${key}`;
 // Daily statistics (week/month/year are not limited to the newest 100 orders).
 const dailyStats = createDailyStats({ redisCommand, k, withLock: withRedisLock });
 
-// Complete sales history from WordPress/WooCommerce (needs FoodUp Ordering 0.5.256+).
-// Runs in the background; until it has run (or if WordPress cannot answer) the
-// statistics use the live daily records above.
-const wpSalesSync = createWpSalesSync({
-  redisCommand,
-  k,
-  fetchWordPress: (...args) => restaurantSecurity.fetchWordPress(...args),
-  getBaseUrl: async (code) => {
-    const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
-    const profile = profileData.result ? JSON.parse(profileData.result) : null;
-    const website = profile?.website;
-    return website ? (website.startsWith('http') ? website : `https://${website}`) : null;
-  },
+// Complete sales history: WordPress/WooCommerce (FoodUp Ordering 0.5.257+) sends
+// daily totals to POST /stats-history. Until they arrive the statistics use the
+// live daily records above.
+const salesHistory = createSalesHistoryReceiver({
   dailyStats,
   onUpdated: () => statsResponseCache.clear(),
 });
@@ -865,6 +856,19 @@ function foodupPushItemsString(items) {
   if (Buffer.byteLength(full, 'utf8') <= 2500) return full;
   return JSON.stringify(foodupPushItems(items, false));
 }
+
+app.post("/stats-history", async (req, res) => {
+  const code = String(req.body?.restaurant_code || "").toLowerCase().trim();
+  if (!code) return res.status(400).json({ success: false, message: "Restaurant code required" });
+  if (!await requireWordPressRequest(req, res, code)) return;
+  try {
+    const result = await salesHistory.receive(code, req.body);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.log(`stats-history failed for ${code}:`, e.message);
+    res.status(500).json({ success: false, message: "Could not store the sales history" });
+  }
+});
 
 app.post("/new-order", async (req, res) => {
   const order = foodupNormalizeOrderFulfillment(req.body);
@@ -2340,7 +2344,6 @@ async function buildStatsResponse(code, bounds) {
   let periods = null;
   try {
     await dailyStats.ensureReady(code, orders);
-    wpSalesSync.maybeSync(code).catch(syncErr => console.log(`stats: WordPress history sync error for ${code}:`, syncErr.message));
     periods = buildDailyPeriods(await dailyStats.readDaily(code), Date.now());
   } catch (dailyErr) {
     console.log(`stats: daily summaries unavailable for ${code}, using order list:`, dailyErr.message);

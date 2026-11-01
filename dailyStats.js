@@ -9,10 +9,9 @@
 //   <code>:stats_day_orders:<day>  hash  order_id   -> JSON {o,cash,online,del,pick}
 //   <code>:stats_daily_ready       string ISO time the first backfill ran
 //   <code>:stats_wp                hash  YYYY-MM-DD -> JSON {o,cash,online,del,pick}
-//                                  complete past days read from WordPress/WooCommerce
+//                                  complete past days sent by WordPress/WooCommerce
 //   <code>:stats_wp_floor          string YYYY-MM-DD, set by "clear orders": older
 //                                  WordPress days are ignored from then on
-//   <code>:stats_wp_sync           string JSON marker of the last WordPress sync
 //
 // Every order is stored under its own id, so a status change (cancelled,
 // refunded) replaces the earlier entry and the day total is always re-added
@@ -228,7 +227,7 @@ function createDailyStats({ redisCommand, k, withLock = async (_key, fn) => fn()
     return res.result ? String(res.result) : '';
   }
 
-  // Complete days from WordPress, written by wpSalesSync.js.
+  // Complete days sent by WordPress, written by wpSalesSync.js.
   async function writeWpDays(code, days) {
     const entries = Object.entries(days || {});
     for (let i = 0; i < entries.length; i += 40) {
@@ -265,7 +264,6 @@ function createDailyStats({ redisCommand, k, withLock = async (_key, fn) => fn()
     await redisCommand('DEL', k(code, 'stats_daily_ready'));
     // Also reset the history that came from WordPress, and do not pull it back.
     await redisCommand('DEL', k(code, 'stats_wp'));
-    await redisCommand('DEL', k(code, 'stats_wp_sync'));
     await redisCommand('SET', k(code, 'stats_wp_floor'), periodStarts(Date.now()).today);
     readyCodes.delete(code);
   }

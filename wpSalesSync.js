@@ -1,188 +1,105 @@
-// FoodUp Orders - WordPress sales history.
+// FoodUp Orders - sales history sent by WordPress.
 //
 // The backend only keeps the newest 100 orders per restaurant, so older sales
-// cannot be counted from them. WordPress/WooCommerce holds every order: this
-// module asks the FoodUp Ordering plugin (GET /wp-json/foodup/v1/sales-history,
-// plugin 0.5.256+) for the daily totals and stores them in the same daily store
-// that the app statistics read (see dailyStats.js, key <code>:stats_wp).
+// cannot be counted from them. WordPress/WooCommerce holds every order: the
+// FoodUp Ordering plugin (0.5.257+) sends the DAILY totals to POST /stats-history
+// (same address and restaurant secret as new orders). They are stored in the
+// daily store the app statistics read (dailyStats.js, key <code>:stats_wp).
 //
-// - First run for a restaurant: last year + this year (full sync).
-// - After that: the last 14 days are refreshed every 6 hours (late refunds or
-//   status changes), and everything again once a week.
-// - If WordPress cannot answer (old plugin, legacy plugin, site down) nothing
-//   breaks: the statistics keep using the live records and the sync retries later.
-// - It never blocks a stats request; it runs in the background.
+// Rules:
+// - Only complete days are accepted: today and later are ignored (today stays live).
+// - Days before the "clear orders" date (floor) are ignored.
+// - Every day of the sent range is written, with zeros for days without orders,
+//   so a day that lost its orders in WordPress is corrected too.
 
 const { zurichParts, addDays } = require('./controlCenterStats');
 
-const HOUR = 3600 * 1000;
-const REFRESH_MS = 6 * HOUR;
-const FULL_REFRESH_MS = 7 * 24 * HOUR;
-const RETRY_UNSUPPORTED_MS = 6 * HOUR; // 401/403/404: plugin too old or not reachable
-const RETRY_TEMPORARY_MS = 30 * 60 * 1000;
-const RECENT_DAYS = 14;
-const CHUNK_DAYS = 31;
-const LOCK_SECONDS = 900;
-const REQUEST_TIMEOUT_MS = 40000;
+const MAX_RANGE_DAYS = 62;
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-const ZERO = () => ({ o: 0, cash: 0, online: 0, del: 0, pick: 0 });
-
-function wantedFrom(today) {
-  return `${Number(today.slice(0, 4)) - 1}-01-01`;
+function isRealDay(value) {
+  if (!DAY_PATTERN.test(String(value))) return false;
+  const [y, m, d] = String(value).split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
 }
 
-function maxDay(a, b) {
-  return a > b ? a : b;
+function daysBetween(from, to) {
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+  return Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86400000);
 }
 
-function chunkRanges(from, to, size = CHUNK_DAYS) {
-  const out = [];
-  let start = from;
-  while (start <= to) {
-    const end = addDays(start, size - 1);
-    out.push({ from: start, to: end < to ? end : to });
-    start = addDays(end, 1);
-  }
-  return out;
-}
-
-function num(value) {
+function cleanNumber(value, max) {
   const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+  if (!Number.isFinite(n) || n < 0 || n > max) return null;
+  return n;
 }
 
-// Every day of the range gets an entry (zeros for days without orders), so a
-// day that lost its orders in WordPress is corrected too.
+function cleanRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const out = {
+    o: cleanNumber(row.o, 100000),
+    cash: cleanNumber(row.cash, 1e9),
+    online: cleanNumber(row.online, 1e9),
+    del: cleanNumber(row.del, 100000),
+    pick: cleanNumber(row.pick, 100000),
+  };
+  return Object.values(out).some(v => v === null) ? null : out;
+}
+
+// Every day of from..to gets an entry (zeros for days WordPress did not list).
 function fillDays(from, to, wpDays) {
   const days = {};
   for (let day = from; day <= to; day = addDays(day, 1)) {
     const row = wpDays && wpDays[day];
-    days[day] = row
-      ? { o: num(row.o), cash: num(row.cash), online: num(row.online), del: num(row.del), pick: num(row.pick) }
-      : ZERO();
+    days[day] = row || { o: 0, cash: 0, online: 0, del: 0, pick: 0 };
   }
   return days;
 }
 
-// What to do now: null (nothing), or { full, from, to }.
-function planSync(marker, today, floor, nowMs) {
-  const want = maxDay(wantedFrom(today), floor || '');
-  if (!marker) return { full: true, from: want, to: today };
-  if (marker.retryAt && nowMs < marker.retryAt) return null;
-  const coverageMissing = !marker.from || marker.from > want;
-  const fullStale = nowMs - (marker.fullAt || 0) > FULL_REFRESH_MS;
-  if (coverageMissing || fullStale) return { full: true, from: want, to: today };
-  if (nowMs - (marker.at || 0) < REFRESH_MS) return null;
-  return { full: false, from: maxDay(want, addDays(today, -RECENT_DAYS)), to: today };
-}
-
-class SyncError extends Error {
-  constructor(message, retryMs) {
-    super(message);
-    this.retryMs = retryMs;
-  }
-}
-
-function createWpSalesSync({
-  redisCommand,
-  k,
-  fetchWordPress,
-  getBaseUrl,
-  dailyStats,
-  onUpdated = () => {},
-  logger = console,
-  now = () => Date.now(),
-  timeoutMs = REQUEST_TIMEOUT_MS,
-}) {
-  const running = new Map();
-
-  async function readMarker(code) {
-    const res = await redisCommand('GET', k(code, 'stats_wp_sync'));
-    if (!res.result) return null;
-    try { return JSON.parse(res.result); } catch (_) { return null; }
-  }
-
-  async function writeMarker(code, marker) {
-    await redisCommand('SET', k(code, 'stats_wp_sync'), JSON.stringify(marker));
-  }
-
-  async function fetchRange(code, base, from, to) {
-    const url = `${base}/wp-json/foodup/v1/sales-history?from=${from}&to=${to}`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let response;
-    try {
-      response = await fetchWordPress(code, url, { method: 'GET', signal: controller.signal });
-    } catch (error) {
-      // "fetch failed" alone says nothing: add the network cause (ENOTFOUND, ECONNRESET ...) and the host.
-      const cause = error && error.cause ? (error.cause.code || error.cause.message || String(error.cause)) : '';
-      let host = '';
-      try { host = new URL(url).host; } catch (_) { host = '(invalid address)'; }
-      throw new SyncError(`request failed: ${error.message}${cause ? ` [${cause}]` : ''} for ${host}`, RETRY_TEMPORARY_MS);
-    } finally {
-      clearTimeout(timer);
+// Validates and stores one batch. Returns { status, body } for the route.
+function createSalesHistoryReceiver({ dailyStats, onUpdated = () => {}, logger = console, now = () => Date.now() }) {
+  async function receive(code, body) {
+    const from = body && body.from;
+    const to = body && body.to;
+    if (!isRealDay(from) || !isRealDay(to) || from > to || daysBetween(from, to) > MAX_RANGE_DAYS - 1) {
+      return { status: 400, body: { success: false, code: 'bad_range', message: 'from/to must be YYYY-MM-DD, at most 62 days.' } };
     }
-    if (!response.ok) {
-      const status = response.status;
-      const retry = [401, 403, 404].includes(status) ? RETRY_UNSUPPORTED_MS : RETRY_TEMPORARY_MS;
-      throw new SyncError(`WordPress answered ${status}`, retry);
+    const rawDays = body.days;
+    if (!rawDays || typeof rawDays !== 'object' || Array.isArray(rawDays)) {
+      return { status: 400, body: { success: false, code: 'bad_days', message: 'days must be an object.' } };
     }
-    const body = await response.json().catch(() => null);
-    if (!body || body.success !== true || typeof body.days !== 'object' || body.days === null) {
-      throw new SyncError('unexpected answer from WordPress', RETRY_TEMPORARY_MS);
+    const clean = {};
+    for (const [day, row] of Object.entries(rawDays)) {
+      if (!isRealDay(day) || day < from || day > to) {
+        return { status: 400, body: { success: false, code: 'bad_day', message: `Unexpected day ${String(day).slice(0, 12)}.` } };
+      }
+      const cleaned = cleanRow(row);
+      if (!cleaned) {
+        return { status: 400, body: { success: false, code: 'bad_row', message: `Invalid numbers for ${day}.` } };
+      }
+      clean[day] = cleaned;
     }
-    if (body.partial) throw new SyncError('WordPress answered only partly', 10 * 60 * 1000);
-    return body.days;
-  }
 
-  async function runSync(code, plan, marker) {
-    const base = String((await getBaseUrl(code)) || '').replace(/\/+$/, '');
-    if (!base) throw new SyncError('restaurant website is not set', RETRY_UNSUPPORTED_MS);
-    for (const range of chunkRanges(plan.from, plan.to)) {
-      const wpDays = await fetchRange(code, base, range.from, range.to);
-      await dailyStats.writeWpDays(code, fillDays(range.from, range.to, wpDays));
+    const today = zurichParts(new Date(now())).day;
+    const floor = await dailyStats.readWpFloor(code);
+    const start = floor && floor > from ? floor : from;
+    const lastDay = addDays(today, -1);
+    const end = to < lastDay ? to : lastDay;
+    let stored = 0;
+    if (start <= end) {
+      const days = fillDays(start, end, clean);
+      await dailyStats.writeWpDays(code, days);
+      stored = Object.keys(days).length;
     }
-    const t = now();
-    await writeMarker(code, {
-      at: t,
-      from: plan.full ? plan.from : marker?.from || plan.from,
-      fullAt: plan.full ? t : marker?.fullAt || t,
-    });
-  }
-
-  async function run(code) {
-    const t = now();
-    const today = zurichParts(new Date(t)).day;
-    const [marker, floor] = await Promise.all([readMarker(code), dailyStats.readWpFloor(code)]);
-    const plan = planSync(marker, today, floor, t);
-    if (!plan) return { skipped: true };
-
-    const lock = await redisCommand('SET', k(code, 'stats_wp_lock'), String(t), 'NX', 'EX', LOCK_SECONDS);
-    if (!lock.result) return { skipped: true };
-    try {
-      await runSync(code, plan, marker);
-      logger.log(`stats: WordPress history synced for ${code} (${plan.full ? 'full' : 'recent'} ${plan.from}..${plan.to})`);
+    logger.log(`stats: sales history received for ${code} ${from}..${to} (${stored} days stored)`);
+    if (stored > 0) {
       try { onUpdated(code); } catch (_) { /* cache clearing is best effort */ }
-      return { synced: true, full: plan.full };
-    } catch (error) {
-      const retryMs = error instanceof SyncError ? error.retryMs : RETRY_TEMPORARY_MS;
-      logger.log(`stats: WordPress history sync failed for ${code}: ${error.message} (retry in ${Math.round(retryMs / 60000)} min)`);
-      await writeMarker(code, { ...(marker || {}), error: error.message, retryAt: now() + retryMs });
-      return { failed: true, error: error.message };
-    } finally {
-      await redisCommand('DEL', k(code, 'stats_wp_lock')).catch(() => {});
     }
+    return { status: 200, body: { success: true, stored_days: stored } };
   }
-
-  // Safe to call on every stats request: it checks one small marker and returns.
-  function maybeSync(code) {
-    if (running.has(code)) return running.get(code);
-    const promise = run(code).finally(() => running.delete(code));
-    running.set(code, promise);
-    return promise;
-  }
-
-  return { maybeSync };
+  return { receive };
 }
 
-module.exports = { createWpSalesSync, planSync, chunkRanges, fillDays, wantedFrom };
+module.exports = { createSalesHistoryReceiver, fillDays, isRealDay };
