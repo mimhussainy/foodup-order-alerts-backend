@@ -6,6 +6,7 @@ const { handleAutoActionWordPressFailure } = require("./autoActionPolicy");
 const { createOrderAppEdition } = require("./orderAppEdition");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const { createDailyStats, buildPeriods: buildDailyPeriods } = require("./dailyStats");
+const { createWpSalesSync } = require("./wpSalesSync");
 const { isVoidOrder: statsIsVoidOrder, zurichParts: statsZurichParts } = require("./controlCenterStats");
 const app = installAsyncRouteSafety(express());
 app.set('trust proxy', 1);
@@ -128,6 +129,23 @@ const k = (code, key) => `${code}:${key}`;
 
 // Daily statistics (week/month/year are not limited to the newest 100 orders).
 const dailyStats = createDailyStats({ redisCommand, k, withLock: withRedisLock });
+
+// Complete sales history from WordPress/WooCommerce (needs FoodUp Ordering 0.5.256+).
+// Runs in the background; until it has run (or if WordPress cannot answer) the
+// statistics use the live daily records above.
+const wpSalesSync = createWpSalesSync({
+  redisCommand,
+  k,
+  fetchWordPress: (...args) => restaurantSecurity.fetchWordPress(...args),
+  getBaseUrl: async (code) => {
+    const profileData = await redisCommand("GET", k(code, "restaurant_profile"));
+    const profile = profileData.result ? JSON.parse(profileData.result) : null;
+    const website = profile?.website;
+    return website ? (website.startsWith('http') ? website : `https://${website}`) : null;
+  },
+  dailyStats,
+  onUpdated: () => statsResponseCache.clear(),
+});
 
 
 const restaurantSecurity = createRestaurantSecurity({ redisCommand, k });
@@ -2322,6 +2340,7 @@ async function buildStatsResponse(code, bounds) {
   let periods = null;
   try {
     await dailyStats.ensureReady(code, orders);
+    wpSalesSync.maybeSync(code).catch(syncErr => console.log(`stats: WordPress history sync error for ${code}:`, syncErr.message));
     periods = buildDailyPeriods(await dailyStats.readDaily(code), Date.now());
   } catch (dailyErr) {
     console.log(`stats: daily summaries unavailable for ${code}, using order list:`, dailyErr.message);

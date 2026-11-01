@@ -8,6 +8,11 @@
 //   <code>:stats_daily             hash  YYYY-MM-DD -> JSON {o,cash,online,del,pick}
 //   <code>:stats_day_orders:<day>  hash  order_id   -> JSON {o,cash,online,del,pick}
 //   <code>:stats_daily_ready       string ISO time the first backfill ran
+//   <code>:stats_wp                hash  YYYY-MM-DD -> JSON {o,cash,online,del,pick}
+//                                  complete past days read from WordPress/WooCommerce
+//   <code>:stats_wp_floor          string YYYY-MM-DD, set by "clear orders": older
+//                                  WordPress days are ignored from then on
+//   <code>:stats_wp_sync           string JSON marker of the last WordPress sync
 //
 // Every order is stored under its own id, so a status change (cancelled,
 // refunded) replaces the earlier entry and the day total is always re-added
@@ -144,6 +149,18 @@ function buildPeriods(daily, nowMs) {
   };
 }
 
+// Past days come from WordPress (it holds every order), today from the live
+// records of this backend. `floor` hides WordPress days before a "clear orders".
+function mergeDaily(live, wp, today, floor = '') {
+  const merged = { ...live };
+  for (const [day, entry] of Object.entries(wp || {})) {
+    if (day >= today) continue;
+    if (floor && day < floor) continue;
+    merged[day] = entry;
+  }
+  return merged;
+}
+
 // ---- storage ----------------------------------------------------------------
 
 function createDailyStats({ redisCommand, k, withLock = async (_key, fn) => fn(), logger = console }) {
@@ -195,15 +212,47 @@ function createDailyStats({ redisCommand, k, withLock = async (_key, fn) => fn()
     await recordOrders(code, [order]);
   }
 
-  async function readDaily(code) {
-    const res = await redisCommand('HGETALL', k(code, 'stats_daily'));
+  async function readHash(key) {
+    const res = await redisCommand('HGETALL', key);
     const raw = hashToObject(res.result);
-    const daily = {};
+    const out = {};
     for (const [day, value] of Object.entries(raw)) {
       const entry = parseJson(value);
-      if (entry) daily[day] = entry;
+      if (entry) out[day] = entry;
     }
-    return daily;
+    return out;
+  }
+
+  async function readWpFloor(code) {
+    const res = await redisCommand('GET', k(code, 'stats_wp_floor'));
+    return res.result ? String(res.result) : '';
+  }
+
+  // Complete days from WordPress, written by wpSalesSync.js.
+  async function writeWpDays(code, days) {
+    const entries = Object.entries(days || {});
+    for (let i = 0; i < entries.length; i += 40) {
+      const args = [];
+      for (const [day, entry] of entries.slice(i, i + 40)) {
+        const sum = addInto(emptySummary(), entry);
+        sum.cash = round2(sum.cash);
+        sum.online = round2(sum.online);
+        args.push(day, JSON.stringify(sum));
+      }
+      await redisCommand('HSET', k(code, 'stats_wp'), ...args);
+    }
+  }
+
+  async function readDaily(code, nowMs = Date.now()) {
+    const live = await readHash(k(code, 'stats_daily'));
+    let wp = {};
+    let floor = '';
+    try {
+      [wp, floor] = await Promise.all([readHash(k(code, 'stats_wp')), readWpFloor(code)]);
+    } catch (_) {
+      wp = {}; // WordPress history is optional: fall back to the live records
+    }
+    return mergeDaily(live, wp, periodStarts(nowMs).today, floor);
   }
 
   // "Clear orders" in the app resets the numbers as it always did.
@@ -214,10 +263,14 @@ function createDailyStats({ redisCommand, k, withLock = async (_key, fn) => fn()
     }
     await redisCommand('DEL', k(code, 'stats_daily'));
     await redisCommand('DEL', k(code, 'stats_daily_ready'));
+    // Also reset the history that came from WordPress, and do not pull it back.
+    await redisCommand('DEL', k(code, 'stats_wp'));
+    await redisCommand('DEL', k(code, 'stats_wp_sync'));
+    await redisCommand('SET', k(code, 'stats_wp_floor'), periodStarts(Date.now()).today);
     readyCodes.delete(code);
   }
 
-  return { ensureReady, recordOrder, readDaily, clear, recomputeDay };
+  return { ensureReady, recordOrder, readDaily, clear, recomputeDay, writeWpDays, readWpFloor };
 }
 
 module.exports = {
@@ -228,4 +281,5 @@ module.exports = {
   weekStartDay,
   sumDays,
   isCashPayment,
+  mergeDaily,
 };
