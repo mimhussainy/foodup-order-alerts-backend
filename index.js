@@ -5,7 +5,7 @@ const { createDeliveredCallbackOutbox } = require("./deliveredCallbackOutbox");
 const { handleAutoActionWordPressFailure } = require("./autoActionPolicy");
 const { createOrderAppEdition } = require("./orderAppEdition");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
-const { createDailyStats, buildPeriods: buildDailyPeriods } = require("./dailyStats");
+const { createDailyStats, buildPeriods: buildDailyPeriods, buildMonths: buildDailyMonths } = require("./dailyStats");
 const { createSalesHistoryReceiver } = require("./wpSalesSync");
 const { isVoidOrder: statsIsVoidOrder, zurichParts: statsZurichParts } = require("./controlCenterStats");
 const app = installAsyncRouteSafety(express());
@@ -2342,9 +2342,12 @@ async function buildStatsResponse(code, bounds) {
   // Preferred source: per-day summaries (all orders since they were first recorded).
   // Fallback: the newest-100 list, exactly as before, if the summaries cannot be read.
   let periods = null;
+  let months = {};
   try {
     await dailyStats.ensureReady(code, orders);
-    periods = buildDailyPeriods(await dailyStats.readDaily(code), Date.now());
+    const daily = await dailyStats.readDaily(code);
+    periods = buildDailyPeriods(daily, Date.now());
+    months = buildDailyMonths(daily);
   } catch (dailyErr) {
     console.log(`stats: daily summaries unavailable for ${code}, using order list:`, dailyErr.message);
   }
@@ -2478,6 +2481,7 @@ async function buildStatsResponse(code, bounds) {
     success: true,
     currency,
     periods,
+    months,
     couriers: compactCouriers,
   };
 }

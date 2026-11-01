@@ -148,6 +148,31 @@ function buildPeriods(daily, nowMs) {
   };
 }
 
+// One total per calendar month, keyed "YYYY-MM". Used by the month/year picker
+// in the app. Months without any orders are simply missing.
+function buildMonths(daily) {
+  const months = {};
+  for (const [day, entry] of Object.entries(daily || {})) {
+    const key = String(day).slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(key)) continue;
+    if (!months[key]) months[key] = emptySummary();
+    addInto(months[key], entry);
+  }
+  const out = {};
+  for (const key of Object.keys(months).sort()) {
+    const sum = months[key];
+    out[key] = {
+      totalOrders: sum.o,
+      cash: round2(sum.cash),
+      online: round2(sum.online),
+      total: round2(sum.cash + sum.online),
+      deliveries: sum.del,
+      pickups: sum.pick,
+    };
+  }
+  return out;
+}
+
 // Past days come from WordPress (it holds every order), today from the live
 // records of this backend. `floor` hides WordPress days before a "clear orders".
 function mergeDaily(live, wp, today, floor = '') {
@@ -275,6 +300,7 @@ module.exports = {
   createDailyStats,
   contribution,
   buildPeriods,
+  buildMonths,
   periodStarts,
   weekStartDay,
   sumDays,
