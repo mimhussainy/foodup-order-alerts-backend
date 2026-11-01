@@ -171,3 +171,13 @@ test('mergeDaily ignores WordPress for today and for days before the floor', () 
   assert.equal(merged['2026-10-01'].o, 2);
   assert.equal(merged['2026-09-01'], undefined);
 });
+
+test('a network failure is logged with its cause and host', async () => {
+  const { sync, r } = setup({
+    fetchWordPress: async () => { const e = new TypeError('fetch failed'); e.cause = { code: 'ENOTFOUND' }; throw e; },
+  });
+  const out = await sync.maybeSync('a');
+  assert.equal(out.failed, true);
+  assert.match(out.error, /fetch failed \[ENOTFOUND\] for shop\.example/);
+  assert.match(r.strings.get('a:stats_wp_sync'), /ENOTFOUND/);
+});

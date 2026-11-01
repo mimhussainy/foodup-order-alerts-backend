@@ -114,7 +114,11 @@ function createWpSalesSync({
     try {
       response = await fetchWordPress(code, url, { method: 'GET', signal: controller.signal });
     } catch (error) {
-      throw new SyncError(`request failed: ${error.message}`, RETRY_TEMPORARY_MS);
+      // "fetch failed" alone says nothing: add the network cause (ENOTFOUND, ECONNRESET ...) and the host.
+      const cause = error && error.cause ? (error.cause.code || error.cause.message || String(error.cause)) : '';
+      let host = '';
+      try { host = new URL(url).host; } catch (_) { host = '(invalid address)'; }
+      throw new SyncError(`request failed: ${error.message}${cause ? ` [${cause}]` : ''} for ${host}`, RETRY_TEMPORARY_MS);
     } finally {
       clearTimeout(timer);
     }
