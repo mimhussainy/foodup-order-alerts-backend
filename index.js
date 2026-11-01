@@ -5,6 +5,8 @@ const { createDeliveredCallbackOutbox } = require("./deliveredCallbackOutbox");
 const { handleAutoActionWordPressFailure } = require("./autoActionPolicy");
 const { createOrderAppEdition } = require("./orderAppEdition");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
+const { createDailyStats, buildPeriods: buildDailyPeriods } = require("./dailyStats");
+const { isVoidOrder: statsIsVoidOrder, zurichParts: statsZurichParts } = require("./controlCenterStats");
 const app = installAsyncRouteSafety(express());
 app.set('trust proxy', 1);
 app.use(express.json({ limit: "15mb" }));
@@ -123,6 +125,9 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const k = (code, key) => `${code}:${key}`;
+
+// Daily statistics (week/month/year are not limited to the newest 100 orders).
+const dailyStats = createDailyStats({ redisCommand, k, withLock: withRedisLock });
 
 
 const restaurantSecurity = createRestaurantSecurity({ redisCommand, k });
@@ -367,6 +372,14 @@ async function upsertOrderInList(code, order) {
       await redisCommand("DEL", k(code, "orders"));
       if (updated.length > 0) {
         await redisCommand("RPUSH", k(code, "orders"), ...updated.map(o => JSON.stringify(o)));
+      }
+
+      // Statistics are best-effort: a failure here must never block an order.
+      try {
+        await dailyStats.ensureReady(code, updated);
+        await dailyStats.recordOrder(code, merged);
+      } catch (statsErr) {
+        console.log(`dailyStats record failed for ${code} order ${order.order_id}:`, statsErr.message);
       }
 
       console.log(`upsertOrderInList: order ${order.order_id} upserted for ${code}, list size ${updated.length}`);
@@ -2278,6 +2291,7 @@ function statsCompactOrder(order) {
   return {
     order_id: Number.isFinite(Number(order.order_id)) ? Number(order.order_id) : order.order_id,
     total: String(order.total || ''),
+    ...(order.older ? { older: true } : {}),
   };
 }
 
@@ -2290,6 +2304,7 @@ function statsPruneCache(now = Date.now()) {
 }
 
 async function buildStatsResponse(code, bounds) {
+  const todayDay = statsZurichParts(new Date()).day;
   const [ordersResult, courierAccountsResult, activeClaimIdsResult] = await Promise.all([
     redisCommand("LRANGE", k(code, "orders"), 0, 99),
     redisCommand("SMEMBERS", k(code, "delivery_accounts")),
@@ -2302,13 +2317,24 @@ async function buildStatsResponse(code, bounds) {
   const ordersById = new Map(orders.map(order => [String(order.order_id), order]));
   const currency = orders.find(order => order.currency)?.currency || 'CHF';
 
-  const periods = {
-    today: statsBuildPeriod(orders, bounds.today_start, bounds.now),
-    week: statsBuildPeriod(orders, bounds.week_start, bounds.now),
-    month: statsBuildPeriod(orders, bounds.month_start, bounds.now),
-    year: statsBuildPeriod(orders, bounds.year_start, bounds.now),
-    previousYear: statsBuildPeriod(orders, bounds.previous_year_start, bounds.year_start, false),
-  };
+  // Preferred source: per-day summaries (all orders since they were first recorded).
+  // Fallback: the newest-100 list, exactly as before, if the summaries cannot be read.
+  let periods = null;
+  try {
+    await dailyStats.ensureReady(code, orders);
+    periods = buildDailyPeriods(await dailyStats.readDaily(code), Date.now());
+  } catch (dailyErr) {
+    console.log(`stats: daily summaries unavailable for ${code}, using order list:`, dailyErr.message);
+  }
+  if (!periods) {
+    periods = {
+      today: statsBuildPeriod(orders, bounds.today_start, bounds.now),
+      week: statsBuildPeriod(orders, bounds.week_start, bounds.now),
+      month: statsBuildPeriod(orders, bounds.month_start, bounds.now),
+      year: statsBuildPeriod(orders, bounds.year_start, bounds.now),
+      previousYear: statsBuildPeriod(orders, bounds.previous_year_start, bounds.year_start, false),
+    };
+  }
 
   const couriers = new Map();
   const ensureCourier = (name) => {
@@ -2374,12 +2400,19 @@ async function buildStatsResponse(code, bounds) {
       const orderId = String(claim.order_id || activeClaimIds[index]);
       const order = ordersById.get(orderId);
       if (!order) return;
+      // A cancelled/refunded/failed order is not cash the courier has to hand in.
+      if (statsIsVoidOrder(order)) return;
+
+      const orderTimestamp = statsOrderTimestamp(order);
+      const orderDay = orderTimestamp === null ? null : statsZurichParts(new Date(orderTimestamp)).day;
 
       ensureCourier(name).openOrders.push({
         order_id: Number.isFinite(Number(orderId)) ? Number(orderId) : orderId,
         total: String(order.total || ''),
         currency: order.currency || 'CHF',
         payment_method: order.payment_method || '',
+        // From an earlier day: still counted (the courier may hold the cash) but shown as older.
+        older: orderDay !== null && orderDay < todayDay,
       });
     });
   }
@@ -2395,6 +2428,9 @@ async function buildStatsResponse(code, bounds) {
     const openCashOrders = courier.openOrders.filter(order => statsIsCashPayment(order.payment_method));
     const todayCashTotal = todayDeliveredCashOrders.reduce((sum, order) => sum + statsParseTotal(order.total), 0);
     const inProgressCashTotal = openCashOrders.reduce((sum, order) => sum + statsParseTotal(order.total), 0);
+    const olderOpenCashTotal = openCashOrders
+      .filter(order => order.older)
+      .reduce((sum, order) => sum + statsParseTotal(order.total), 0);
     const deliveredCashTotal = courier.deliveredOrders.reduce((sum, order) => {
       return statsIsCashPayment(order.payment_method)
         ? sum + statsParseTotal(order.total)
@@ -2407,6 +2443,7 @@ async function buildStatsResponse(code, bounds) {
       currency: courier.deliveredOrders[0]?.currency || openCashOrders[0]?.currency || 'CHF',
       todayCashTotal,
       inProgressCashTotal,
+      olderOpenCashTotal,
       totalOwed: todayCashTotal + inProgressCashTotal,
       legacySortTotal,
       openOrderCount: courier.openOrders.length,
@@ -2819,6 +2856,11 @@ if (!await isValidOwnerOrIosPin(code, owner_pin)) {
   }
   await redisCommand("DEL", k(code, "orders"));
   await redisCommand("DEL", k(code, "last_order"));
+  try {
+    await dailyStats.clear(code);
+  } catch (statsErr) {
+    console.log(`clear-orders: could not reset daily statistics for ${code}:`, statsErr.message);
+  }
   res.json({ success: true });
 });
 
