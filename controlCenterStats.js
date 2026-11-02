@@ -7,15 +7,17 @@
 //
 // Keys written (all with TTL):
 //   <code>:cc_orders:<YYYY-MM-DD>  hash  order_id -> compact JSON (no customer data)
-//   <code>:cc_beats:<YYYY-MM-DD>   hash  5-min bucket -> g|a|r|n
+//   <code>:cc_beats:<YYYY-MM-DD>   hash  60-min bucket -> g|a|r|n
 //   cc:history_since               string ISO time of the first snapshot
 
 const TZ = 'Europe/Zurich';
 const VOID_STATUSES = new Set(['cancelled', 'canceled', 'refunded', 'failed', 'rejected', 'trash', 'checkout-draft']);
 const ORDER_DAY_TTL_SECONDS = 40 * 86400;
 const BEAT_TTL_SECONDS = 2 * 86400;
-const BUCKET_MS = 5 * 60 * 1000;
-const RECORD_INTERVAL_MS = 5 * 60 * 1000;
+// Hourly: the Control Center page snapshots live data itself when opened,
+// so the background history only needs one record per hour (saves Upstash).
+const BUCKET_MS = 60 * 60 * 1000;
+const RECORD_INTERVAL_MS = 60 * 60 * 1000;
 
 const zurichFormat = new Intl.DateTimeFormat('en-CA', {
   timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit',

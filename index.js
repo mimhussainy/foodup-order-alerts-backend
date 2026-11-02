@@ -69,6 +69,7 @@ async function redisCommand(...args) {
   for (let attempt = 1; attempt <= REDIS_MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REDIS_TIMEOUT_MS);
+    foodupCountRedisCommand(command);
 
     try {
       const response = await fetch(UPSTASH_URL, {
@@ -117,6 +118,82 @@ async function redisCommand(...args) {
   throw new FoodUpRedisUnavailableError(`Upstash Redis unavailable during ${command}`, lastError);
 }
 
+// -------------------------------------------------------
+// REDIS USAGE METER (log only, no behaviour change)
+// Every hour the log shows which route or background job made how many
+// Upstash commands: look for "[redis-usage]" in the Render logs.
+// -------------------------------------------------------
+const { AsyncLocalStorage } = require("async_hooks");
+const redisUsageContext = new AsyncLocalStorage();
+const REDIS_USAGE_LOG_MS = 60 * 60 * 1000;
+let redisUsageCommands = new Map();
+let redisUsageRequests = new Map();
+let redisUsageSince = Date.now();
+
+function foodupUsageAdd(map, label) {
+  const key = map.size >= 300 && !map.has(label) ? "other" : label;
+  map.set(key, (map.get(key) || 0) + 1);
+}
+
+function foodupCountRedisCommand(command) {
+  const label = redisUsageContext.getStore()?.label || "background";
+  foodupUsageAdd(redisUsageCommands, label);
+  foodupUsageAdd(redisUsageCommands, `#cmd ${command}`);
+}
+
+function foodupUsagePathLabel(method, path) {
+  const parts = String(path || "/").split("/").filter(Boolean);
+  const keep = parts[0] === "admin" || parts[0] === "posup" || parts[0] === "pos" ? 3 : 1;
+  const shown = parts.slice(0, keep).map(part => (/^\d+$/.test(part) ? ":id" : part));
+  const rest = parts.length - shown.length;
+  return `${method} /${shown.join("/")}${rest > 0 ? "/*".repeat(rest) : ""}`;
+}
+
+// Labels Redis calls made outside an HTTP request (background jobs).
+function redisForJob(label) {
+  return (...args) => (
+    redisUsageContext.getStore()
+      ? redisCommand(...args)
+      : redisUsageContext.run({ label: `job ${label}` }, () => redisCommand(...args))
+  );
+}
+
+function runLabeledJob(label, fn) {
+  return redisUsageContext.run({ label: `job ${label}` }, fn);
+}
+
+app.use((req, res, next) => {
+  const label = foodupUsagePathLabel(req.method, req.path);
+  foodupUsageAdd(redisUsageRequests, label);
+  redisUsageContext.run({ label }, next);
+});
+
+function logRedisUsage() {
+  const minutes = Math.max(1, Math.round((Date.now() - redisUsageSince) / 60000));
+  let total = 0;
+  const byCaller = [];
+  const byCommand = [];
+  for (const [label, count] of redisUsageCommands) {
+    if (label.startsWith("#cmd ")) byCommand.push([label.slice(5), count]);
+    else { total += count; byCaller.push([label, count]); }
+  }
+  let requests = 0;
+  for (const count of redisUsageRequests.values()) requests += count;
+  byCaller.sort((a, b) => b[1] - a[1]);
+  byCommand.sort((a, b) => b[1] - a[1]);
+  const top = byCaller.slice(0, 15)
+    .map(([label, count]) => `${label}=${count}${redisUsageRequests.has(label) ? ` (${redisUsageRequests.get(label)} req)` : ""}`)
+    .join(" | ");
+  const commands = byCommand.slice(0, 8).map(([name, count]) => `${name}=${count}`).join(" ");
+  console.log(`[redis-usage] last ${minutes} min: ${total} commands, ${requests} requests | ${top}`);
+  console.log(`[redis-usage] by command: ${commands}`);
+  redisUsageCommands = new Map();
+  redisUsageRequests = new Map();
+  redisUsageSince = Date.now();
+}
+
+setInterval(logRedisUsage, REDIS_USAGE_LOG_MS).unref?.();
+
 // Last-resort safety net. Route handlers and background jobs are wrapped/caught
 // below, but a rejected promise from an overlooked non-critical callback must not
 // terminate the entire Orders service.
@@ -149,7 +226,7 @@ const customerEmailRequestHandler = createCustomerEmailRequestHandler({
   logger: console,
 });
 const deliveredCallbackOutbox = createDeliveredCallbackOutbox({
-  redisCommand,
+  redisCommand: redisForJob("delivered-callbacks"),
   k,
   fetchWordPress: restaurantSecurity.fetchWordPress,
   logger: console,
@@ -3353,7 +3430,7 @@ const alertService = createAlertService(redisCommand, k);
 const dashPassword = String(process.env.DASHBOARD_PASSWORD || '').trim();
 app.use('/', createMonitoringRoutes(redisCommand, k, dashPassword));
 if (dashPassword) {
-  createControlCenter(app, redisCommand, k, dashPassword, {
+  createControlCenter(app, redisForJob("control-center"), k, dashPassword, {
     deliveredCallbackOutbox,
     restaurantSecurity,
     orderAppEdition,
@@ -4199,7 +4276,7 @@ async function checkAndSendAlerts() {
 
 // Run alert checker every 5 minutes
 setInterval(() => {
-  checkAndSendAlerts().catch(err => console.log('Alert checker uncaught error:', err.message));
+  runLabeledJob("alerts", () => checkAndSendAlerts()).catch(err => console.log('Alert checker uncaught error:', err.message));
 }, 5 * 60 * 1000);
 
 // -------------------------------------------------------
@@ -4228,7 +4305,7 @@ app.get("/", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  startWebsiteMonitor(redisCommand, k, alertService);
+  startWebsiteMonitor(redisForJob("website-monitor"), k, alertService);
   deliveredCallbackOutbox.start();
 });
 
@@ -4237,6 +4314,9 @@ app.listen(PORT, () => {
 // -------------------------------------------------------
 
 let autoActionsRunning = false;
+// Orders already accepted/rejected/auto-actioned never need the per-minute
+// Redis check again (saves one MGET per open order per minute).
+const autoActionDecidedOrders = new Set();
 
 async function runAutoActions() {
   if (autoActionsRunning) return;
@@ -4310,6 +4390,11 @@ async function runAutoActions() {
       }
     }
 
+            const decidedKey = `${code}:${order.order_id}`;
+            if (autoActionDecidedOrders.has(decidedKey)) {
+              continue;
+            }
+
             // Read manual/automatic action markers in one Redis command.
             const actionState = await redisCommand(
               "MGET",
@@ -4319,6 +4404,8 @@ async function runAutoActions() {
             );
             const [acceptedRaw, rejectedRaw, autoActionedRaw] = actionState.result || [];
             if (acceptedRaw || rejectedRaw || autoActionedRaw) {
+              if (autoActionDecidedOrders.size >= 5000) autoActionDecidedOrders.clear();
+              autoActionDecidedOrders.add(decidedKey);
               continue;
             }
 
@@ -4573,11 +4660,11 @@ async function runAutoActions() {
 
 // Run every minute
 setInterval(() => {
-  runAutoActions().catch(err => console.log('Auto action uncaught error:', err.message));
+  runLabeledJob("auto-actions", () => runAutoActions()).catch(err => console.log('Auto action uncaught error:', err.message));
 }, 60 * 1000);
 // Also run once on startup after 10 seconds
 setTimeout(() => {
-  runAutoActions().catch(err => console.log('Initial auto action uncaught error:', err.message));
+  runLabeledJob("auto-actions", () => runAutoActions()).catch(err => console.log('Initial auto action uncaught error:', err.message));
 }, 10 * 1000);
 
 

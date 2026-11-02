@@ -1,4 +1,4 @@
-const CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 async function checkWebsite(url) {
   const start = Date.now();

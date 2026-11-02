@@ -841,7 +841,7 @@ function createControlCenter(app, redisCommand, k, dashPassword, options = {}) {
     }
   }
   if (options.startHistoryRecorder !== false) {
-    setTimeout(() => { checkWordpressEditions(); setInterval(checkWordpressEditions, 30 * 60 * 1000).unref?.(); }, 90 * 1000).unref?.();
+    setTimeout(() => { checkWordpressEditions(); setInterval(checkWordpressEditions, 60 * 60 * 1000).unref?.(); }, 90 * 1000).unref?.();
   }
 
   app.get('/admin/api/health', requireAdmin, async (req, res) => {

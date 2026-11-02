@@ -492,8 +492,8 @@
   function beatsHtml(beats) {
     const list = (beats && beats.length ? beats : Array(12).fill('n')).slice(-12);
     const names = { g: 'online', a: 'idle', r: 'offline', n: 'no data' };
-    const aria = `Orders App last 60 minutes: ${list.map(b => names[b] || 'no data').join(', ')}`;
-    return `<span class="beats"><span class="beat-row" role="img" aria-label="${esc(aria)}">${list.map((b, i) => `<span class="${esc(b)} anim-bar" style="--d:${600 + i * 25}ms" title="${(60 - i * 5)}–${(55 - i * 5)} min ago · ${names[b] || 'no data'}"></span>`).join('')}</span><span class="beat-scale"><span>60 min</span><span>now</span></span></span>`;
+    const aria = `Orders App last 12 hours: ${list.map(b => names[b] || 'no data').join(', ')}`;
+    return `<span class="beats"><span class="beat-row" role="img" aria-label="${esc(aria)}">${list.map((b, i) => `<span class="${esc(b)} anim-bar" style="--d:${600 + i * 25}ms" title="${i === list.length - 1 ? 'now' : `${12 - i}–${11 - i} h ago`} · ${names[b] || 'no data'}"></span>`).join('')}</span><span class="beat-scale"><span>12 h</span><span>now</span></span></span>`;
   }
 
   function restaurantRow(r, full) {
@@ -1096,7 +1096,7 @@
         <div id="rpStore" class="segmented store-switch ${storeOpen ? 'is-open' : 'is-closed'}" role="tablist" aria-label="Online ordering"></div>
         <div class="store-note">${esc(storeNote)}</div>
       </div>
-      <div class="beat-box"><div class="mix-title">Orders App · last 60 minutes</div>${beatsHtml(r.beats)}</div>
+      <div class="beat-box"><div class="mix-title">Orders App · last 12 hours</div>${beatsHtml(r.beats)}</div>
       <div class="hero-actions">
         ${tel ? `<a class="btn btn-secondary" href="${esc(tel)}">${icon('phone')}Call</a>` : ''}
         ${websiteUrl ? `<a class="btn btn-secondary" href="${esc(websiteUrl)}" target="_blank" rel="noopener">${icon('external')}Website</a>` : ''}

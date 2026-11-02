@@ -1,4 +1,6 @@
 const DEFAULT_INTERVAL_MS = 10000;
+// With nothing waiting, the background worker checks Redis only once a minute.
+const DEFAULT_IDLE_CHECK_MS = 60000;
 const DEFAULT_CALLBACK_TIMEOUT_MS = 8000;
 const DEFAULT_JOB_TTL_MS = 48 * 60 * 60 * 1000;
 const DONE_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -41,6 +43,7 @@ function createDeliveredCallbackOutbox({
   now = () => Date.now(),
   callbackTimeoutMs = DEFAULT_CALLBACK_TIMEOUT_MS,
   intervalMs = DEFAULT_INTERVAL_MS,
+  idleCheckMs = DEFAULT_IDLE_CHECK_MS,
   setIntervalImpl = setInterval,
   setTimeoutImpl = setTimeout,
   clearTimeoutImpl = clearTimeout,
@@ -52,6 +55,9 @@ function createDeliveredCallbackOutbox({
   const inFlight = new Set();
   let tickRunning = false;
   let interval = null;
+  // true while callbacks are (or may be) waiting; unknown at start = true.
+  let pendingHint = true;
+  let lastTickAt = 0;
 
   const pendingSetKey = code => k(code, 'wp_delivered_callbacks_pending');
   const failedSetKey = code => k(code, 'wp_delivered_callbacks_failed');
@@ -86,6 +92,7 @@ function createDeliveredCallbackOutbox({
   }
 
   async function addPendingReference(code, orderId) {
+    pendingHint = true;
     await redisCommand('SADD', pendingSetKey(code), orderId);
     await redisCommand('SADD', GLOBAL_PENDING_RESTAURANTS_KEY, code);
   }
@@ -418,7 +425,9 @@ function createDeliveredCallbackOutbox({
     if (tickRunning) return;
     tickRunning = true;
     try {
+      lastTickAt = now();
       const restaurants = await redisCommand('SMEMBERS', GLOBAL_PENDING_RESTAURANTS_KEY);
+      if (!(restaurants.result || []).length) pendingHint = false;
       for (const code of (restaurants.result || [])) {
         const pending = await redisCommand('SMEMBERS', pendingSetKey(code));
         const orderIds = pending.result || [];
@@ -452,6 +461,7 @@ function createDeliveredCallbackOutbox({
       logger.error?.(`[delivered-callback] pending-index bootstrap failed: ${error?.message || error}`);
     });
     interval = setIntervalImpl(() => {
+      if (!pendingHint && now() - lastTickAt < idleCheckMs) return;
       tick().catch(error => logger.error?.(`[delivered-callback] tick failed: ${error?.message || error}`));
     }, intervalMs);
     if (interval && typeof interval.unref === 'function') interval.unref();
