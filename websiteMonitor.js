@@ -1,4 +1,12 @@
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
+// First check a while after a deploy/restart, not while the server is starting.
+const FIRST_CHECK_DELAY_MS = 2 * 60 * 1000;
+// A site that looks down is checked once more before it counts as down.
+const RECHECK_DELAY_MS = 60 * 1000;
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 async function checkWebsite(url) {
   const start = Date.now();
@@ -63,9 +71,14 @@ function startWebsiteMonitor(redisCommand, k, alertService) {
             ? profile.website
             : `https://${profile.website}`;
 
-          const result = await checkWebsite(url);
+          let result = await checkWebsite(url);
+          if (result.status === 'down') {
+            console.log(`[websiteMonitor] ${code} looked down (${result.error || 'unknown'}), checking again in ${RECHECK_DELAY_MS / 1000}s`);
+            await wait(RECHECK_DELAY_MS);
+            result = await checkWebsite(url);
+          }
           await redisCommand('SET', k(code, 'website_health'), JSON.stringify(result));
-          console.log(`[websiteMonitor] ${code} → ${result.status} (${result.response_ms}ms)`);
+          console.log(`[websiteMonitor] ${code} → ${result.status} (${result.response_ms}ms)${result.error ? ` ${result.error}` : ''}`);
           await alertService.handleWebsiteAlert(code, result, profile.name || code);
         } catch (e) {
           console.log(`[websiteMonitor] error for ${code}:`, e.message);
@@ -78,7 +91,10 @@ function startWebsiteMonitor(redisCommand, k, alertService) {
     }
   }
 
-  runChecks().catch(err => console.log('[websiteMonitor] initial uncaught error:', err.message));
+  const first = setTimeout(() => {
+    runChecks().catch(err => console.log('[websiteMonitor] initial uncaught error:', err.message));
+  }, FIRST_CHECK_DELAY_MS);
+  first.unref?.();
   const interval = setInterval(() => {
     runChecks().catch(err => console.log('[websiteMonitor] interval uncaught error:', err.message));
   }, CHECK_INTERVAL_MS);
