@@ -7,6 +7,14 @@ const { createOrderAppEdition } = require("./orderAppEdition");
 const { installAsyncRouteSafety } = require("./asyncRouteSafety");
 const { createDailyStats, buildPeriods: buildDailyPeriods, buildMonths: buildDailyMonths } = require("./dailyStats");
 const { createSalesHistoryReceiver } = require("./wpSalesSync");
+const {
+  createKioskAutoAccept,
+  isKioskOrder,
+  kioskContextPushData,
+  kioskPushBody,
+  kioskPushTitle,
+  orderLabel: kioskOrderLabel,
+} = require("./kioskOrders");
 const { isVoidOrder: statsIsVoidOrder, zurichParts: statsZurichParts } = require("./controlCenterStats");
 const app = installAsyncRouteSafety(express());
 app.set('trust proxy', 1);
@@ -217,6 +225,21 @@ const salesHistory = createSalesHistoryReceiver({
 
 
 const restaurantSecurity = createRestaurantSecurity({ redisCommand, k });
+const kioskAutoAccept = createKioskAutoAccept({
+  redisCommand,
+  k,
+  getTokens: (code) => getTokens(code),
+  fetchWordPress: (code, url, options) => restaurantSecurity.fetchWordPress(code, url, options),
+  sendPush: (messages) => fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify(messages),
+  }),
+  contextPushData: (order) => foodupOrderContextPushData(order),
+  itemsString: (items) => {
+    try { return foodupPushItemsString(items); } catch (e) { return '[]'; }
+  },
+});
 const customerEmailService = createCustomerEmailService({ fetchImpl: fetch, env: process.env, logger: console });
 const customerEmailRequestHandler = createCustomerEmailRequestHandler({
   restaurantSecurity,
@@ -651,6 +674,7 @@ function foodupOrderContextPushData(order) {
     table_round_id: String(value.table_round_id || ''),
     table_integration: String(value.table_integration || ''),
     source: String(value.source || ''),
+    ...kioskContextPushData(value),
   };
 }
 
@@ -662,6 +686,7 @@ function foodupPushTableLabel(order) {
 }
 
 function foodupPushOrderTitle(order) {
+  if (isKioskOrder(order)) return kioskPushTitle(order);
   const qrNumber = Number(order?.qr_order_number || 0);
   if (order?.fulfillment_type === 'dine_in' && Number.isFinite(qrNumber) && qrNumber >= 100) {
     const tableLabel = foodupPushTableLabel(order);
@@ -671,6 +696,7 @@ function foodupPushOrderTitle(order) {
 }
 
 function foodupPushOrderBody(order) {
+  if (isKioskOrder(order)) return kioskPushBody(order);
   if (order?.fulfillment_type === 'dine_in') {
     const tableLabel = foodupPushTableLabel(order);
     const amount = `${String(order?.currency || '')} ${String(order?.total || '')}`.trim();
@@ -975,6 +1001,14 @@ app.post("/new-order", async (req, res) => {
     return res.json({ success: true, duplicate: true, persisted: true });
   }
 
+  // Kiosk orders are accepted at once, whatever the auto-accept setting is.
+  // A short pause lets the new-order push go out first.
+  if (isKioskOrder(order)) {
+    setTimeout(() => {
+      kioskAutoAccept.accept(code, order).catch(() => {});
+    }, 800);
+  }
+
   const deviceTokens = await getTokens(code);
   if (deviceTokens.length === 0) {
     return res.json({ success: false, message: "No device tokens registered" });
@@ -1158,10 +1192,7 @@ function readablePushStatus(status) {
 
 function getOrderStatusNotification(order, status) {
   const normalized = String(status || '').trim().toLowerCase();
-  const qrNumber = Number(order?.qr_order_number || 0);
-  const orderLabel = Number.isFinite(qrNumber) && qrNumber >= 100
-    ? `QR #${qrNumber}`
-    : `Order #${order?.order_id || ''}`;
+  const orderLabel = kioskOrderLabel(order);
 
   switch (normalized) {
     case 'processing':
@@ -3376,7 +3407,7 @@ app.post("/auto-accepted-notify", async (req, res) => {
   const messages = deviceTokens.map(token => ({
     to: token,
     sound: null,
-    title: Number(orderData.qr_order_number || 0) >= 100 ? `✅ QR #${orderData.qr_order_number} auto-accepted` : `✅ Order #${order_id} auto-accepted`,
+    title: `✅ ${kioskOrderLabel({ ...orderData, order_id })} auto-accepted`,
     body: foodupPushOrderBody(foodupNormalizeOrderFulfillment({ ...orderData, order_id })),
     data: {
       event_type: 'auto_accepted',
@@ -4390,6 +4421,11 @@ async function runAutoActions() {
       }
     }
 
+            // A paying customer is standing at the kiosk: never auto-reject its order.
+            if (isKioskOrder(order) && autoSettings.auto_action !== 'accept') {
+              continue;
+            }
+
             const decidedKey = `${code}:${order.order_id}`;
             if (autoActionDecidedOrders.has(decidedKey)) {
               continue;
@@ -4532,7 +4568,7 @@ async function runAutoActions() {
                   priority: "high",
                   ttl: 900,
                   sound: null,
-                  title: Number(order.qr_order_number || 0) >= 100 ? `✅ QR #${order.qr_order_number} auto-accepted` : `✅ Order #${order.order_id} auto-accepted`,
+                  title: `✅ ${kioskOrderLabel(order)} auto-accepted`,
                   body: foodupPushOrderBody(order),
                   data: {
                     event_type: 'auto_accepted',
